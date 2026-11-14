@@ -22,4 +22,4 @@ gc19-help	strict				--help
 gc20-underscore	win				_POSIX_PATH_MAX
 gc21-name-max-path	win				NAME_MAX	.
 gc22-avphys	win				AVPHYS_PAGES
-gc23-version	strict				--version
+gc23-version	exit				--version

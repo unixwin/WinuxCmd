@@ -18,7 +18,75 @@
 
 use std::ffi::OsString;
 
-use winux_core::{usage_error, Ctx, Io};
+use winux_core::{tr, usage_error, Ctx, Io};
+
+// Shared getopt diagnostics. Every command that parses options - through
+// this module or its own getopt-shaped loop - spells these six messages;
+// they live in one place with one stable key each so a locale translates
+// the wording once. The fallbacks are byte-identical to GNU coreutils 9.4
+// as probed by the gate.
+
+/// `invalid option -- 'x'`
+pub fn invalid_option(ctx: &Ctx, option: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.invalid_option",
+        "invalid option -- '{option}'",
+        option = option
+    )
+}
+
+/// `unrecognized option '--foo'` (the caller passes the whole token).
+pub fn unrecognized_option(ctx: &Ctx, option: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.unrecognized_option",
+        "unrecognized option '{option}'",
+        option = option
+    )
+}
+
+/// `option '--f' is ambiguous; possibilities: '--foo' '--force'`
+pub fn ambiguous_option(ctx: &Ctx, option: &str, possibilities: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.ambiguous_option",
+        "option '{option}' is ambiguous; possibilities: {possibilities}",
+        option = option,
+        possibilities = possibilities
+    )
+}
+
+/// `option '--foo' requires an argument`
+pub fn option_requires_argument(ctx: &Ctx, option: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.option_requires_argument",
+        "option '{option}' requires an argument",
+        option = option
+    )
+}
+
+/// `option requires an argument -- 'x'` (the short-option spelling).
+pub fn short_option_requires_argument(ctx: &Ctx, option: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.short_option_requires_argument",
+        "option requires an argument -- '{option}'",
+        option = option
+    )
+}
+
+/// `option '--foo' doesn't allow an argument` (also the key the C++
+/// dispatcher uses, so the two surfaces share one translation).
+pub fn option_no_argument(ctx: &Ctx, option: &str) -> String {
+    tr!(
+        ctx,
+        "common.error.option_no_argument",
+        "option '{option}' doesn't allow an argument",
+        option = option
+    )
+}
 
 pub struct OptSpec {
     pub short: Option<char>,
@@ -46,9 +114,15 @@ pub const H_REJECT_SPEC: OptSpec = OptSpec {
 
 /// GNU diagnostic for the marker: `<prog>: invalid option -- 'h'` plus the
 /// try-help line, with the command's usage status.
-pub fn rejected_short_h(io: &mut Io, prog: &str, p: &Parsed, usage_status: u32) -> Option<u32> {
+pub fn rejected_short_h(
+    ctx: &Ctx,
+    io: &mut Io,
+    prog: &str,
+    p: &Parsed,
+    usage_status: u32,
+) -> Option<u32> {
     if p.flags.iter().any(|f| f == H_REJECT_MARKER) {
-        let _ = usage_error(io, prog, "invalid option -- 'h'");
+        let _ = usage_error(ctx, io, prog, &invalid_option(ctx, "h"));
         return Some(usage_status);
     }
     None
@@ -88,17 +162,49 @@ pub fn extract_optional_long_values(
     (values, rest)
 }
 
+/// One option-table hit in argv order.
+///
+/// `key` is the record key `Parsed::has`/`value_of` use (the long name, or
+/// the short character for short-only specs); `token` is the spelling the
+/// user wrote (`-B` vs `--block-size`), which GNU echoes verbatim in some
+/// diagnostics; `value` is `Some` for value-taking options.
+#[derive(Debug, Clone)]
+pub struct OptEvent {
+    pub key: String,
+    pub token: String,
+    pub value: Option<String>,
+}
+
 #[derive(Default, Debug)]
 pub struct Parsed {
     pub flags: Vec<String>,
     pub values: Vec<(String, String)>,
     pub positionals: Vec<OsString>,
+    /// Every option-table hit, in argv order. Commands whose options are a
+    /// sequential state machine (`-h/-B/-m/-k/--si` last-wins in du) read
+    /// this instead of the orderless `flags`/`values` vectors.
+    pub events: Vec<OptEvent>,
 }
 
 impl Parsed {
     /// True when the option appeared, as a flag or with a value.
     pub fn has(&self, long: &str) -> bool {
         self.flags.iter().any(|f| f == long) || self.values.iter().any(|(k, _)| k == long)
+    }
+
+    /// Which of `names` appeared LAST in argv (flags record in arrival
+    /// order). GNU getopt_long processes mutually-exclusive pairs by
+    /// assignment order, so `--preserve-root --no-preserve-root` ends up
+    /// with no-preserve-root and the reverse with preserve-root (probed
+    /// M2 P15/P16 on coreutils 9.4); None when neither appeared.
+    pub fn flag_last(&self, names: &[&str]) -> Option<&str> {
+        let mut last = None;
+        for f in &self.flags {
+            if names.contains(&f.as_str()) {
+                last = Some(f.as_str());
+            }
+        }
+        last
     }
 
     pub fn value_of(&self, long: &str) -> Option<&str> {
@@ -195,7 +301,7 @@ pub fn parse(
     args: &[OsString],
     opts: &[OptSpec],
     io: &mut Io,
-    _ctx: &Ctx,
+    ctx: &Ctx,
     usage_status: u32,
 ) -> Result<Parsed, u32> {
     let mut out = Parsed::default();
@@ -226,9 +332,19 @@ pub fn parse(
                 LongMatch::Version => (VERSION.to_string(), false),
                 LongMatch::Unknown => {
                     let msg = if name.is_empty() {
-                        // An empty abbreviation ("--=v") is not a lookup;
-                        // report the token verbatim.
-                        format!("unrecognized option '--{rest}'")
+                        // GNU d8 cell (probed 9.4, m4-gnu-diag): "--=v" is an
+                        // empty long name, and the empty prefix matches every
+                        // registered long — getopt_long reports the whole
+                        // token as ambiguous over the full table, not
+                        // "unrecognized".
+                        let mut candidates: Vec<String> = opts
+                            .iter()
+                            .filter(|o| !o.long.is_empty())
+                            .map(|o| format!("'--{}'", o.long))
+                            .collect();
+                        candidates.push(format!("'--{HELP}'"));
+                        candidates.push(format!("'--{VERSION}'"));
+                        ambiguous_option(ctx, &format!("--{rest}"), &candidates.join(" "))
                     } else if opts
                         .iter()
                         .any(|o| !o.long.is_empty() && o.long.starts_with(&name))
@@ -246,14 +362,13 @@ pub fn parse(
                         if VERSION.starts_with(&name) {
                             candidates.push(format!("'--{VERSION}'"));
                         }
-                        format!(
-                            "option '--{name}' is ambiguous; possibilities: {}",
-                            candidates.join(" ")
-                        )
+                        ambiguous_option(ctx, &format!("--{name}"), &candidates.join(" "))
                     } else {
-                        format!("unrecognized option '--{name}'")
+                        // GNU includes an inline =value in the unrecognized
+                        // token (probed e5: "--from=1" names the full token).
+                        unrecognized_option(ctx, &format!("--{rest}"))
                     };
-                    let _ = usage_error(io, prog, &msg);
+                    let _ = usage_error(ctx, io, prog, &msg);
                     return Err(usage_status);
                 }
             };
@@ -265,21 +380,31 @@ pub fn parse(
                         match args.get(i) {
                             Some(v) => to_str_lossy(v),
                             None => {
-                                let msg = format!("option '--{record_key}' requires an argument");
-                                let _ = usage_error(io, prog, &msg);
+                                let msg = option_requires_argument(ctx, &format!("--{record_key}"));
+                                let _ = usage_error(ctx, io, prog, &msg);
                                 return Err(usage_status);
                             }
                         }
                     }
                 };
+                out.events.push(OptEvent {
+                    key: record_key.clone(),
+                    token: format!("--{record_key}"),
+                    value: Some(val.clone()),
+                });
                 out.values.push((record_key, val));
             } else {
                 // getopt_long rejects an inline argument on a flag
                 if inline_val.is_some() {
-                    let msg = format!("option '--{}' doesn't allow an argument", record_key);
-                    let _ = usage_error(io, prog, &msg);
+                    let msg = option_no_argument(ctx, &format!("--{record_key}"));
+                    let _ = usage_error(ctx, io, prog, &msg);
                     return Err(usage_status);
                 }
+                out.events.push(OptEvent {
+                    key: record_key.clone(),
+                    token: format!("--{record_key}"),
+                    value: None,
+                });
                 out.flags.push(record_key.clone());
                 // #1573: the sequential getopt_long contract. help/version
                 // reach this point only through option-table resolution
@@ -327,12 +452,17 @@ pub fn parse(
                             match args.get(i) {
                                 Some(v) => to_str_lossy(v),
                                 None => {
-                                    let msg = format!("option '-{}' requires an argument", c);
-                                    let _ = usage_error(io, prog, &msg);
+                                    let msg = short_option_requires_argument(ctx, &c.to_string());
+                                    let _ = usage_error(ctx, io, prog, &msg);
                                     return Err(usage_status);
                                 }
                             }
                         };
+                        out.events.push(OptEvent {
+                            key: spec.long.to_string(),
+                            token: format!("-{c}"),
+                            value: Some(val.clone()),
+                        });
                         out.values.push((spec.long.to_string(), val));
                         ci = chars.len();
                     }
@@ -344,12 +474,17 @@ pub fn parse(
                         } else {
                             spec.long.to_string()
                         };
+                        out.events.push(OptEvent {
+                            key: key.clone(),
+                            token: format!("-{c}"),
+                            value: None,
+                        });
                         out.flags.push(key);
                         ci += 1;
                     }
                     None => {
-                        let msg = format!("invalid option -- '{c}'");
-                        let _ = usage_error(io, prog, &msg);
+                        let msg = invalid_option(ctx, &c.to_string());
+                        let _ = usage_error(ctx, io, prog, &msg);
                         return Err(usage_status);
                     }
                 }
@@ -493,6 +628,76 @@ mod tests {
     }
 
     #[test]
+    fn unknown_with_inline_value_names_the_whole_token() {
+        // GNU d8/e5 cells (coreutils 9.4 m4 matrix): an unrecognized long
+        // with an inline =value names the FULL token ("--from=1").
+        let owned: Vec<std::ffi::OsString> = vec!["--bogus=2".into()];
+        let mut io = MemIo::new("");
+        let sc = winux_core::test_support::ScratchCtx::new("argopt-eqval");
+        let r = parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1);
+        assert_eq!(r.unwrap_err(), 1);
+        assert!(
+            io.err().contains("unrecognized option '--bogus=2'"),
+            "{}",
+            io.err()
+        );
+    }
+
+    #[test]
+    fn empty_long_name_is_ambiguous_over_everything() {
+        // GNU d8: "--=v" has an empty long name, and the empty prefix
+        // matches every registered long — getopt_long reports the whole
+        // token as ambiguous over the full table (help/version last).
+        let owned: Vec<std::ffi::OsString> = vec!["--=v".into()];
+        let mut io = MemIo::new("");
+        let sc = winux_core::test_support::ScratchCtx::new("argopt-emptyname");
+        let r = parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1);
+        assert_eq!(r.unwrap_err(), 1);
+        let e = io.err();
+        assert!(e.contains("option '--=v' is ambiguous"), "{e}");
+        assert!(
+            e.contains("possibilities: '--zero' '--suffix' '--help' '--version'"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn flag_last_reports_the_final_occurrence() {
+        // GNU assignment-order semantics for mutually exclusive flags
+        // (probed P15/P16 on --preserve-root/--no-preserve-root).
+        let table = vec![
+            OptSpec {
+                short: None,
+                long: "preserve-root",
+                takes_value: false,
+            },
+            OptSpec {
+                short: None,
+                long: "no-preserve-root",
+                takes_value: false,
+            },
+        ];
+        let run2 = |args: &[&str]| {
+            let owned: Vec<std::ffi::OsString> =
+                args.iter().map(std::ffi::OsString::from).collect();
+            let mut io = MemIo::new("");
+            let sc = winux_core::test_support::ScratchCtx::new("argopt-flaglast");
+            parse("prog", &owned, &table, &mut io.split(), &sc.ctx(), 1).unwrap()
+        };
+        let p = run2(&["--preserve-root", "--no-preserve-root"]);
+        assert_eq!(
+            p.flag_last(&["preserve-root", "no-preserve-root"]),
+            Some("no-preserve-root")
+        );
+        let p = run2(&["--no-preserve-root", "--preserve-root"]);
+        assert_eq!(
+            p.flag_last(&["preserve-root", "no-preserve-root"]),
+            Some("preserve-root")
+        );
+        assert_eq!(run2(&[]).flag_last(&["preserve-root"]), None);
+    }
+
+    #[test]
     fn first_help_or_version_flag_wins() {
         // `basename --help --version` -> help; `--version --help` -> version.
         let p = run(&["--help", "--version"]).unwrap();
@@ -572,5 +777,44 @@ mod tests {
         let p = parse("prog", &owned, &opts(), &mut io.split(), &sc.ctx(), 1).unwrap();
         assert!(p.has("help"));
         assert_eq!(p.positionals, ["x"]);
+    }
+
+    #[test]
+    fn catalog_translates_shared_getopt_diagnostics() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "common.error.invalid_option".to_string(),
+            "无效选项 -- '{}'".to_string(),
+        );
+        host.messages.insert(
+            "common.try_help".to_string(),
+            "尝试运行“{} --help”以获取更多信息。".to_string(),
+        );
+        host.messages.insert(
+            "common.error.option_no_argument".to_string(),
+            "选项 '{}' 不允许带参数".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(std::path::PathBuf::from("wd"), &env, &host);
+        let owned: Vec<std::ffi::OsString> = vec!["-q".into()];
+        let mut io = MemIo::new("");
+        let r = parse("prog", &owned, &opts(), &mut io.split(), &ctx, 1);
+        assert_eq!(r.unwrap_err(), 1);
+        assert_eq!(
+            io.err(),
+            "prog: 无效选项 -- 'q'\n尝试运行“prog --help”以获取更多信息。\n"
+        );
+
+        let owned: Vec<std::ffi::OsString> = vec!["--zero=1".into()];
+        let mut io = MemIo::new("");
+        let r = parse("prog", &owned, &opts(), &mut io.split(), &ctx, 1);
+        assert_eq!(r.unwrap_err(), 1);
+        assert_eq!(
+            io.err(),
+            "prog: 选项 '--zero' 不允许带参数\n尝试运行“prog --help”以获取更多信息。\n"
+        );
     }
 }

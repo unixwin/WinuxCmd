@@ -850,3 +850,112 @@ TEST(split, split_non_overflow_deaths_have_no_erange_suffix_issue1524) {
   EXPECT_EQ(rz.exit_code, 1);
   EXPECT_EQ_TEXT(rz.stderr_text, "split: invalid number of chunks: '2x'\n");
 }
+
+TEST(split, split_suffix_length_deaths_quote_arg_with_errno_issue1711) {
+  // [GNU] split.c:1385-1387 xdectoimax(optarg, 0, IDX_MAX, "",
+  // "invalid suffix length", 0): the argument is quoted whole, a
+  // digit-run overflow appends the EOVERFLOW text, a clean scan below
+  // the 0 minimum appends ERANGE, and a format failure carries EINVAL
+  // with no suffix (#1524 residual #1711).
+  TempDir tmp;
+  tmp.write("input.txt", "abc");
+
+  Pipeline overflow;
+  overflow.set_cwd(tmp.wpath());
+  overflow.add(L"split.exe",
+               {L"-a", L"18446744073709551616", L"input.txt", L"part"});
+  auto ro = overflow.run();
+  EXPECT_EQ(ro.exit_code, 1);
+  EXPECT_EQ_TEXT(ro.stderr_text,
+                 "split: invalid suffix length: '18446744073709551616': "
+                 "Value too large for defined data type\n");
+
+  Pipeline negative;
+  negative.set_cwd(tmp.wpath());
+  negative.add(L"split.exe", {L"-a", L"-1", L"input.txt", L"part"});
+  auto rn = negative.run();
+  EXPECT_EQ(rn.exit_code, 1);
+  EXPECT_EQ_TEXT(rn.stderr_text,
+                 "split: invalid suffix length: '-1': Numerical result "
+                 "out of range\n");
+
+  Pipeline junk;
+  junk.set_cwd(tmp.wpath());
+  junk.add(L"split.exe", {L"-a", L"x", L"input.txt", L"part"});
+  auto rj = junk.run();
+  EXPECT_EQ(rj.exit_code, 1);
+  EXPECT_EQ_TEXT(rj.stderr_text, "split: invalid suffix length: 'x'\n");
+}
+
+TEST(split, split_auto_suffix_subsumes_last_char_on_widen_issue1711) {
+  // [GNU] next_file_name (split.c:455-458): under suffix_auto the
+  // increment that would set the FIRST suffix digit to the last
+  // alphabet character widens the name instead -- 'z' is subsumed into
+  // the prefix and the suffix restarts one char longer. So 700
+  // one-line chunks produce xaa..xyz then xzaaa..xzabx: the names
+  // xza..xzz never appear.
+  TempDir tmp;
+  std::string input;
+  for (int i = 1; i <= 700; ++i) input += std::to_string(i) + '\n';
+  tmp.write("input.txt", input);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-l", L"1", L"input.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "xaa"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "xyz"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "xzaaa"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "xzabx"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "xza"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "xzz"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "xbaa"));
+}
+
+TEST(split, split_numeric_auto_suffix_subsumes_nine_on_widen_issue1711) {
+  // [GNU] same widen for -d: x00..x89 then x9000, x9001 -- the '9' is
+  // subsumed into the prefix (#1711).
+  TempDir tmp;
+  std::string input;
+  for (int i = 1; i <= 100; ++i) input += std::to_string(i) + '\n';
+  tmp.write("input.txt", input);
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"split.exe", {L"-l", L"1", L"-d", L"input.txt"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "x00"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "x89"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "x9000"));
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "x9009"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "x90"));
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "x99"));
+}
+
+TEST(split, split_chunks_need_min_suffix_length_issue1711) {
+  // [GNU] set_suffix_length (split.c:164-215): the -n modes disable
+  // suffix_auto and require the user -a to cover n_units names; a
+  // smaller -a dies before any file is created.
+  TempDir tmp;
+  tmp.write("input.txt", "a\nb\nc\n");
+
+  Pipeline too_small;
+  too_small.set_cwd(tmp.wpath());
+  too_small.add(L"split.exe", {L"-n", L"700", L"-a", L"2", L"input.txt"});
+  auto r = too_small.run();
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "split: the suffix length needs to be at least 3\n");
+
+  // Without -a, -n takes MAX(2, digits(n_units - 1)).
+  Pipeline auto_len;
+  auto_len.set_cwd(tmp.wpath());
+  auto_len.add(L"split.exe", {L"-n", L"3", L"input.txt"});
+  auto ra = auto_len.run();
+  EXPECT_EQ(ra.exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "xaa"));
+}

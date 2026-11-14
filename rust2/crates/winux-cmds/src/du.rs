@@ -35,7 +35,7 @@ use crate::argopt::{self, OptSpec};
 use crate::date::{effective_zone, strftime};
 use crate::fsutil::resolve;
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -233,6 +233,7 @@ Binary prefixes can be used, too: KiB=K, MiB=M, and so on.
 
 #[cfg(windows)]
 mod imp {
+    use crate::fs_win::ByHandleFileInformation;
     use std::path::Path;
 
     fn wide(s: &str) -> Vec<u16> {
@@ -355,31 +356,20 @@ mod imp {
 
     /// (volume serial, file index) for the hardlink dedupe (du's st_dev/
     /// st_ino pairing); None when the open fails (device names, etc.).
-    pub fn file_handle(path: &Path) -> Option<(u64, u64)> {
-        // BY_HANDLE_FILE_INFORMATION's exact layout: dwFileAttributes, three
-        // FILETIMEs, dwVolumeSerialNumber, nFileSizeHigh/Low, nNumberOfLinks,
-        // nFileIndexHigh/Low. (The wave5 first session mis-declared this as
-        // serial+4-pad+index and read the WRITE TIME as the index — files
-        // written in the same tick collided and the cross-operand skip ate
-        // distinct operands, caught by the du11 gate row.)
-        #[repr(C)]
-        struct Filetime {
-            low: u32,
-            high: u32,
-        }
-        #[repr(C)]
-        struct Info {
-            attrs: u32,
-            creation: Filetime,
-            access: Filetime,
-            write: Filetime,
-            serial: u32,
-            size_high: u32,
-            size_low: u32,
-            nlinks: u32,
-            index_high: u32,
-            index_low: u32,
-        }
+    ///
+    /// `reparse` opens the reparse point ITSELF (FILE_FLAG_OPEN_REPARSE_POINT)
+    /// instead of following it — the link identity GNU hashes for an
+    /// unfollowed link entry (#1670 keeps `-P` link and real directory
+    /// distinct).
+    fn identity_of(path: &Path, reparse: bool) -> Option<(u64, u64)> {
+        // The info struct is fs_win's shared ByHandleFileInformation
+        // (winuxcmd#1638): one signature for GetFileInformationByHandle
+        // across fs_win/du/tail. Its layout is BY_HANDLE_FILE_INFORMATION's
+        // exact field order (dwFileAttributes, three FILETIMEs,
+        // dwVolumeSerialNumber, nFileSizeHigh/Low, nNumberOfLinks,
+        // nFileIndexHigh/Low) — the wave5 first session mis-declared this
+        // as serial+4-pad+index and read the WRITE TIME as the index,
+        // caught by the du11 gate row.
         #[link(name = "kernel32")]
         extern "system" {
             fn CreateFileW(
@@ -391,39 +381,60 @@ mod imp {
                 flags: u32,
                 template: *mut core::ffi::c_void,
             ) -> *mut core::ffi::c_void;
-            fn GetFileInformationByHandle(handle: *mut core::ffi::c_void, info: *mut Info) -> i32;
+            fn GetFileInformationByHandle(
+                handle: *mut core::ffi::c_void,
+                info: *mut ByHandleFileInformation,
+            ) -> i32;
             fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
         }
         const GENERIC_READ: u32 = 0x8000_0000;
         const SHARE_ALL: u32 = 0x7;
         const OPEN_EXISTING: u32 = 3;
         const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
         let text = path.to_string_lossy().into_owned();
         let w = wide(&text);
+        let flags = if reparse {
+            BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        } else {
+            BACKUP_SEMANTICS
+        };
+        let access = if reparse { 0 } else { GENERIC_READ };
         let handle = unsafe {
             CreateFileW(
                 w.as_ptr(),
-                GENERIC_READ,
+                access,
                 SHARE_ALL,
                 std::ptr::null_mut(),
                 OPEN_EXISTING,
-                BACKUP_SEMANTICS,
+                flags,
                 std::ptr::null_mut(),
             )
         };
         if handle as isize == -1 || handle.is_null() {
             return None;
         }
-        let mut info: Info = unsafe { std::mem::zeroed() };
+        let mut info = ByHandleFileInformation::default();
         let ok = unsafe { GetFileInformationByHandle(handle, &mut info) };
         unsafe { CloseHandle(handle) };
         if ok == 0 {
             return None;
         }
         Some((
-            u64::from(info.serial),
+            u64::from(info.volume_serial),
             (u64::from(info.index_high) << 32) | u64::from(info.index_low),
         ))
+    }
+
+    /// Identity of the path the OS resolves (native symlinks/junctions are
+    /// followed; a DrvFs LX link is opaque and answers None).
+    pub fn file_handle(path: &Path) -> Option<(u64, u64)> {
+        identity_of(path, false)
+    }
+
+    /// Identity of the link object itself (never followed).
+    pub fn link_handle(path: &Path) -> Option<(u64, u64)> {
+        identity_of(path, true)
     }
 }
 
@@ -445,15 +456,32 @@ mod imp {
     pub fn cluster_size(_path: &str) -> Option<u64> {
         Some(4096)
     }
+    pub fn file_handle(_path: &Path) -> Option<(u64, u64)> {
+        None
+    }
+    pub fn link_handle(_path: &Path) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
 // traversal
 // ---------------------------------------------------------------------------
 
+/// --time[=WORD] selector (GNU du.c time_args/time_types).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TimeMode {
+    Modification,
+    Access,
+    Status,
+}
+
 struct DuConfig {
     apparent: bool,
     block_size: u64,
+    /// Unit letter appended for a BARE-suffix block size (`-BM` -> "M",
+    /// `--block-size=KiB` -> "KiB"); empty for numeric sizes.
+    display_suffix: String,
     human: bool,
     si: bool,
     inodes: bool,
@@ -464,11 +492,16 @@ struct DuConfig {
     count_links: bool,
     one_fs: bool,
     threshold: Option<i64>,
-    time_mode: Option<String>,
+    time_mode: TimeMode,
+    /// --time was given (the timestamp column is printed).
+    show_time: bool,
     time_style: String,
     excludes: Vec<String>,
     nul: bool,
     deref_all: bool,
+    /// -H/--dereference-args: follow links only for operands listed on the
+    /// command line (#1656).
+    deref_args: bool,
 }
 
 struct Summary {
@@ -575,21 +608,13 @@ fn entry_size(cfg: &DuConfig, path: &Path, is_dir: bool) -> u64 {
     }
 }
 
-/// Gather mtime (FILETIME epoch seconds) for --time.
-fn mtime_of(path: &Path) -> i64 {
-    let text = path.to_string_lossy().into_owned();
-    match imp::attributes_data(&text) {
-        Some(d) => {
-            // FILETIME -> epoch seconds
-            let ft = d.write as i64;
-            (ft - 116444736000000000) / 10_000_000
-        }
-        None => 0,
-    }
-}
-
 /// Scale a byte count the way GNU -h/--si does (one decimal, rollover).
-fn human_size(mut v: u64, base: u64, si: bool) -> String {
+fn human_size(v: u64, base: u64, si: bool) -> String {
+    // [GNU] lib/human.c human_readable: ceiling to tenths of the chosen
+    // unit; one decimal only while the value is below 10 units ("4.0K",
+    // "1.5K"), an integer above it ("20K", "21k", "1.2M"). The pre-wiring
+    // port always printed one decimal, so `du --si` on 20000 bytes said
+    // "19.6k" where GNU says "20k" and the ctest pinned "20k".
     if v < base {
         return v.to_string();
     }
@@ -599,25 +624,23 @@ fn human_size(mut v: u64, base: u64, si: bool) -> String {
         ["K", "M", "G", "T", "P", "E", "Z", "Y"]
     };
     let mut idx = 0usize;
-    let mut scaled = v as f64 / base as f64;
-    while scaled >= base as f64 && idx < units.len() - 1 {
-        scaled /= base as f64;
+    let mut unit = base;
+    while idx + 1 < units.len() && v / unit >= base {
+        unit = unit.saturating_mul(base);
         idx += 1;
     }
-    if scaled >= base as f64 {
-        return v.to_string();
-    }
-    // rollover: 1023.96K displays 1.0M (GNU rounds to nearest)
-    let tenths = (scaled * 10.0).round() as u64;
-    if tenths >= base * 10 && idx + 1 < units.len() {
-        return format!("1.0{}", units[idx + 1]);
-    }
-    if tenths >= base * 10 {
+    let q = v / unit;
+    let r = v % unit;
+    let mut tenths = q * 10 + (r * 10).div_ceil(unit);
+    while tenths >= base * 10 && idx + 1 < units.len() {
+        tenths = tenths.div_ceil(base);
         idx += 1;
     }
-    let whole = tenths / 10;
-    let frac = tenths % 10;
-    format!("{whole}.{frac}{}", units[idx])
+    if tenths < 100 {
+        format!("{}.{}{}", tenths / 10, tenths % 10, units[idx])
+    } else {
+        format!("{}{}", tenths.div_ceil(10), units[idx])
+    }
 }
 
 /// The printed number for a size under cfg.
@@ -629,34 +652,84 @@ fn display_size(cfg: &DuConfig, v: u64) -> String {
         return human_size(v, 1000, true);
     }
     if cfg.block_size <= 1 {
-        return v.to_string();
+        return format!("{v}{}", cfg.display_suffix);
     }
-    v.div_ceil(cfg.block_size).to_string()
+    format!("{}{}", v.div_ceil(cfg.block_size), cfg.display_suffix)
 }
 
-/// Walk one operand, printing post-order rows. Returns the subtree size.
+/// Selected timestamp (seconds since the Unix epoch) for one entry.
+fn entry_time(cfg: &DuConfig, path: &Path) -> Option<i64> {
+    let text = path.to_string_lossy();
+    let data = imp::attributes_data(&text)?;
+    let ft = match cfg.time_mode {
+        TimeMode::Modification => data.write,
+        TimeMode::Access => data.access,
+        TimeMode::Status => data.creation,
+    };
+    Some((ft as i64 - 116444736000000000) / 10_000_000)
+}
+
+/// result of walking one node: its size contribution and the latest
+/// selected timestamp in the subtree (GNU du --time prints the max for a
+/// directory row, not the directory's own stamp).
+struct Walked {
+    size: u64,
+    latest: Option<i64>,
+}
+
+fn latest_of(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (x, None) => x,
+        (None, y) => y,
+    }
+}
+
+/// Walk one operand, printing post-order rows.
 #[allow(clippy::too_many_arguments)]
 fn walk(
+    ctx: &Ctx,
     cfg: &DuConfig,
     display: &str,
     path: &Path,
     depth: usize,
     volume_root: &mut Option<String>,
     seen_handles: &mut HashSet<(u64, u64)>,
+    visited: &mut HashSet<String>,
     zone: &crate::date::TimeZone,
-    out: &mut dyn FnMut(u64, &str, bool, &DuConfig, &Path, &crate::date::TimeZone),
+    out: &mut dyn FnMut(u64, &str, bool, &DuConfig),
     summaries: &mut Summary,
-) -> u64 {
+) -> Walked {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(_) => return 0,
+        Err(_) => {
+            return Walked {
+                size: 0,
+                latest: None,
+            }
+        }
     };
     let is_symlink = meta.file_type().is_symlink();
-    let follow = cfg.deref_all && is_symlink;
+    // [GNU] -L dereferences every link; -H/--dereference-args dereferences
+    // only links LISTED ON THE COMMAND LINE, i.e. the depth-0 operand
+    // (#1656: `du -H dirlink` descends into the target's subtree).
+    let follow = (cfg.deref_all || (cfg.deref_args && depth == 0)) && is_symlink;
     let is_dir = if follow {
         std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
     } else {
         meta.is_dir() && !is_symlink
+    };
+
+    // GNU prints a child file under -a only while its own depth is within
+    // --max-depth (the root is depth 0).
+    let file_depth_ok = cfg.max_depth.map(|md| depth + 1 <= md).unwrap_or(true);
+    let child_display = |name: &str| -> String {
+        let base = display.trim_end_matches(['/', '\\']);
+        if base.is_empty() {
+            format!("/{name}")
+        } else {
+            format!("{base}/{name}")
+        }
     };
 
     if is_dir {
@@ -665,7 +738,12 @@ fn walk(
             let root = drive_root(&path.to_string_lossy());
             match volume_root {
                 None => *volume_root = Some(root),
-                Some(v) if *v != root => return 0,
+                Some(v) if *v != root => {
+                    return Walked {
+                        size: 0,
+                        latest: None,
+                    }
+                }
                 _ => {}
             }
         }
@@ -674,15 +752,24 @@ fn walk(
         } else {
             entry_size(cfg, path, true)
         };
-        let own = total;
+        let mut latest = if cfg.show_time {
+            entry_time(cfg, path)
+        } else {
+            None
+        };
         let read = match std::fs::read_dir(path) {
             Ok(r) => r,
-            Err(_) => return total,
+            Err(_) => {
+                return Walked {
+                    size: total,
+                    latest,
+                }
+            }
         };
         let mut children: Vec<PathBuf> = Vec::new();
         for entry in read.flatten() {
             let child = entry.path();
-            let child_rel = format!("{}/{}", display, entry.file_name().to_string_lossy());
+            let child_rel = child_display(&entry.file_name().to_string_lossy());
             if is_excluded(&child_rel, &cfg.excludes) {
                 continue;
             }
@@ -693,89 +780,111 @@ fn walk(
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let child_rel = format!("{display}/{name}");
+            let child_rel = child_display(&name);
             let child_meta = match std::fs::symlink_metadata(&child) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
             let child_is_symlink = child_meta.file_type().is_symlink();
-            let child_is_dir = child_meta.is_dir()
-                && !child_is_symlink
-                && !(cfg.deref_all && {
-                    std::fs::metadata(&child)
+            // [GNU] a plain directory is walked; under -L a LINK that
+            // resolves to a directory is walked too. The pre-wiring
+            // expression negated the dereference test, so -L skipped every
+            // real subdirectory (`du -L dir` printed one row).
+            let child_is_dir = if child_is_symlink {
+                cfg.deref_all
+                    && std::fs::metadata(&child)
                         .map(|m| m.is_dir())
                         .unwrap_or(false)
-                });
+            } else {
+                child_meta.is_dir()
+            };
             if child_is_dir {
-                // [GNU] every counted directory enters the already-counted
-                // hash so a later operand nested inside it is skipped whole
-                // (du.c hash_ins on each visited directory).
+                // [GNU] A subtree already traversed under an earlier argument
+                // contributes nothing to this parent (Savannah #10397): the
+                // directory enters the visited set before descending, keyed
+                // by the FOLLOWED target's identity under -L (#1670) and by
+                // the lexical spelling otherwise. --count-links disables the
+                // whole dedup (GNU's `! opt_count_all`, du.c:546-549).
                 if !cfg.count_links {
-                    if let Some(k) = file_handle(&child) {
-                        seen_handles.insert(k);
+                    let key = visited_dir_key(ctx, &child, cfg.deref_all);
+                    if !visited.insert(key) {
+                        continue;
                     }
                 }
                 let sub = walk(
+                    ctx,
                     cfg,
                     &child_rel,
                     &child,
                     depth + 1,
                     volume_root,
                     seen_handles,
+                    visited,
                     zone,
                     out,
                     summaries,
                 );
                 if !cfg.separate_dirs {
-                    total += sub;
+                    total += sub.size;
                 }
+                latest = latest_of(latest, sub.latest);
             } else {
-                let size = if cfg.inodes {
+                // [GNU] hardlink dedupe by (volume, file index) in EVERY
+                // mode, --apparent-size and --inodes included: the addend
+                // is 0 for an already-counted inode. -l/--count-links
+                // bypasses the hash (du.c hash_ins/seen_file). An UNFOLLOWED
+                // link entry is hashed by the LINK's own identity, so `-P`
+                // never dedupes a link against the directory it names
+                // (#1670).
+                let link_entry = child_is_symlink && !cfg.deref_all;
+                let mut counted = true;
+                if !cfg.count_links {
+                    let key = if link_entry {
+                        link_handle(&child)
+                    } else {
+                        file_handle(&child)
+                    };
+                    if let Some(k) = key {
+                        counted = seen_handles.insert(k);
+                    }
+                }
+                let size = if !counted {
+                    0
+                } else if cfg.inodes {
                     1
                 } else if cfg.apparent {
                     imp::attributes_data(&child.to_string_lossy())
                         .map(|d| d.size)
                         .unwrap_or(0)
                 } else {
-                    // hardlink dedupe unless -l (GNU st_nlink>1 dedupe)
-                    let mut key = None;
-                    if !cfg.count_links {
-                        key = file_handle(&child);
-                    }
-                    let sz = imp::allocated(&child);
-                    if let Some(k) = key {
-                        // zero-size files enter the hash too: the dedupe
-                        // gates a later OPERAND, not just the size addend.
-                        if !seen_handles.insert(k) {
-                            0
-                        } else {
-                            sz
-                        }
-                    } else {
-                        sz
-                    }
+                    imp::allocated(&child)
                 };
+                let child_time = if cfg.show_time {
+                    entry_time(cfg, &child)
+                } else {
+                    None
+                };
+                latest = latest_of(latest, child_time);
                 if cfg.inodes {
-                    total += 1;
+                    total += if counted { 1 } else { 0 };
                 } else {
                     total += size;
                 }
                 let passes = threshold_passes(cfg, size);
-                if cfg.all && passes {
-                    print_row(cfg, size, &child_rel, false, &child, zone, out);
-                } else if cfg.all && passes {
-                    print_row(cfg, size, &child_rel, false, &child, zone, out);
+                if cfg.all && passes && file_depth_ok {
+                    print_row(cfg, size, &child_rel, child_time, zone, out);
                 }
             }
         }
         let passes = threshold_passes(cfg, total);
         let within_depth = cfg.max_depth.map(|md| depth <= md).unwrap_or(true);
-        if !cfg.separate_dirs || passes {
-            if within_depth && (passes || total == 0) {
-                print_row(cfg, total, display, true, path, zone, out);
-            }
+        if (!cfg.separate_dirs || passes) && within_depth && (passes || total == 0) {
+            print_row(cfg, total, display, latest, zone, out);
         }
-        return total;
+        return Walked {
+            size: total,
+            latest,
+        };
     }
 
     // a file operand
@@ -788,11 +897,16 @@ fn walk(
     } else {
         imp::allocated(path)
     };
+    let time = if cfg.show_time {
+        entry_time(cfg, path)
+    } else {
+        None
+    };
     let passes = threshold_passes(cfg, size);
     if passes {
-        print_row(cfg, size, display, true, path, zone, out);
+        print_row(cfg, size, display, time, zone, out);
     }
-    size
+    Walked { size, latest: time }
 }
 
 fn threshold_passes(cfg: &DuConfig, size: u64) -> bool {
@@ -800,6 +914,26 @@ fn threshold_passes(cfg: &DuConfig, size: u64) -> bool {
         None => true,
         Some(t) if t >= 0 => size >= t as u64,
         Some(t) => size <= (-t) as u64,
+    }
+}
+
+/// The printed spelling of an operand (#1174/#1364 contract, matching the
+/// 1.x applet): a POSIX drive spelling ("/c/...") prints as the native
+/// forward-slash path it resolves to, and a run of trailing separators
+/// collapses to one ("src//" prints like "src/"). Relatives keep the
+/// user's spelling.
+fn display_operand(ctx: &Ctx, operand: &str) -> String {
+    let base = if operand.starts_with('/') && operand != "/" {
+        let resolved = resolve(ctx, operand);
+        resolved.to_string_lossy().replace('\\', "/")
+    } else {
+        operand.replace('\\', "/")
+    };
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.len() != base.len() && !trimmed.is_empty() {
+        format!("{trimmed}/")
+    } else {
+        base
     }
 }
 
@@ -829,26 +963,18 @@ fn print_row(
     cfg: &DuConfig,
     size: u64,
     display: &str,
-    _is_root_row: bool,
-    path: &Path,
+    time: Option<i64>,
     zone: &crate::date::TimeZone,
-    out: &mut dyn FnMut(u64, &str, bool, &DuConfig, &Path, &crate::date::TimeZone),
+    out: &mut dyn FnMut(u64, &str, bool, &DuConfig),
 ) {
-    if let Some(word) = &cfg.time_mode {
-        let epoch = mtime_of(path);
+    if cfg.show_time {
+        let epoch = time.unwrap_or(0);
         let (off, name) = zone.at(epoch);
         let dt = crate::date::DateTime::from_epoch(epoch, off, name);
         let text = strftime(&dt, &style_format(cfg));
-        out(
-            size,
-            &format!("{text}\t{display}"),
-            cfg.nul,
-            cfg,
-            path,
-            zone,
-        );
+        out(size, &format!("{text}\t{display}"), cfg.nul, cfg);
     } else {
-        out(size, &display, cfg.nul, cfg, path, zone);
+        out(size, display, cfg.nul, cfg);
     }
 }
 
@@ -866,37 +992,139 @@ fn file_handle(path: &Path) -> Option<(u64, u64)> {
     imp::file_handle(path)
 }
 
-fn parse_block_size(raw: &str) -> Option<u64> {
-    // split at the first alphabetic (the unit letter is PART of the
-    // suffix, unlike splitn-with-predicate which eats it)
-    let (num, suffix): (String, String) = match raw.find(|c: char| c.is_ascii_alphabetic()) {
-        Some(i) => (raw[..i].to_string(), raw[i..].to_string()),
-        None => (raw.to_string(), String::new()),
-    };
-    let n: u64 = num.parse().ok()?;
-    if suffix.is_empty() {
-        return Some(n);
+/// Identity of the link object itself, never followed (#1670: keeping `-P`
+/// link entries distinct from the directory they point at).
+fn link_handle(path: &Path) -> Option<(u64, u64)> {
+    imp::link_handle(path)
+}
+
+/// Lexical key for an UNFOLLOWED directory: the spelling's components with
+/// `.`/`..` folded, separators normalized and case folded. It never touches
+/// the filesystem, so a junction/symlink and its target keep DIFFERENT keys
+/// under `-P` — the 1.x `du_dir_key` contract (#1288/#1670).
+fn lexical_dir_key(path: &Path) -> String {
+    use std::path::Component;
+    let mut parts: Vec<String> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::RootDir => parts.push(String::new()),
+            Component::Prefix(prefix) => {
+                parts.push(prefix.as_os_str().to_string_lossy().replace('/', "\\"))
+            }
+            Component::Normal(name) => parts.push(name.to_string_lossy().into_owned()),
+        }
     }
-    let upper = suffix.to_ascii_uppercase();
-    fn strip_b(s: &str) -> &str {
-        // KiB/MiB/GiB: strip the IB pair first, then a plain B
-        let s = s.strip_suffix("IB").unwrap_or(s);
-        s.strip_suffix('B').unwrap_or(s)
+    parts.join("\\").to_uppercase()
+}
+
+/// Identity key of the directory a FOLLOWED path names (#1670, GNU du.c
+/// hash_all: `-L` hashes every entry by (st_dev, st_ino) and drops a pair
+/// already seen at du.c:546-549). CreateFileW follows native symlinks and
+/// junctions; a DrvFs LX link is opaque to the kernel, so its stored target
+/// is resolved first. `None` when neither works (the caller falls back to
+/// the lexical key).
+fn followed_dir_key(ctx: &Ctx, path: &Path) -> Option<String> {
+    if let Some((volume, index)) = file_handle(path) {
+        return Some(format!("id:{volume}:{index}"));
     }
-    let unit = strip_b(&upper);
-    let pow = match unit {
-        "" => return Some(n),
-        "K" => 1u64,
-        "M" => 2,
-        "G" => 3,
-        "T" => 4,
-        "P" => 5,
-        "E" => 6,
-        "Z" => 7,
-        "Y" => 8,
-        _ => return None,
+    let text = path.to_string_lossy().into_owned();
+    let target = crate::fs_win::read_lx_symlink_target(&text)?;
+    let resolved = crate::fs_win::resolve_symlink_target(ctx, &text, &target);
+    let (volume, index) = file_handle(Path::new(&resolved))?;
+    Some(format!("id:{volume}:{index}"))
+}
+
+/// Visited-directory key under the active dereference policy: the followed
+/// target's identity for -L/-H, the lexical spelling otherwise.
+fn visited_dir_key(ctx: &Ctx, path: &Path, follow: bool) -> String {
+    if follow {
+        if let Some(key) = followed_dir_key(ctx, path) {
+            return key;
+        }
+    }
+    lexical_dir_key(path)
+}
+
+/// Parse a SIZE argument exactly like the 1.x applet's parse_block_size
+/// (du.cpp:163-260, a port of gnulib's human_options/xstrtoumax pairing):
+/// the suffix table is tried longest-first, a BARE suffix means one unit,
+/// and a bare suffix also selects the printed unit letter (`-BM` prints
+/// "2M" while `-B1M` prints "2"). Returns (multiplier, display suffix).
+fn parse_block_size(raw: &str) -> Option<(u64, String)> {
+    if raw.is_empty() {
+        return None;
+    }
+    const UNITS: [(&str, u64); 38] = [
+        ("KiB", 1 << 10),
+        ("MiB", 1 << 20),
+        ("GiB", 1 << 30),
+        ("TiB", 1u64 << 40),
+        ("PiB", 1u64 << 50),
+        ("EiB", 1u64 << 60),
+        ("KB", 1000),
+        ("MB", 1_000_000),
+        ("GB", 1_000_000_000),
+        ("TB", 1_000_000_000_000),
+        ("PB", 1_000_000_000_000_000),
+        ("EB", 1_000_000_000_000_000_000),
+        ("kiB", 1 << 10),
+        ("miB", 1 << 20),
+        ("giB", 1 << 30),
+        ("tiB", 1u64 << 40),
+        ("piB", 1u64 << 50),
+        ("eiB", 1u64 << 60),
+        ("kb", 1000),
+        ("mb", 1_000_000),
+        ("gb", 1_000_000_000),
+        ("tb", 1_000_000_000_000),
+        ("pb", 1_000_000_000_000_000),
+        ("eb", 1_000_000_000_000_000_000),
+        ("K", 1 << 10),
+        ("M", 1 << 20),
+        ("G", 1 << 30),
+        ("T", 1u64 << 40),
+        ("P", 1u64 << 50),
+        ("E", 1u64 << 60),
+        ("k", 1 << 10),
+        ("m", 1 << 20),
+        ("g", 1 << 30),
+        ("t", 1u64 << 40),
+        ("p", 1u64 << 50),
+        ("e", 1u64 << 60),
+        ("b", 512),
+        ("B", 1),
+    ];
+    let mut multiplier = 1u64;
+    let mut number = raw;
+    let mut matched_suffix: Option<&str> = None;
+    for (suffix, mult) in UNITS {
+        if raw.len() >= suffix.len() && raw.ends_with(suffix) {
+            multiplier = mult;
+            number = &raw[..raw.len() - suffix.len()];
+            matched_suffix = Some(suffix);
+            break;
+        }
+    }
+    let value: u64 = if number.is_empty() {
+        if matched_suffix.is_none() {
+            return None;
+        }
+        1
+    } else {
+        number.parse().ok()?
     };
-    Some(n.checked_mul(1024u64.checked_pow(pow as u32)?)?)
+    if value == 0 {
+        return None;
+    }
+    let display = match matched_suffix {
+        Some(suffix) if number.is_empty() => suffix.to_string(),
+        _ => String::new(),
+    };
+    Some((value.checked_mul(multiplier)?, display))
 }
 
 pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
@@ -940,8 +1168,9 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut cfg = DuConfig {
         apparent: p.has("apparent-size") || p.has("bytes"),
         block_size: 1024,
-        human: p.has("human-readable"),
-        si: p.has("si"),
+        display_suffix: String::new(),
+        human: false,
+        si: false,
         inodes: p.has("inodes"),
         all: p.has("all"),
         separate_dirs: p.has("separate-dirs"),
@@ -950,30 +1179,168 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         count_links: p.has("count-links"),
         one_fs: p.has("one-file-system"),
         threshold: None,
-        time_mode: None,
+        time_mode: TimeMode::Modification,
+        show_time: false,
         time_style: "long-iso".to_string(),
         excludes: Vec::new(),
         nul: p.has("null"),
         deref_all: p.has("dereference"),
+        deref_args: p.has("dereference-command-line"),
     };
 
-    if p.has("bytes") || p.has("inodes") {
+    // [GNU] The size options are ONE sequential state: -b/-k/-m/-h/--si and
+    // -B/--block-size each reset the previous choice, so the LAST one wins
+    // (`-h -B1` scales by 1; `-B1 -h` prints human-readable). The pre-wiring
+    // port applied them in a fixed order, so `-h -B1` stayed human-readable.
+    let mut size_explicit = false;
+    for event in &p.events {
+        match event.key.as_str() {
+            "bytes" | "k" | "m" | "human-readable" | "si" => {
+                cfg.human = event.key == "human-readable";
+                cfg.si = event.key == "si";
+                cfg.display_suffix.clear();
+                cfg.block_size = match event.key.as_str() {
+                    "bytes" => 1,
+                    "k" => 1024,
+                    "m" => 1024 * 1024,
+                    _ => cfg.block_size,
+                };
+                size_explicit = true;
+            }
+            "block-size" => {
+                let raw = event.value.as_deref().unwrap_or("");
+                let parsed = match raw {
+                    "human-readable" => {
+                        cfg.human = true;
+                        cfg.si = false;
+                        cfg.display_suffix.clear();
+                        size_explicit = true;
+                        Some(1)
+                    }
+                    "si" => {
+                        cfg.human = false;
+                        cfg.si = true;
+                        cfg.display_suffix.clear();
+                        size_explicit = true;
+                        Some(1)
+                    }
+                    _ => parse_block_size(raw).map(|(mult, suffix)| {
+                        cfg.human = false;
+                        cfg.si = false;
+                        cfg.block_size = mult;
+                        cfg.display_suffix = suffix;
+                        size_explicit = true;
+                        mult
+                    }),
+                };
+                if parsed.is_none() {
+                    // [GNU] the diagnostic names the spelling the user used
+                    // (`-B bogus` -> "-B", `--block-size=bogus` ->
+                    // "--block-size").
+                    let opt = &event.token;
+                    let _ = writeln!(
+                        io.stderr,
+                        "du: {}",
+                        tr!(
+                            ctx,
+                            "command.du.error.invalid_block_size",
+                            "invalid {option} argument '{size}'",
+                            option = opt,
+                            size = raw
+                        )
+                    );
+                    return Ok(1);
+                }
+            }
+            _ => {}
+        }
+    }
+    if cfg.inodes {
         cfg.block_size = 1;
+        cfg.display_suffix.clear();
     }
-    if p.has("k") {
-        cfg.block_size = 1024;
+    // [GNU] With no size option, the first set of DU_BLOCK_SIZE/BLOCK_SIZE/
+    // BLOCKSIZE decides (an unparseable first value is ignored as a whole);
+    // POSIXLY_CORRECT alone makes the default 512 bytes.
+    if !size_explicit {
+        for name in ["DU_BLOCK_SIZE", "BLOCK_SIZE", "BLOCKSIZE"] {
+            let Some(value) =
+                winux_core::win32_env_get(ctx.env, name).map(|v| v.to_string_lossy().into_owned())
+            else {
+                continue;
+            };
+            if value == "human-readable" {
+                cfg.human = true;
+            } else if value == "si" {
+                cfg.si = true;
+            } else if let Some((mult, _)) = parse_block_size(&value) {
+                cfg.block_size = mult;
+            }
+            break;
+        }
+        if !cfg.human && !cfg.si && ctx.env.get("POSIXLY_CORRECT").is_some() {
+            cfg.block_size = 512;
+        }
     }
-    if p.has("m") {
-        cfg.block_size = 1024 * 1024;
-    }
-    if let Some(raw) = p.value_of("block-size") {
-        match parse_block_size(raw) {
-            Some(v) => cfg.block_size = v,
+
+    // [GNU] --time[=WORD]: bare stays mtime, the last occurrence wins;
+    // atime/access/use -> access, ctime/status -> status, mtime stays the
+    // default (argmatch unique-prefix rules).
+    let time_word = |value: &str| -> Option<TimeMode> {
+        const WORDS: [(&str, TimeMode); 5] = [
+            ("atime", TimeMode::Access),
+            ("access", TimeMode::Access),
+            ("use", TimeMode::Access),
+            ("ctime", TimeMode::Status),
+            ("status", TimeMode::Status),
+        ];
+        if value.is_empty() {
+            return Some(TimeMode::Modification);
+        }
+        let mut matched: Option<TimeMode> = None;
+        let mut count = 0usize;
+        for (word, mode) in WORDS {
+            if word == value {
+                return Some(mode);
+            }
+            if word.starts_with(value) {
+                matched = Some(mode);
+                count += 1;
+            }
+        }
+        if count == 1 {
+            matched
+        } else {
+            None
+        }
+    };
+    for (_, value) in &time_values {
+        cfg.show_time = true;
+        match time_word(value) {
+            Some(mode) => cfg.time_mode = mode,
             None => {
-                let _ = writeln!(io.stderr, "du: invalid --block-size argument '{raw}'");
+                let _ = writeln!(io.stderr, "du: invalid argument '{value}' for '--time'");
+                let _ = writeln!(io.stderr, "Valid arguments are:");
+                let _ = writeln!(io.stderr, "  - 'atime', 'access', 'use'");
+                let _ = writeln!(io.stderr, "  - 'ctime', 'status'");
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "du"));
                 return Ok(1);
             }
         }
+    }
+    if p.has("time") {
+        cfg.show_time = true;
+    }
+    if p.has("inodes") && cfg.apparent {
+        let _ = writeln!(
+            io.stderr,
+            "du: {}",
+            tr!(
+                ctx,
+                "command.du.warning.inodes_with_apparent",
+                "warning: options --apparent-size and -b are ineffective with --inodes"
+            )
+        );
     }
     if let Some(raw) = p.value_of("max-depth") {
         match raw.parse::<usize>() {
@@ -981,8 +1348,13 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Err(_) => {
                 let _ = writeln!(
                     io.stderr,
-                    "du: invalid maximum depth '{}' (expected an integer 0 or larger)",
-                    raw
+                    "du: {}",
+                    tr!(
+                        ctx,
+                        "command.du.error.invalid_max_depth",
+                        "invalid maximum depth '{depth}' (expected an integer 0 or larger)",
+                        depth = raw
+                    )
                 );
                 return Ok(1);
             }
@@ -995,20 +1367,22 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         match raw.parse::<i64>() {
             Ok(v) => cfg.threshold = Some(v),
             Err(_) => {
-                let _ = writeln!(io.stderr, "du: invalid --threshold argument '{}'", raw);
+                let _ = writeln!(
+                    io.stderr,
+                    "du: {}",
+                    tr!(
+                        ctx,
+                        "command.du.error.invalid_threshold",
+                        "invalid --threshold argument '{size}'",
+                        size = raw
+                    )
+                );
                 return Ok(1);
             }
         }
     }
     if let Some(style) = p.value_of("time-style") {
         cfg.time_style = style.to_string();
-    }
-    // The --time WORD arrives through the optional-argument extractor (argv
-    // order; the last spelling wins the way getopt's assignments do).
-    if let Some(word) = time_values.iter().rev().find(|(k, _)| k == "time") {
-        cfg.time_mode = Some(word.1.clone());
-    } else if p.has("time") {
-        cfg.time_mode = Some("mtime".to_string());
     }
     for pat in &p.values {
         if pat.0 == "exclude" {
@@ -1027,7 +1401,17 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             Err(e) => {
                 let reason = crate::fsutil::reason(&e);
-                let _ = writeln!(io.stderr, "du: {file}: {reason}");
+                let _ = writeln!(
+                    io.stderr,
+                    "du: {}",
+                    tr!(
+                        ctx,
+                        "command.du.error.exclude_from_open",
+                        "{file}: {reason}",
+                        file = file,
+                        reason = reason
+                    )
+                );
                 return Ok(1);
             }
         }
@@ -1051,18 +1435,31 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // "cannot open 'F' for reading: <reason>", rc 1. An EMPTY list
         // summarizes nothing and exits 0 — it does NOT fall back to ".".
         if !operands.is_empty() {
-            let _ = writeln!(io.stderr, "du: extra operand '{}'", operands[0]);
             let _ = writeln!(
                 io.stderr,
-                "file operands cannot be combined with --files0-from"
+                "du: {}",
+                crate::messages::extra_operand(ctx, &operands[0])
             );
-            let _ = writeln!(io.stderr, "Try 'du --help' for more information.");
+            let _ = writeln!(
+                io.stderr,
+                "{}",
+                tr!(
+                    ctx,
+                    "command.du.error.files0_with_operands",
+                    "file operands cannot be combined with --files0-from"
+                )
+            );
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "du"));
             return Ok(1);
         }
         let data = if list == "-" {
             let mut buf = Vec::new();
             if io.stdin.read_to_end(&mut buf).is_err() {
-                let _ = writeln!(io.stderr, "du: -: read error");
+                let _ = writeln!(
+                    io.stderr,
+                    "du: {}",
+                    tr!(ctx, "command.du.error.stdin_read", "-: read error")
+                );
                 return Ok(1);
             }
             String::from_utf8_lossy(&buf).into_owned()
@@ -1072,7 +1469,17 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(e) => {
                     let reason = crate::fsutil::reason(&e);
-                    let _ = writeln!(io.stderr, "du: cannot open '{list}' for reading: {reason}");
+                    let _ = writeln!(
+                        io.stderr,
+                        "du: {}",
+                        tr!(
+                            ctx,
+                            "command.du.error.cannot_open",
+                            "cannot open '{file}' for reading: {reason}",
+                            file = list,
+                            reason = reason
+                        )
+                    );
                     return Ok(1);
                 }
             }
@@ -1096,8 +1503,14 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             if name.is_empty() {
                 let _ = writeln!(
                     io.stderr,
-                    "du: {list}:{}: invalid zero-length file name",
-                    i + 1
+                    "du: {}",
+                    tr!(
+                        ctx,
+                        "command.du.error.zero_length_name",
+                        "{file}:{line}: invalid zero-length file name",
+                        file = list,
+                        line = i + 1
+                    )
                 );
                 bad_names = true;
                 continue;
@@ -1120,35 +1533,102 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // 9.4). -l/--count-links bypasses the hash entirely: repeated operands
     // are re-counted and re-printed.
     let mut seen = HashSet::new();
+    // Directories visited in this invocation: lexical keys under -P, the
+    // followed target's (volume, index) under -L/-H (#1670).
+    let mut visited: HashSet<String> = HashSet::new();
     for operand in &operands {
         let path = resolve(ctx, operand);
+        let mut walk_path = path.clone();
         if std::fs::symlink_metadata(&path).is_err() {
             let _ = writeln!(
                 io.stderr,
-                "du: cannot access '{operand}': No such file or directory"
+                "du: {}",
+                tr!(
+                    ctx,
+                    "command.du.error.cannot_access_missing",
+                    "cannot access '{operand}': No such file or directory",
+                    operand = operand
+                )
             );
             failed = true;
             continue;
         }
+        // [GNU] Under -L/-H a link operand must resolve to a LIVE target
+        // (#1656, coreutils du.c fts with FTS_LOGICAL): a dangling link is
+        // reported without errno text and the run fails, while a plain
+        // missing path keeps ": No such file or directory". Windows cannot
+        // traverse WSL DrvFs LX reparse points, so a live LX target is
+        // resolved here and the walk runs on the target while every printed
+        // row keeps the operand spelling — exactly like GNU's dereference.
+        // A native symlink/junction resolves inside the kernel
+        // (std::fs::metadata follows reparse points).
+        if cfg.deref_all || cfg.deref_args {
+            let live = std::fs::metadata(&path).is_ok();
+            if !live {
+                let api = crate::fs_win::imp::api_path(ctx, operand);
+                let mut resolved_target = None;
+                if let Some(target) = crate::fs_win::read_lx_symlink_target(&api) {
+                    let resolved = crate::fs_win::resolve_symlink_target(ctx, &api, &target);
+                    if std::fs::metadata(&resolved).is_ok() {
+                        resolved_target = Some(PathBuf::from(resolved));
+                    }
+                }
+                match resolved_target {
+                    Some(target) => walk_path = target,
+                    None => {
+                        let _ = writeln!(
+                            io.stderr,
+                            "du: {}",
+                            tr!(
+                                ctx,
+                                "command.du.error.cannot_access_dangling",
+                                "cannot access '{operand}'",
+                                operand = operand
+                            )
+                        );
+                        failed = true;
+                        continue;
+                    }
+                }
+            }
+        }
+        // [GNU] Operand dedup has two faces (#1670, du.c:1042/546-549):
+        // a DIRECTORY enters the visited set keyed by the followed target's
+        // identity under -L/-H and by the lexical spelling otherwise, so
+        // `-L dirlink dir` prints once under the first spelling while `-P`
+        // keeps the link and the real directory distinct; a FILE operand is
+        // hashed by its inode, and an unfollowed link by the LINK's own
+        // identity. --count-links disables both.
+        let operand_is_unfollowed_link = std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+            && !cfg.deref_all
+            && !cfg.deref_args;
+        let operand_is_dir = !operand_is_unfollowed_link
+            && std::fs::metadata(&walk_path)
+                .map(|m| m.is_dir())
+                .unwrap_or(false);
         if !cfg.count_links {
-            match file_handle(&path) {
-                Some(k) => {
+            if operand_is_dir {
+                let key = visited_dir_key(ctx, &walk_path, cfg.deref_all || cfg.deref_args);
+                if !visited.insert(key) {
+                    continue;
+                }
+            } else {
+                let key = if operand_is_unfollowed_link {
+                    link_handle(&path)
+                } else {
+                    file_handle(&walk_path)
+                };
+                if let Some(k) = key {
                     if !seen.insert(k) {
                         continue;
                     }
                 }
-                None => {
-                    let _ = seen.insert((0, 0));
-                }
             }
         }
         let mut volume_root = None;
-        let mut sink = |size: u64,
-                        tail: &str,
-                        nul: bool,
-                        cfg: &DuConfig,
-                        _p: &Path,
-                        _z: &crate::date::TimeZone| {
+        let mut sink = |size: u64, tail: &str, nul: bool, cfg: &DuConfig| {
             let num = display_size(cfg, size);
             let _ = if nul {
                 write!(io.stdout, "{num}\t{tail}\0")
@@ -1156,18 +1636,21 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 writeln!(io.stdout, "{num}\t{tail}")
             };
         };
+        let operand_display = display_operand(ctx, operand);
         let sub = walk(
+            ctx,
             &cfg,
-            operand,
-            &path,
+            &operand_display,
+            &walk_path,
             0,
             &mut volume_root,
             &mut seen,
+            &mut visited,
             &zone,
             &mut sink,
             &mut summaries,
         );
-        summaries.grand += sub;
+        summaries.grand += sub.size;
     }
     if cfg.total && !operands.is_empty() {
         let num = display_size(&cfg, summaries.grand);
@@ -1387,6 +1870,103 @@ mod files0_from_tests {
         (r, io.out(), io.err())
     }
 
+    /// WSL's Windows-volume link shape: an LX reparse point (tag
+    /// 0xA000001D: u32 version 2, then the UTF-8 target). Writing it needs
+    /// no SeCreateSymbolicLinkPrivilege, so the exact object `ln -s`
+    /// produces is constructible here (#1670; the C++ helper
+    /// du_test_create_lx_symlink is the same buffer).
+    #[cfg(windows)]
+    fn create_lx_symlink(link: &std::path::Path, target: &str) -> bool {
+        use std::ffi::c_void;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn CreateFileW(
+                name: *const u16,
+                access: u32,
+                share: u32,
+                security: *mut c_void,
+                disposition: u32,
+                flags: u32,
+                template: *mut c_void,
+            ) -> *mut c_void;
+            fn DeviceIoControl(
+                handle: *mut c_void,
+                code: u32,
+                in_buf: *mut c_void,
+                in_size: u32,
+                out_buf: *mut c_void,
+                out_size: u32,
+                returned: *mut u32,
+                overlapped: *mut c_void,
+            ) -> i32;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+        }
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const SHARE_ALL: u32 = 0x7;
+        const CREATE_NEW: u32 = 1;
+        const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        // FSCTL_SET_REPARSE_POINT: CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 41,
+        // METHOD_BUFFERED, FILE_ANY_ACCESS).
+        const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
+        const TAG: u32 = 0xA000_001D;
+
+        let wide: Vec<u16> = link
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_WRITE,
+                SHARE_ALL,
+                std::ptr::null_mut(),
+                CREATE_NEW,
+                BACKUP_SEMANTICS | OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle as isize == -1 || handle.is_null() {
+            return false;
+        }
+        let data_len = 4 + target.len();
+        let mut buffer = vec![0u8; 8 + data_len];
+        buffer[0..4].copy_from_slice(&TAG.to_le_bytes());
+        buffer[4..6].copy_from_slice(&(data_len as u16).to_le_bytes());
+        buffer[8..12].copy_from_slice(&2u32.to_le_bytes());
+        buffer[12..].copy_from_slice(target.as_bytes());
+        let mut returned: u32 = 0;
+        let ok = unsafe {
+            DeviceIoControl(
+                handle,
+                FSCTL_SET_REPARSE_POINT,
+                buffer.as_mut_ptr() as *mut c_void,
+                buffer.len() as u32,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        unsafe { CloseHandle(handle) };
+        ok != 0
+    }
+
+    /// A directory junction via `cmd /c mklink /J` (no privilege needed).
+    #[cfg(windows)]
+    fn create_junction(link: &std::path::Path, target: &std::path::Path) -> bool {
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
     fn fixture(sc: &ScratchCtx) {
         std::fs::create_dir_all(sc.path("a")).unwrap();
         std::fs::write(sc.path("a/f"), "xy").unwrap();
@@ -1468,6 +2048,79 @@ mod files0_from_tests {
     }
 
     #[test]
+    fn dereference_operand_liveness_matches_gnu_1656() {
+        // #1656 (old-exe parity): -L/-H probe the link's TARGET. A dangling
+        // link reports "cannot access 'X'" with NO errno text and rc 1; a
+        // plain missing path keeps ": No such file or directory"; default
+        // du lstats the link and prints its zero-size row.
+        let sc = ScratchCtx::new("du-deref");
+        std::fs::write(sc.path("gone.txt"), "x").unwrap();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file("gone.txt", sc.path("dangling")).is_ok();
+        #[cfg(not(windows))]
+        let linked = std::os::unix::fs::symlink("gone.txt", sc.path("dangling")).is_ok();
+        if !linked {
+            return; // host without symlink capability (same skip as ctest)
+        }
+        std::fs::remove_file(sc.path("gone.txt")).unwrap();
+
+        let (r, out, err) = run(&sc, &["-L", "dangling"]);
+        assert_eq!(r, 1);
+        assert_eq!(out, "");
+        assert_eq!(err, "du: cannot access 'dangling'\n");
+
+        let (r, _, err) = run(&sc, &["-H", "dangling"]);
+        assert_eq!(r, 1);
+        assert_eq!(err, "du: cannot access 'dangling'\n");
+
+        let (r, out, err) = run(&sc, &["dangling"]);
+        assert_eq!(r, 0);
+        assert!(err.is_empty());
+        assert!(out.ends_with("\tdangling\n"));
+
+        let (r, _, err) = run(&sc, &["-L", "missing"]);
+        assert_eq!(r, 1);
+        assert_eq!(
+            err,
+            "du: cannot access 'missing': No such file or directory\n"
+        );
+    }
+
+    #[test]
+    fn dereference_directory_link_operand_walks_the_target() {
+        // -L/-H on a live directory link: rows carry the OPERAND spelling
+        // while the walk follows the target (#1656).
+        let sc = ScratchCtx::new("du-deref-dir");
+        std::fs::create_dir_all(sc.path("dir")).unwrap();
+        std::fs::write(sc.path("dir/f.txt"), "x").unwrap();
+        // A junction is the unprivileged Windows analog of a directory
+        // symlink (mklink /J); the CI runner is admin but developers are
+        // not, so the fixture must not depend on SeCreateSymbolicLink.
+        #[cfg(windows)]
+        let linked = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(sc.path("dirlink"))
+            .arg(sc.path("dir"))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        #[cfg(not(windows))]
+        let linked = std::os::unix::fs::symlink("dir", sc.path("dirlink")).is_ok();
+        if !linked {
+            return;
+        }
+        for flag in ["-L", "-H"] {
+            // -a is required to see per-file rows (du -b alone prints only
+            // the directory total, probed GNU 9.4).
+            let (r, out, err) = run(&sc, &["-a", "-b", flag, "dirlink"]);
+            assert_eq!(r, 0, "{flag}: {err}");
+            assert!(err.is_empty(), "{flag}: {err}");
+            assert!(out.contains("dirlink/f.txt\n"), "{flag}: {out}");
+            assert!(out.ends_with("\tdirlink\n"), "{flag}: {out}");
+        }
+    }
+
+    #[test]
     fn files0_from_rejects_file_operands() {
         // Probed: "extra operand", the combine rule, try-help, rc 1.
         let sc = ScratchCtx::new("du-f0f-combine");
@@ -1478,5 +2131,85 @@ mod files0_from_tests {
         assert!(err.contains("du: extra operand 'c'"));
         assert!(err.contains("file operands cannot be combined with --files0-from"));
         assert!(err.contains("Try 'du --help' for more information."));
+    }
+
+    // ---- #1670: followed-directory identity dedup (PR #1730 parity) ----
+
+    #[test]
+    fn followed_lx_dir_operand_dedups_against_real_dir_1670() {
+        let sc = ScratchCtx::new("du-1670-lx");
+        std::fs::create_dir_all(sc.path("dir/sub")).unwrap();
+        std::fs::write(sc.path("dir/f.txt"), "x").unwrap();
+        #[cfg(windows)]
+        if !create_lx_symlink(&sc.path("dirlink"), "dir") {
+            eprintln!("SKIP: LX reparse ioctl unavailable");
+            return;
+        }
+        for flag in ["-L", "-H"] {
+            let (r, out, err) = run(&sc, &[flag, "-s", "dirlink", "dir"]);
+            assert_eq!(r, 0, "{flag}: {err}");
+            assert!(err.is_empty(), "{flag}: {err}");
+            assert_eq!(out, "4\tdirlink\n", "{flag}");
+
+            let (r, out, err) = run(&sc, &[flag, "-s", "dir", "dirlink"]);
+            assert_eq!(r, 0, "{flag}: {err}");
+            assert!(err.is_empty(), "{flag}: {err}");
+            assert_eq!(out, "4\tdir\n", "{flag}");
+        }
+    }
+
+    #[test]
+    fn no_dereference_lx_link_and_dir_stay_distinct_1670() {
+        let sc = ScratchCtx::new("du-1670-p");
+        std::fs::create_dir_all(sc.path("dir/sub")).unwrap();
+        std::fs::write(sc.path("dir/f.txt"), "x").unwrap();
+        #[cfg(windows)]
+        if !create_lx_symlink(&sc.path("dirlink"), "dir") {
+            eprintln!("SKIP: LX reparse ioctl unavailable");
+            return;
+        }
+        let (r, out, _) = run(&sc, &["-P", "-s", "dirlink", "dir"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "0\tdirlink\n4\tdir\n");
+
+        let (r, out, _) = run(&sc, &["-P", "-s", "dir", "dirlink"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "4\tdir\n0\tdirlink\n");
+    }
+
+    #[test]
+    fn followed_junction_dir_operand_dedups_against_real_dir_1670() {
+        let sc = ScratchCtx::new("du-1670-junction");
+        std::fs::create_dir_all(sc.path("dir/sub")).unwrap();
+        std::fs::write(sc.path("dir/f.txt"), "x").unwrap();
+        #[cfg(windows)]
+        if !create_junction(&sc.path("dirlink"), &sc.path("dir")) {
+            eprintln!("SKIP: mklink /J failed");
+            return;
+        }
+        for flag in ["-L", "-H"] {
+            let (r, out, err) = run(&sc, &[flag, "-s", "dirlink", "dir"]);
+            assert_eq!(r, 0, "{flag}: {err}");
+            assert_eq!(out, "4\tdirlink\n", "{flag}");
+
+            let (r, out, err) = run(&sc, &[flag, "-s", "dir", "dirlink"]);
+            assert_eq!(r, 0, "{flag}: {err}");
+            assert_eq!(out, "4\tdir\n", "{flag}");
+        }
+    }
+
+    #[test]
+    fn count_links_keeps_both_followed_dir_operands_1670() {
+        let sc = ScratchCtx::new("du-1670-l");
+        std::fs::create_dir_all(sc.path("dir/sub")).unwrap();
+        std::fs::write(sc.path("dir/f.txt"), "x").unwrap();
+        #[cfg(windows)]
+        if !create_lx_symlink(&sc.path("dirlink"), "dir") {
+            eprintln!("SKIP: LX reparse ioctl unavailable");
+            return;
+        }
+        let (r, out, err) = run(&sc, &["-L", "-l", "-s", "dirlink", "dir"]);
+        assert_eq!(r, 0, "{err}");
+        assert_eq!(out, "4\tdirlink\n4\tdir\n");
     }
 }

@@ -422,7 +422,7 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Some(v) => signal = v,
             None => {
                 let _ = writeln!(io.stderr, "timeout: '{s}': invalid signal");
-                let _ = writeln!(io.stderr, "Try 'timeout --help' for more information.");
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "timeout"));
                 return Ok(125);
             }
         }
@@ -433,7 +433,7 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Ok(v) => kill_after_ms = v,
             Err(()) => {
                 let _ = writeln!(io.stderr, "timeout: invalid time interval '{k}'");
-                let _ = writeln!(io.stderr, "Try 'timeout --help' for more information.");
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "timeout"));
                 return Ok(125);
             }
         }
@@ -444,7 +444,7 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // [GNU] argc - optind < 2 reports only the try-help line, whether
     // DURATION or COMMAND is the piece that is absent.
     if p.positionals.len() < 2 {
-        let _ = writeln!(io.stderr, "Try 'timeout --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "timeout"));
         return Ok(125);
     }
     let duration_text = p.positionals[0].to_string_lossy().into_owned();
@@ -455,7 +455,7 @@ pub fn timeout_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 io.stderr,
                 "timeout: invalid time interval '{duration_text}'"
             );
-            let _ = writeln!(io.stderr, "Try 'timeout --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "timeout"));
             return Ok(125);
         }
     };

@@ -18,9 +18,9 @@ import urllib.request
 from pathlib import Path
 
 if __package__:
-    from .i18n_rust import extract_rust_messages
+    from .i18n_rust import extract_rust_messages, merge_rust_messages
 else:
-    from i18n_rust import extract_rust_messages
+    from i18n_rust import extract_rust_messages, merge_rust_messages
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SUFFIXES = {".cpp", ".cppm", ".h", ".hpp"}
@@ -352,7 +352,9 @@ MANUAL_MESSAGES = {
     "common.error.tab_zero": "tab size cannot be 0",
     "common.error.value_too_large": ": Value too large for defined data type",
     "common.error.unary_operator": "'{}': unary operator expected",
-    "command.tr.error.invalid_repeat_count": "invalid repeat count '{}' in [c*n] construct",
+    # [#1488 wave-W2 wire] the rust2 tr body prints GNU 9.4's curly-quoted
+    # operand (the 1.x C++ body used straight quotes).
+    "command.tr.error.invalid_repeat_count": "invalid repeat count \u2018{}\u2019 in [c*n] construct",
     "command.tr.error.string1_repeat": "the [c*] repeat construct may not appear in string1",
     "command.tr.error.one_repeat_string2": "only one [c*] repeat construct may appear in string2",
     "command.tr.error.repeat_only_translate": "the [c*] construct may appear in string2 only when translating",
@@ -400,6 +402,7 @@ MANUAL_MESSAGES = {
     "common.error.invalid_type": "invalid type '{}'",
     "common.error.invalid_device_type": "invalid device type '{}'",
     "common.error.invalid_suffix": "invalid suffix '{}'",
+    "common.error.invalid_suffix_length": "invalid suffix length: '{}'",
     "common.error.invalid_time_interval": "invalid time interval '{}'",
     "common.error.invalid_char_class": "invalid character class '{}'",
     "common.error.unknown_registry_root": "unknown registry root '{}'",
@@ -610,10 +613,7 @@ def extract(source_root: Path) -> dict:
                         and fallback):
                     messages.setdefault(key, fallback)
     messages.update(MANUAL_MESSAGES)
-    for key, fallback in extract_rust_messages(ROOT / "rust2" / "crates").items():
-        if key in messages and messages[key] != fallback:
-            raise ValueError(f"conflicting C++/Rust I18N fallbacks: {key}")
-        messages[key] = fallback
+    merge_rust_messages(messages, extract_rust_messages(ROOT / "rust2" / "crates"))
     return {"schema": 1, "locale": "en-US", "messages": dict(sorted(messages.items()))}
 
 

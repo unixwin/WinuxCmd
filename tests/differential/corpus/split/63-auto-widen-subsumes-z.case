@@ -1,0 +1,7 @@
+cmd: split
+args: -l 1 input.txt
+timeout: 60
+setup: |
+  seq 1 700 > input.txt
+source: github.com/unixwin/WinuxCmd/issues/1711
+tags: issue-1711 suffix-auto widen

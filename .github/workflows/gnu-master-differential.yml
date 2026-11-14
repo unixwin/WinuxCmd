@@ -24,27 +24,56 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y autoconf automake autopoint bison gettext gperf texinfo libgmp-dev
+      # Oracle source policy (DOCS/gate-oracle-policy.md): three transports
+      # with a revision anchor. gnulib used to be fetched by
+      # `git submodule update` straight from git.savannah.gnu.org, which
+      # intermittently aborts mid-packfile with HTTP 500
+      #   fatal: Fetched in submodule path 'gnulib', but it did not contain <sha>
+      # and reds the whole differential leg (compare is then skipped). The
+      # fetch script tries savannah -> GitHub mirror -> cgit snapshot ->
+      # the vendored archive in rust2/gate/vendor/, retries transport errors
+      # with a bounded backoff, and refuses any source whose revision or tree
+      # fingerprint does not match rust2/gate/vendor/gnulib.anchor.json.
+      #
+      # Adjudication: a red oracle step may be excused manually ONLY when the
+      # failure is transport/upstream-build, the provenance artifact shows
+      # which source was attempted, and the anchored revision is unchanged.
+      # A mismatch in `compare`, a corpus/revision mismatch, or a tree
+      # fingerprint mismatch is never adjudicable. Never reuse an oracle
+      # record whose revision/cases_sha256 do not match this checkout
+      # (DOCS/2.0-HANDOVER.md, gate01 stale-result lesson).
       - name: Build the pinned GNU master source
         run: |
-          git init "$RUNNER_TEMP/coreutils"
+          set -euo pipefail
+          # A failed fetch must abort the step: `eval "$(cmd)"` would mask the
+          # command substitution's exit status and carry on without
+          # GNULIB_SRCDIR. Materialize the env file instead.
+          bash tests/differential/fetch-gnu-master.sh "$RUNNER_TEMP/coreutils" \
+            > "$RUNNER_TEMP/gnu-oracle-env.sh"
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/gnu-oracle-env.sh"
+          test "$COREUTILS_REVISION" = "$GNU_REVISION" || {
+            echo "::error::fetched coreutils $COREUTILS_REVISION != workflow GNU_REVISION $GNU_REVISION"
+            exit 1
+          }
+          ls -l "$RUNNER_TEMP/gnu-master-sources.json"
           cd "$RUNNER_TEMP/coreutils"
-          git remote add origin https://github.com/coreutils/coreutils.git
-          git fetch --tags origin "$GNU_REVISION"
-          git checkout --detach FETCH_HEAD
-          git submodule update --init --depth=1
+          git rev-parse HEAD
+          echo "GNULIB_SRCDIR=$GNULIB_SRCDIR"
           ./bootstrap --skip-po
           ./configure --disable-nls --disable-dependency-tracking
           # The default target generates gnulib BUILT_SOURCES before compiling.
           make -j2
-          git rev-parse HEAD
-          git submodule status
       - name: Record GNU byte-level results
         run: |
+          cp "$RUNNER_TEMP/gnu-master-sources.json" gnu-master-sources.json
           python3 tests/differential/master-oracle.py --gnu-bin "$RUNNER_TEMP/coreutils/src" --revision "$GNU_REVISION" --record gnu-master-results.json
       - uses: actions/upload-artifact@v7
         with:
           name: gnu-master-results
-          path: gnu-master-results.json
+          path: |
+            gnu-master-results.json
+            gnu-master-sources.json
           if-no-files-found: error
 
   compare:

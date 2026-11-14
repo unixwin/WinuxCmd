@@ -8,13 +8,17 @@
 #
 # Case table: gate/cases/<cmd>.tsv, TAB-separated columns:
 #   id | mode | setup | env | stdin | arg1 | arg2 | ...
-#   mode : strict | exit | win | posix | posix-exit   (see below)
+#   mode : strict | sorted | exit | win | posix | posix-exit   (see below)
 #   setup: POSIX sh snippet run inside the per-side scratch dir (may be empty)
 #   env  : comma-separated K=V assignments (may be empty)
 #   stdin: literal bytes for stdin (no newlines in cases; may be empty)
 #
 # Modes:
 #   strict     : stdout bytes AND exit status must equal GNU; C++ equality recorded
+#   sorted     : strict, but stdout LINES compare after LC_ALL=C sort on both
+#                sides — for directory walks whose order is the filesystem's
+#                enumeration order (GNU find prints ext4 readdir/hash order,
+#                NTFS enumerates in B-tree order; #1488 find lane)
 #   exit       : exit status must equal GNU; stdout is platform-form-bound (recorded)
 #   win        : no GNU comparison (platform-inherent output); Rust vs C++ status
 #   posix      : strict comparison, but a failure counts as PENDING, not FAIL —
@@ -66,6 +70,25 @@ invocation_name() {
     esac
 }
 
+# A setup column that needs a REAL symlink on the Windows sides. Windows
+# hosts without SeCreateSymbolicLinkPrivilege (no Developer Mode, no
+# elevation) refuse `ln -s` with EPERM, so the fixture the row wants never
+# exists. Detected by pattern because the setup is an opaque sh snippet.
+setup_needs_symlink() {
+    case "$1" in
+        # `wsl.exe ln -s` materialises a WSL DrvFs LX reparse point, which
+        # needs no SeCreateSymbolicLinkPrivilege (#1732); the kernel-side
+        # `ln -s` in the same conditional only builds the GNU fixture.
+        *'wsl.exe ln'*) return 1 ;;
+        # A directory junction is the unprivileged directory-link form on
+        # Windows (mklink /J), so a row whose exe branch creates one runs
+        # even when the host has no Developer Mode.
+        *'mklink /J'*|*'mklink /j'*) return 1 ;;
+        *'ln -s'*|*'ln --symbolic'*|*'mklink'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 GATE_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUST2="$(cd "$GATE_DIR/.." && pwd)"
 TREE="$(cd "$RUST2/.." && pwd)"
@@ -89,6 +112,9 @@ done
 POSIX_STRICT="${POSIX_STRICT:-0}"
 CASES_DIR="$GATE_DIR/cases"
 LEDGER="$ART/ledger.tsv"
+# Per-command wall clock, consumed by the CI matrix planner (docs in the
+# workflow's rust2-gate header): command<TAB>rows<TAB>elapsed_ms.
+TIMING="$ART/timing.tsv"
 # POSIX spellings the posix corpus may write to, and their GNU-side sandbox
 # prefixes (cleaned after each GNU case; the Windows sides land inside the
 # fixture dirs under target/gate/posix/, owned by this harness).
@@ -139,11 +165,49 @@ fi
 
 mkdir -p "$ART/scratch" "$GNU_MIRROR"
 
+# ---- symlink capability probe (SKIP accounting, prompt 19) ----
+# Case setups build symlink fixtures with `ln -s`. On a Windows host without
+# SeCreateSymbolicLinkPrivilege the Windows sides get EPERM and run against a
+# missing operand, so such a row measures the host, not the command. Probe
+# once with the same `ln` the setup uses, keep the verdict in the artifact
+# dir (parallel shards must not share it), and label affected rows skipped.
+SYMLINK_CAP=0
+_symprobe="$ART/.symlink-probe"
+rm -rf "$_symprobe"; mkdir -p "$_symprobe"
+printf 'x' > "$_symprobe/target"
+if ( cd "$_symprobe" && ln -s target link ) 2>/dev/null && [ -L "$_symprobe/link" ]; then
+    SYMLINK_CAP=1
+fi
+rm -rf "$_symprobe"
+printf 'symlink-capability: %s\n' \
+    "$([ "$SYMLINK_CAP" -eq 1 ] && echo yes || echo no)" \
+    > "$ART/symlink-capability.txt"
+# The GNU leg invokes native wsl.exe with leading-slash POSIX argv
+# ("wsl.exe --exec /bin/bash /mnt/<drive>/..."). Git Bash (MSYS2) rewrites
+# such arguments into Windows-native paths before the spawn — measured on
+# the CI runner: /bin/bash arrived as D:/Git/usr/bin/bash and the distro
+# failed execvpe for every case, so the whole GNU side scored MISSING
+# while wsl.exe itself "succeeded" (exit swallowed). MSYS_NO_PATHCONV=1
+# disables that rewriting under Git Bash and is ignored by the niubash
+# family, where this call shape never converted in the first place.
+export MSYS_NO_PATHCONV=1
+
+# Preflight: prove one GNU-side roundtrip through the exact call shape
+# below before spending minutes on the corpus, so a broken invocation
+# fails here in seconds instead of MISSING-ing every row.
+wsl.exe --exec /bin/bash -c "echo ok > '$ART_MNT/gnu-preflight'"
+if [ ! -f "$ART/gnu-preflight" ]; then
+    echo "FATAL: GNU-side WSL roundtrip failed (see the MSYS_NO_PATHCONV note above)" >&2
+    exit 3
+fi
+rm -f "$ART/gnu-preflight"
+
 if command -v timeout >/dev/null 2>&1; then WIN_TIMEOUT="timeout 10"; else WIN_TIMEOUT=""; fi
 
 pass=0; fail=0; winpass=0; winfail=0
-posixpass=0; posixpending=0
+posixpass=0; posixpending=0; skipped=0; missing_tables=0
 FAILED_CASES=()
+SKIPPED_CASES=()
 
 # quote a word for single-quoted shell embedding on both sides
 qsh() {
@@ -259,6 +323,11 @@ posix_setup_is_applet_list() {
 run_posix_win_side() {
     local side="$1" scase="$2" prog="$3" setup="$4" envstr="$5" stdin="$6"
     shift 6
+    # NOT `local args=("$@")`: the agent-side bash (niubash 5.3.20, MSYS)
+    # re-runs quote removal on a compound assignment given to `local`,
+    # silently stripping every backslash from the arguments (`s/b/\&/`
+    # reached both Windows AND GNU sides as `s/b/&/`; measured #1488 sed
+    # lane). Declare first, assign after.
     local -a args
     args=("$@")
     local sdir="$scase.$side"
@@ -342,8 +411,11 @@ run_posix_win_side() {
 run_case() {
     local cmd="$1" id="$2" mode="$3" setup="$4" envstr="$5" stdin="$6"
     shift 6
-    # Keep declaration separate: compound local arrays lose backslashes
-    # on the current Niubash host (for example, '\x41' becomes 'x41').
+    # NOT `local args=("$@")`: the agent-side bash (niubash 5.3.20, MSYS)
+    # re-runs quote removal on a compound assignment given to `local`,
+    # silently stripping every backslash from the arguments (`s/b/\&/`
+    # reached both Windows AND GNU sides as `s/b/&/`; measured #1488 sed
+    # lane). Declare first, assign after.
     local -a args
     args=("$@")
 
@@ -449,6 +521,13 @@ run_case() {
     local gdir="$GNU_REMOTE_ROOT/$id"
     {
         echo '#!/bin/bash'
+        # Pin the oracle locale to the one the corpus expectations were
+        # authored against (C.UTF-8 on the 24.04 attestation box). A fresh
+        # distro defaulting to C emits coreutils help/diagnostics with
+        # ASCII quotes where the corpus captured UTF-8 curly quotes, which
+        # is byte skew, not a behavior delta. Override with
+        # GATE_GNU_LOCALE when the distro lacks C.UTF-8.
+        printf 'export LC_ALL=%s\n' "$(qsh "${GATE_GNU_LOCALE:-C.UTF-8}")"
         printf 'rm -rf %s; mkdir -p %s || exit 97\n' "$(qsh "$gdir")" "$(qsh "$gdir")"
         printf 'cd %s || exit 97\n' "$(qsh "$gdir")"
         if [ "$POSIX_MODE" -eq 1 ]; then
@@ -520,6 +599,8 @@ run_case() {
     local ok=0 note=""
     case "$mode" in
         strict)     [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
+        sorted)     [ "$(printf '%s' "$r_out" | LC_ALL=C sort)" = "$(printf '%s' "$g_out" | LC_ALL=C sort)" ] \
+                        && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         exit)       [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         win)        [ "$r_rc" = "$c_rc" ] && ok=1 ;;
         posix)      [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
@@ -550,7 +631,21 @@ run_case() {
         } >> "$ART/gnu-stderr-samples.txt"
     fi
 
-    if [ "$mode" = win ]; then
+    # ---- SKIP: the host cannot build this row's symlink fixture ----
+    # Never score it: a pass would be vacuous (both Windows sides see the
+    # same missing operand) and a fail would red the gate on a host privilege.
+    # Keep the row in the ledger with the reason so the dashboard shows it.
+    local skip=0
+    if [ "$SYMLINK_CAP" -ne 1 ] && setup_needs_symlink "$setup"; then
+        skip=1
+        ok=0
+        note="skipped(no-symlink-privilege)"
+    fi
+
+    if [ $skip -eq 1 ]; then
+        skipped=$((skipped+1))
+        SKIPPED_CASES+=("$cmd/$id($mode)")
+    elif [ "$mode" = win ]; then
         if [ $ok -eq 1 ]; then
             winpass=$((winpass+1))
         else
@@ -595,8 +690,13 @@ run_command() {
     local file="$CASES_DIR/$cmd.tsv"
     if [ ! -f "$file" ]; then
         echo "no case table for $cmd ($file)" >&2
+        missing_tables=$((missing_tables+1))
         return
     fi
+    local t0 rows t1
+    t0=$(date +%s%3N)
+    rows=$(grep -vc '^#\|^$' "$file" 2>/dev/null)
+    case "$rows" in ''|*[!0-9]*) rows=0 ;; esac
     while IFS= read -r line <&3; do
         [ -z "$line" ] && continue
         case "$line" in '#'*) continue ;; esac
@@ -619,9 +719,13 @@ run_command() {
         done
         run_case "$cmd" "$id" "$mode" "$setup" "$envstr" "$stdin" "${args[@]}"
     done 3< "$file"
+    t1=$(date +%s%3N)
+    printf '%s\t%s\t%s\n' "$cmd" "$rows" "$((t1 - t0))" >> "$TIMING"
 }
 
 : > "$LEDGER"
+: > "$TIMING"
+printf '# command\trows\telapsed_ms\n' >> "$TIMING"
 : > "$ART/gnu-stderr-samples.txt"
 
 if [ "${#COMMANDS[@]}" -gt 0 ]; then
@@ -639,10 +743,34 @@ echo "win-only cases:   pass=$winpass fail=$winfail"
 if [ "$POSIX_MODE" -eq 1 ]; then
     echo "posix cases:      pass=$posixpass pending=$posixpending$([ "$POSIX_STRICT" = 1 ] && printf ' (POSIX_STRICT: pending counts as FAIL)')"
 fi
+echo "skipped cases:    $skipped (host cannot build the symlink fixture; symlink-capability=$([ "$SYMLINK_CAP" -eq 1 ] && echo yes || echo no))"
 if [ ${#FAILED_CASES[@]} -gt 0 ]; then
     echo "FAILED:"
     for f in "${FAILED_CASES[@]}"; do echo "  $f"; done
 fi
+if [ ${#SKIPPED_CASES[@]} -gt 0 ]; then
+    echo "SKIPPED:"
+    for s in "${SKIPPED_CASES[@]}"; do echo "  $s"; done
+fi
+echo "timing:             $TIMING"
+# Oracle identity: the corpus rows are attested against a specific GNU
+# build (the 24.04 / coreutils 9.4 / C.UTF-8 box). An unpinned CI distro
+# can ship different behavior (e.g. -h, brace validation), which shows up
+# as rc/out skew on exactly the version-sensitive rows. Land the identity
+# in the teed summary so every run states which oracle it compared with.
+{
+    echo "oracle identity (per distro query):"
+    for c in "${COMMANDS[@]}"; do
+        v=$(wsl.exe --exec /bin/bash -c \
+            "LC_ALL=C.UTF-8 '$c' --version 2>/dev/null | head -1" 2>/dev/null)
+        [ -n "$v" ] && echo "  $c=$v"
+    done
+    wsl.exe --exec /bin/bash -c \
+        ". /etc/os-release 2>/dev/null && echo \"  distro=\$PRETTY_NAME\"" 2>/dev/null
+}
 echo "ledger:             $LEDGER"
 echo "gnu stderr samples: $ART/gnu-stderr-samples.txt"
-[ "$fail" -eq 0 ] && [ "$winfail" -eq 0 ]
+if [ "$missing_tables" -ne 0 ]; then
+    echo "ERROR: $missing_tables requested command(s) had no case table" >&2
+fi
+[ "$fail" -eq 0 ] && [ "$winfail" -eq 0 ] && [ "$missing_tables" -eq 0 ]

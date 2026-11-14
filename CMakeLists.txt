@@ -73,12 +73,18 @@ if(WINUXCMD_ENABLE_RUST2 AND NOT WINUXCMD_CARGO_EXECUTABLE)
 endif()
 # Commands whose implementation is the rust2 library (one name per replaced
 # applet; the recipe's per-command step appends here).
-set(WINUXCMD_RUST2_COMMANDS "b2sum;base32;base64;basename;dirname;echo;expand;false;fmt;fold;getconf;hostid;hostname;id;join;ln;md5sum;mkdir;nproc;numfmt;paste;printenv;pwd;readlink;realpath;rev;rmdir;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;sleep;stat;sync;tac;tee;test;test_bracket;timeout;touch;true;truncate;tsort;uname;unexpand;unlink;users;whoami")
+set(WINUXCMD_RUST2_COMMANDS "b2sum;base32;base64;basename;dirname;echo;expand;false;find;fmt;fold;getconf;hostid;hostname;id;join;ln;md5sum;mkdir;mkfifo;mknod;nohup;nproc;numfmt;paste;printenv;pwd;readlink;realpath;rev;rmdir;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;sleep;stat;sync;tac;tee;test;test_bracket;timeout;touch;true;truncate;tsort;uname;unexpand;unlink;users;whoami")
+# grep carries the whole grep/egrep/fgrep registration file (one C++
+# source, three REGISTER_COMMANDs): the split-engine wire keeps grep.cpp
+# in the build for the -P/PCRE2 face even with rust2 ON, and the OFF
+# filter below drops all three applets together (no dual track).
+set(WINUXCMD_RUST2_COMMANDS "b2sum;base32;base64;basename;cp;cut;dirname;du;echo;expand;false;find;fmt;fold;getconf;grep;hostid;hostname;id;join;ln;md5sum;mkdir;mkfifo;mknod;mktemp;nice;nohup;nproc;numfmt;od;paste;printenv;pwd;readlink;realpath;rev;rmdir;sed;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;sleep;stat;sum;sync;tac;tee;test;test_bracket;timeout;touch;tr;true;truncate;tsort;uname;unexpand;unlink;users;whoami")
 
 # Command-set edition shipped by this build (#1438, ruling of 2026-10-30):
 #   default - every registered command stays runnable through the multicall
 #             dispatcher, but the entry links for the shell-builtin shadow
-#             names (see src/core/package_edition.h) are not materialized;
+#             names (see the winux_edition namespace in
+#             src/core/dispatcher.cppm) are not materialized;
 #   full    - every registered entry link is materialized (asset names carry
 #             a "-full" suffix; this edition is not distributed via wpm).
 set(WINUXCMD_PACKAGE_EDITION "default" CACHE STRING
@@ -514,6 +520,14 @@ if(NOT WINUXCMD_ENABLE_RUST2)
     message(STATUS "rust2 command library: OFF (not built: ${WINUXCMD_RUST2_COMMANDS})")
 endif()
 
+# The rust2 surface is declared exactly once, in WINUXCMD_RUST2_COMMANDS.
+# Emit it into the build tree so CI (and any release script) can assert on the
+# same string; the "Record rust2 build surface" step used to hand-copy
+# "true;false", which understated the surface by 48 commands and made the
+# cross-arch marker comparison compare two stale constants. Empty when the
+# library is off, which is what the CI guard keys on.
+file(WRITE "${CMAKE_BINARY_DIR}/rust2-commands.txt" "${WINUXCMD_RUST2_COMMANDS}")
+
 target_sources(winuxcmd-commands PRIVATE ${COMMAND_SOURCES})
 
 # Link module interface library (for settings only)
@@ -565,10 +579,10 @@ if(WINUXCMD_ENABLE_PCRE2)
 endif()
 
 if(WINUXCMD_PACKAGE_EDITION STREQUAL "full")
-    # Entry-link edition switch read by src/core/package_edition.h (see the
-    # single command-name list there); only the wpm link-management paths
-    # consult it, so the winuxcmd-commands target is the sole definition
-    # point (unixwin/WinuxCmd#1438).
+    # Entry-link edition switch read by the winux_edition namespace in
+    # src/core/dispatcher.cppm (the single command-name list); only the
+    # wpm link-management paths consult it, so the winuxcmd-commands target
+    # is the sole definition point (unixwin/WinuxCmd#1438).
     target_compile_definitions(winuxcmd-commands PRIVATE
             WINUXCMD_PACKAGE_EDITION_FULL=1)
 endif()
@@ -722,6 +736,20 @@ if(WINUXCMD_ENABLE_RUST2)
     add_dependencies(rust2-stream-driver winuxcmd-rust2)
 endif()
 
+# LC_CTYPE GetStringTypeW projection check (#1549 phase 2, item 5). The ASCII
+# half is pinned by static_asserts inside the module; this harness exercises
+# the >0x7F runtime path through the exported classify() API. Defined in the
+# TOP-LEVEL tree for the same ABI reason as rust2-stream-driver (the module
+# consumer must share the producer's flags).
+add_executable(locale-ctype-check
+        "${CMAKE_SOURCE_DIR}/tests/tools/locale_ctype_check.cpp")
+target_link_libraries(locale-ctype-check PRIVATE winuxcmd-commands winuxcmd-modules)
+target_include_directories(locale-ctype-check
+        PRIVATE "${SRC_DIR}" "${CMAKE_BINARY_DIR}")
+if(MSVC)
+    target_compile_options(locale-ctype-check PRIVATE /std:c++latest)
+endif()
+
 # ====================================================
 # Main executable modules and configuration
 # ====================================================
@@ -823,6 +851,7 @@ macro(create_command_executable CMD)
             src/utils/childproc.cppm
             src/utils/json.cppm
             src/utils/i18n.cppm
+            src/utils/locale_db.cppm
             src/utils/file_io.cppm
             src/utils/cppbar.cppm
             src/utils/encoding.cppm

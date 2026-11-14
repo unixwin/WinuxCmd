@@ -412,3 +412,23 @@ TEST(join, join_dash_o_still_legal_issue1355) {
   EXPECT_EXIT_CODE(r, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "x\n");
 }
+
+TEST(join, join_zero_terminated_newline_input_is_one_record_issue1713) {
+  // [GNU] join.c:1106-1107: -z sets eolchar to NUL, so newline is
+  // ordinary data -- a newline-terminated file reads as ONE record.
+  // field_sep (system.h:163-166) still treats '\n' as a field
+  // boundary, and xfields (join.c:302-303) emits a trailing empty
+  // field because the record ends in a separator (#1713).
+  TempDir tmp;
+  tmp.write("file1.txt", "a 1\nb 2\n");
+  tmp.write("file2.txt", "a X\nb Y\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"join.exe", {L"-z", L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, std::string("a 1 b 2  X b Y \0", 16));
+}

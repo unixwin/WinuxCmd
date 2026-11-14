@@ -462,7 +462,7 @@ pub fn rm_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, meta: &RmMeta) ->
             // pending stripped-option diagnostic wins when it precedes the
             // token argopt just rejected (first_bad_rest).
             let pending_first = match (&scan.pending, scan.first_bad_rest) {
-                (Some((idx, _)), Some(first)) => *idx < *first,
+                (Some((idx, _)), Some(first)) => *idx < first,
                 (Some(_), None) => true,
                 _ => false,
             };
@@ -485,9 +485,9 @@ pub fn rm_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, meta: &RmMeta) ->
         .iter()
         .find(|f| f.as_str() == argopt::HELP || f.as_str() == argopt::VERSION)
     {
-        let pending_first = match (&scan.pending, scan.first_help) {
-            (Some((idx, _)), Some(help_idx)) => *idx < *help_idx,
-            _ => false,
+        let pending_first = match &scan.pending {
+            Some((idx, _)) => scan.first_help.map(|h| *idx < h).unwrap_or(true),
+            None => false,
         };
         if let (true, Some((_, pending))) = (pending_first, &scan.pending) {
             emit_pending(io, ctx, args, pending);
@@ -591,6 +591,7 @@ pub fn rm_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, meta: &RmMeta) ->
             return Ok(0);
         }
         let _ = usage_error(
+            ctx,
             io,
             "rm",
             &tr!(ctx, "command.rm.error.missing_operand", "missing operand"),
@@ -1022,7 +1023,7 @@ fn root_kind(ctx: &Ctx, name: &str, stripped: &str) -> Option<RootKind> {
         return Some(if seps == 2 { RootKind::Same } else { RootKind::Slash });
     }
     let resolved = api(ctx, stripped);
-    if crate::chmod::is_fs_root(&winux_core::strip_verbatim(resolved.clone())) {
+    if crate::fsutil::is_preserve_root_operand(ctx, name, &resolved) {
         return Some(RootKind::Same);
     }
     if let Some(root) = winux_core::path::shell_root(ctx.env) {

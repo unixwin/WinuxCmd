@@ -1,0 +1,51 @@
+command.cut.error.decreasing_range	invalid decreasing range
+command.cut.error.delimiter_single_char	the delimiter must be a single character
+command.cut.error.input_delim_only_fields	an input delimiter may be specified only when operating on fields
+command.cut.error.invalid_byte_position	invalid byte/character position ‘{rest}’
+command.cut.error.invalid_byte_range	invalid byte or character range
+command.cut.error.invalid_field_range	invalid field range
+command.cut.error.invalid_field_value	invalid field value ‘{rest}’
+command.cut.error.no_list	you must specify a list of bytes, characters, or fields
+command.cut.error.numbered_from_one_fields	fields are numbered from 1
+command.cut.error.numbered_from_one_positions	byte/character positions are numbered from 1
+command.cut.error.only_one_list	only one list may be specified
+command.cut.error.open_operand	{file}: {reason}
+command.cut.error.range_no_endpoint	invalid range with no endpoint: -
+command.cut.error.read_error	read error
+command.cut.error.suppress_only_fields	suppressing non-delimited lines makes sense
+	only when operating on fields
+command.cut.error.write_error	write error
+command.od.error.bad_type_specification	od: bad type specification
+command.od.error.compatibility_one_file	compatibility mode supports at most one file
+command.od.error.extra_operand	extra operand ‘{operand}’
+command.od.error.invalid_address_radix	invalid address radix '{radix}'
+command.od.error.invalid_endian	invalid bytes to swap '{endian}'
+command.od.error.invalid_read_bytes	invalid read bytes {value}
+command.od.error.invalid_skip_bytes	invalid skip bytes {value}
+command.od.error.invalid_type_char	od: invalid character '{ch}' in type string '{part}'
+command.od.error.invalid_type_char_unnamed	od: invalid character in type string '{part}'
+command.od.error.invalid_width	invalid width {value}
+command.od.error.no_type_with_strings	no type may be specified when dumping strings
+command.od.error.operand_reason	{file}: {reason}
+command.od.error.reading_standard_input	error reading 'standard input'
+command.od.error.skip_past_end	cannot skip past end of combined input
+command.od.error.skip_read_too_large	skip-bytes + read-bytes is too large
+command.od.error.strings_invalid	invalid {option} argument {value}
+command.od.error.strings_too_large	{option} argument {value} too large
+command.od.error.unsupported_float_size	od: unsupported float size in type '{part}'
+command.od.error.write_error	write error
+command.sum.error.operand_reason	{file}: {reason}
+command.sum.error.read_error	read error
+command.tr.error.equiv_in_string2	[=c=] expressions may not appear in string2 when translating
+command.tr.error.extra_operand	extra operand ‘{operand}’
+command.tr.error.invalid_character_class	invalid character class ‘{name}’
+command.tr.error.misaligned_case_class	misaligned [:upper:] and/or [:lower:] construct
+command.tr.error.missing_after	missing operand after ‘{operand}’
+command.tr.error.one_string_delete_only	Only one string may be given when deleting without squeezing repeats.
+command.tr.error.read_error	read error
+command.tr.error.set2_restricted_class	when translating, the only character classes that may appear in
+string2 are 'upper' and 'lower'
+command.tr.error.two_strings_delete_squeeze	Two strings must be given when both deleting and squeezing repeats.
+command.tr.error.two_strings_translating	Two strings must be given when translating.
+command.tr.warn.ambiguous_octal	tr: warning: the ambiguous octal escape \{d1}{d2}{d3} is being
+	interpreted as the 2-byte sequence \0{d1}{d2}, {d3}

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "locale": "zh-CN",
+  "messages": {
+    "command.mkfifo.error.cannot_create_fifo": "无法创建 FIFO '{name}'：{reason}",
+    "command.mkfifo.error.invalid_mode": "无效的模式",
+    "command.mkfifo.error.mode_not_permission_bits": "模式只能指定文件权限位",
+    "command.mkfifo.warning.ignoring_context": "警告：忽略 --context；它需要启用 SELinux/SMACK 的内核",
+    "command.mknod.error.cannot_create": "{name}：{reason}",
+    "command.mknod.error.device_not_permitted": "{name}：不允许的操作",
+    "command.mknod.error.fifos_no_device_numbers": "FIFO 没有主设备号和次设备号。",
+    "command.mknod.error.file_exists": "{name}：文件已存在",
+    "command.mknod.error.invalid_device_type": "无效的设备类型 '{node_type}'",
+    "command.mknod.error.invalid_major": "无效的主设备号 '{number}'",
+    "command.mknod.error.invalid_minor": "无效的次设备号 '{number}'",
+    "command.mknod.error.invalid_mode": "无效的模式",
+    "command.mknod.error.mode_not_permission_bits": "模式只能指定文件权限位",
+    "command.mknod.error.special_files_need_numbers": "特殊文件需要主设备号和次设备号。",
+    "command.mknod.warning.ignoring_context": "警告：忽略 --context；它需要启用 SELinux/SMACK 的内核"
+  }
+}

@@ -26,6 +26,11 @@ LEDGER = os.path.join(HERE, "..", "target", "gate", "ledger.tsv")
 # Per-table provenance comments preserved on regeneration (appended after the
 # two standard header lines). Keys are case-table stems.
 TABLE_NOTES = {
+    "cp": [
+        "# cp gate cases (WP-J, rust2) — TAB-separated",
+        "# junction rows: GNU side `ln -s`, exe sides `cmd /c mklink /J`",
+        "# cp88-cp90 are note/SKIP: file symlinks need Windows Developer Mode",
+    ],
     "chmod": [
         "# chmod gate cases (#1488 wave1 deepening) — TAB-separated",
         "# NOTE: this WSL oracle was built with preserve-root DISABLED by default,",
@@ -36,6 +41,48 @@ TABLE_NOTES = {
         "# chown gate cases (#1488 wave1 deepening) — TAB-separated",
         "# GNU side runs as root: numeric specs really change; named POSIX accounts",
         "# do not exist on Windows, so named-account cases are win/value-model.",
+    ],
+    # wave-W2 wire (#1488): cut/tr/od/sum. The dispatcher keeps the
+    # WinuxCmd-branded --help/--version interception (REPLACEMENT-RECIPE §1),
+    # so those rows are `win` (Rust vs C++ status only) exactly like
+    # rev/echo/grep; the wired product's bytes for them are covered by the
+    # old-vs-new matrix (gate c), not by the GNU oracle.
+    "cut": [
+        "# cut gate cases (#1488 wave4a + wave-W2 wire)",
+        "# ct32/ct33 --help/--version are win: brand interception stays C++",
+    ],
+    "tr": [
+        "# tr gate cases (#1488 wave4a + wave-W2 wire)",
+        "# tr36/tr37 --help/--version are win: brand interception stays C++",
+    ],
+    "od": [
+        "# od gate cases (#1488 wave4a + wave-W2 wire)",
+        "# od35/od36 --help/--version are win: brand interception stays C++",
+        "# od37+ cover the wire: -j/-N absolute addresses, -S/--strings, the",
+        "# old-style [FILE] [[+]OFFSET] [[+]LABEL] operand form",
+    ],
+    "sum": [
+        "# sum gate cases (#1488 wave4a + wave-W2 wire)",
+        "# sm18/sm19 --help/--version are win: brand interception stays C++",
+    ],
+    "mkfifo": [
+        "# mkfifo gate cases (wave-W4 wiring, #1488) — TAB-separated",
+        "# Probed against WSL coreutils 9.4 with",
+        "# rust2/target/probe/w4-mkfifo-mknod.sh (GNU side creates REAL fifos;",
+        "# the Windows sides create the #1038 !<fifo> marker, so stdout/rc are",
+        "# comparable but the on-disk node type is checked by the unit tests).",
+        "# mf20/mf21 are win: the wired product answers the sole",
+        "# --help/--version with the WinuxCmd-branded dispatcher surface",
+        "# (suite-wide help convention, wave6 precedent), not GNU text.",
+    ],
+    "mknod": [
+        "# mknod gate cases (wave-W4 wiring, #1488) — TAB-separated",
+        "# Probed against WSL coreutils 9.4 (rust2/target/probe/w4-mkfifo-mknod.sh).",
+        "# Device-node rows are win because the WSL oracle runs as ROOT and",
+        "# really creates block/char nodes (probed rdev=1:3 etc.); Windows has",
+        "# no device-node type, so both Windows sides report EPERM and only",
+        "# Rust-vs-C++ can be compared. mn20/mn21 are win for the sole",
+        "# --help/--version branded product surface (mkfifo precedent).",
     ],
 }
 
@@ -491,6 +538,33 @@ chmod_rows = [
     ("cm43-dash-operand", "strict", "touch f", "", "", ["644", "-"]),
     ("cm44-o-equals", "strict", "touch f", "", "", ["o=", "f"]),
     ("cm45-g-copy-o", "strict", "touch f", "", "", ["g=o", "f"]),
+    # A1 preserve-root closure / dash-mode surfaces (probed WSL coreutils 9.4,
+    # 2026-11-14; rows only where GNU's own umask does not enter the
+    # comparison — the dash-mode "new permissions are ..." warning is a
+    # separate gate gap, see DOCS/2.0-a1-wiring-plan.md).
+    ("cm46-dash-R755-invalid", "strict", "touch f", "", "", ["-R755", "f"]),
+    ("cm47-dash-invalid-short", "strict", "touch f", "", "", ["-Q", "f"]),
+    ("cm48-dash-mode-demotes-operand", "strict", "touch f", "", "",
+     ["644", "-w", "f"]),
+    ("cm49-preserve-last-wins", "strict", "mkdir d", "", "",
+     ["-R", "--preserve-root", "--no-preserve-root", "755", "d"]),
+    ("cm50-preserve-reverse-last", "strict", "mkdir d", "", "",
+     ["-R", "--no-preserve-root", "--preserve-root", "755", "d"]),
+    ("cm51-preserve-nonrecursive", "strict", "mkdir d", "", "",
+     ["--preserve-root", "755", "d"]),
+    ("cm52-empty-long-ambiguous", "strict", "touch f", "", "", ["--=v", "f"]),
+    ("cm53-f-invalid-mode", "strict", "touch f", "", "", ["-f", "999", "f"]),
+    ("cm54-dash-X-noop", "strict", "touch f", "", "", ["-X", "f"]),
+    ("cm55-recursive-symlink-entry", "exit", "mkdir d; touch d/x; ln -s x d/s",
+     "", "", ["-Rv", "600", "d"]),
+    ("cm58-recursive-zero", "exit", "mkdir -p d/s", "", "", ["-R", "000", "d"]),
+    ("cm59-mode-triple-clause", "strict", "touch f", "", "",
+     ["u=r,g=w,o=x", "f"]),
+    ("cm60-dash-X-dir", "strict", "mkdir d", "", "", ["-X", "d"]),
+    ("cm61-recursive-multi-clause", "exit", "mkdir -p d/s", "", "",
+     ["-R", "u=rwx,go=rx", "d"]),
+    ("cm62-symbolic-restrictive", "exit", "touch f", "", "", ["a-rwx", "f"]),
+
 ]
 
 chown_rows = [
@@ -540,6 +614,26 @@ chown_rows = [
     ("cw36-dereference-long", "exit", "touch f", "", "", ["--dereference", "0", "f"]),
     ("cw25b-from-reference-noapply", "strict", "touch f; touch g", "", "",
      ["--from=1", "--reference=f", "g"]),
+    # A1 preserve-root closure surfaces (probed WSL coreutils 9.4, 2026-11-14):
+    # BSD dot-spec alias, dereference machine, preserve-root parse/order,
+    # reference-vs-positional grammar. Windows ownership changes are no-ops,
+    # so rc-0 mutators stay exit where GNU stdout is root-only.
+    ("cw37-dot-spec-warning", "strict", "touch f", "", "", ["0.0", "f"]),
+    ("cw38-dot-two-invalid", "strict", "touch f", "", "", ["1.1.2", "f"]),
+    ("cw39-deref-combo", "strict", "touch f", "", "",
+     ["-R", "--dereference", "0", "f"]),
+    ("cw40-deref-with-H", "exit", "touch f", "", "",
+     ["-R", "--dereference", "-H", "0", "f"]),
+    ("cw41-preserve-flag", "exit", "mkdir d", "", "",
+     ["-R", "--preserve-root", "0", "d"]),
+    ("cw42-preserve-last-wins", "exit", "mkdir d", "", "",
+     ["-R", "--preserve-root", "--no-preserve-root", "0", "d"]),
+    ("cw43-h-with-R", "exit", "mkdir d; touch d/x", "", "", ["-hR", "0", "d"]),
+    ("cw44-from-dot-spec", "strict", "touch f", "", "",
+     ["--from=0.0", "0", "f"]),
+    ("cw47-ref-makes-spec-operand", "strict", "touch f; touch rf", "", "",
+     ["--reference=rf", "0", "f"]),
+    ("cw48-dot-named-spec", "win", "touch f", "", "", ["root.root", "f"]),
 ]
 
 # ---------------------------------------------------------------------------
@@ -849,6 +943,7 @@ b2sum_rows = [
     ("b2c11-missing-target", "strict",
      "printf 'ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923  nope\\n' > ck",
      "", "", ["-c", "ck"]),
+
 ]
 
 sha224_rows = [
@@ -1174,7 +1269,13 @@ getconf_rows = [
     ("gc20-underscore", "win", "", "", "", ["_POSIX_PATH_MAX"]),
     ("gc21-name-max-path", "win", "", "", "", ["NAME_MAX", "."]),
     ("gc22-avphys", "win", "", "", "", ["AVPHYS_PAGES"]),
-    ("gc23-version", "strict", "", "", "", ["--version"]),
+    # --version is exit-gated, not byte-gated: getconf echoes the glibc
+    # banner of the oracle it mirrors, which embeds the Ubuntu PACKAGE
+    # revision (2.39-0ubuntu8.9 when the Rust text was captured vs .8.12 on
+    # the current distro). Byte equality would red the gate on a package
+    # bump — the exit status is the stable contract; the text itself is a
+    # product decision tracked separately.
+    ("gc23-version", "exit", "", "", "", ["--version"]),
 ]
 
 seq_rows = [
@@ -1268,80 +1369,6 @@ ln_setup = (
     r"printf 'A1' > tgt; printf 'x' > f; printf 'a' > a; printf 'b' > b; "
     r"mkdir dd"
 )
-
-seq_rows = [
-    ("sq01-basic", "strict", "", "", "", ["5"]),
-    ("sq02-from-to", "strict", "", "", "", ["2", "5"]),
-    ("sq03-step", "strict", "", "", "", ["1", "2", "10"]),
-    ("sq04-negstep", "strict", "", "", "", ["10", "-2", "1"]),
-    ("sq05-empty-neg", "strict", "", "", "", ["-1"]),
-    ("sq06-empty-range", "strict", "", "", "", ["3", "1"]),
-    ("sq07-zero-last", "strict", "", "", "", ["0"]),
-    ("sq08-width", "strict", "", "", "", ["-w", "1", "3", "10"]),
-    ("sq09-width-2", "strict", "", "", "", ["-w", "8", "10"]),
-    ("sq10-width-float", "strict", "", "", "", ["-w", "9", "0.5", "11"]),
-    ("sq11-sep-comma", "strict", "", "", "", ["-s,", "1", "5"]),
-    ("sq12-sep-dashdash", "strict", "", "", "", ["-s", "--", "1", "3"]),
-    ("sq13-fmt-f2", "strict", "", "", "", ["-f", "%.2f", "1", "3"]),
-    ("sq14-fmt-w51", "strict", "", "", "", ["-f", "%5.1f", "1", "3"]),
-    ("sq15-fmt-g", "strict", "", "", "", ["-f", "%g", "1.5", "0.5", "3"]),
-    ("sq16-float-step", "strict", "", "", "", ["1.5", "0.2", "2.5"]),
-    ("sq17-float-down", "strict", "", "", "", ["0", "-0.1", "-0.3"]),
-    ("sq18-float-quarter", "strict", "", "", "", ["1.0", "0.25", "2"]),
-    ("sq19-rounding-fixup", "strict", "", "", "", ["0", "0.000001", "0.000003"]),
-    ("sq20-sci-int", "strict", "", "", "", ["1e1", "1e1"]),
-    ("sq21-lead-zeros", "strict", "", "", "", ["09", "10"]),
-    ("sq22-big-int", "strict", "", "", "",
-     ["100000000000000000000", "100000000000000000010"]),
-    ("sq23-big-step200", "strict", "", "", "",
-     ["1000000000000000000000", "200", "1000000000000000002200"]),
-    ("sq24-dashdash-neg", "strict", "", "", "", ["--", "-3", "1"]),
-    ("sq25-no-args", "strict", "", "", "", []),
-    ("sq26-extra-operand", "strict", "", "", "", ["1", "2", "3", "4"]),
-    ("sq27-bad-arg", "strict", "", "", "", ["abc"]),
-    ("sq28-zero-incr", "strict", "", "", "", ["1", "0", "3"]),
-    ("sq29-w-f-conflict", "strict", "", "", "", ["-w", "-f", "%.2f", "1", "2"]),
-    ("sq30-fmt-no-directive", "strict", "", "", "", ["-f", "abc", "1", "3"]),
-    ("sq31-fmt-unknown-d", "strict", "", "", "", ["-f", "%d", "1", "3"]),
-    ("sq32-fmt-pct-pct", "strict", "", "", "", ["-f", "%%g", "1", "2"]),
-    ("sq33-fmt-too-many", "strict", "", "", "", ["-f", "%f%g", "1", "2"]),
-    ("sq34-hexfloat", "strict", "", "", "", ["0x1p3"]),
-    ("sq35-hexfloat-p", "strict", "", "", "", ["0x1.8p3"]),
-    ("sq36-hexf-fmt-a", "strict", "", "", "", ["-f", "%.1a", "1", "2"]),
-    ("sq37-hexf-fmt-A", "strict", "", "", "", ["-f", "%A", "1.5", "2.5"]),
-    ("sq38-sign-flags", "strict", "", "", "", ["-f", "%+.1f", "1", "3"]),
-    ("sq39-space-flag", "strict", "", "", "", ["-f", "% f", "1", "3"]),
-    ("sq40-alt-flag", "strict", "", "", "", ["-f", "%#.0f", "1", "3"]),
-    ("sq41-e-conv", "strict", "", "", "", ["-f", "%.0e", "1", "3"]),
-    ("sq42-E-conv", "strict", "", "", "", ["-f", "%E", "1234", "1", "1235"]),
-    ("sq43-G-conv", "strict", "", "", "", ["-f", "%.3G", "1234567", "1", "1234570"]),
-    ("sq44-zero-pad", "strict", "", "", "", ["-f", "%08.3f", "1", "3"]),
-    ("sq45-left-pad", "strict", "", "", "", ["-f", "%-8.2f|", "1", "3"]),
-    ("sq46-suffix", "strict", "", "", "", ["-f", "x%g", "1", "2"]),
-    ("sq47-suffix-space", "strict", "", "", "", ["-f", "%g ", "1", "2"]),
-    ("sq48-d-dot", "strict", "", "", "", ["1.", "2"]),
-    ("sq49-dot-lead", "strict", "", "", "", [".5", "2"]),
-    ("sq50-plus-signs", "strict", "", "", "", ["+2", "+1", "+6"]),
-    # exact-decimal stepping (borrow-algo #1488); all probed vs GNU 9.4
-    ("sq51-exact-audit", "strict", "", "", "",
-     ["0.9999999999999999999", "1.0000000000000000002"]),
-    ("sq52-exact-audit-w", "strict", "", "", "",
-     ["-w", "0.9999999999999999999", "1.0000000000000000002"]),
-    ("sq53-exact-subulp", "strict", "", "", "",
-     ["0.9999999999999999999", "0.0000000000000000001",
-      "1.0000000000000000002"]),
-    ("sq54-exact-sci23", "strict", "", "", "", ["1e23", "1e23"]),
-    ("sq55-exact-drift1k", "strict", "", "", "", ["0", "0.001", "1"]),
-    ("sq56-exact-18grid", "strict", "", "", "",
-     ["0.000000000000000001", "0.00000000000000001"]),
-    ("sq57-exact-19grid", "strict", "", "", "",
-     ["0", "0.0000000000000000001", "0.0000000000000000003"]),
-    ("sq58-exact-negzero", "strict", "", "", "", ["-0.0", "0.2", "0.4"]),
-    ("sq59-exact-ld-boundary", "strict", "", "", "",
-     ["0.99999999999999999999", "2"]),
-    ("sq60-exact-boundary2", "strict", "", "", "",
-     ["2", "2.0000000000000000001", "2.0000000000000000005"]),
-]
 
 fold_rows = [
     ("fo01-w4", "strict", "", "", "aaa bbb ccc", ["-w", "4"]),
@@ -1532,10 +1559,13 @@ stat_rows = [
     ("st22-missing-f", "strict", stat_setup, "", "", ["-c", "%n", "gone"]),
     # #1572: a bare name whose only on-disk form is `<name>.exe` stats like
     # the engine's `test -e/-x` already answers it (Git Bash resolves it
-    # transparently); the display keeps the operand as typed.
-    ("st23-bare-exe", "strict", r"printf 'x' > java.exe", "", "",
+    # transparently); the display keeps the operand as typed. win-gated: the
+    # completion is Windows exec resolution, which GNU stat does not do (the
+    # WSL oracle answers ENOENT), and the 1.x dispatcher already behaved this
+    # way — so the row gates Rust-vs-C++ status, not bytes against GNU.
+    ("st23-bare-exe", "win", r"printf 'x' > java.exe", "", "",
      ["-c", "%n|%F", "java"]),
-    ("st24-bare-exe-L", "strict", r"printf 'x' > java.exe", "", "",
+    ("st24-bare-exe-L", "win", r"printf 'x' > java.exe", "", "",
      ["-L", "-c", "%n|%F", "java"]),
     # An explicit extension is never completed: `java.txt` must not resolve
     # to `java.txt.exe` or to `java.exe`.
@@ -2154,8 +2184,38 @@ cut_rows = [
     ("ct29-missing-file", "strict", "", "", "", ["-c", "1", "nosuch"]),
     ("ct30-bytes-utf8", "strict", "", "", "\u00fcnxc", ["-b", "2"]),
     ("ct31-overlap", "strict", "", "", "a:b", ["-c", "1-2,1"]),
-    ("ct32-help", "strict", "", "", "", ["--help"]),
-    ("ct33-version", "strict", "", "", "", ["--version"]),
+    ("ct32-help", "win", "", "", "", ["--help"]),
+    ("ct33-version", "win", "", "", "", ["--version"]),
+
+    # wave-W2 wire (#1488): shapes the wired product must keep byte-exact —
+    # multi/empty output delimiters, list diagnostics, -s/--complement
+    # combinations, an unterminated -z tail.
+    ("ct34-outdelim-multi", "strict", "", "", "a:b:c",
+     ["-d", ":", "-f", "1-2", "--output-delimiter=XY"]),
+    ("ct35-outdelim-empty", "strict", "", "", "a:b:c",
+     ["-d", ":", "-f", "1,3", "--output-delimiter="]),
+    ("ct36-bad-list-x", "strict", "", "", "abc", ["-f", "3x"]),
+    ("ct37-list-bare-dash", "strict", "", "", "abc", ["-f", "-"]),
+    ("ct38-delim-multichar", "strict", "", "", "a:b", ["-d", "ab", "-f", "1"]),
+    ("ct39-s-on-bytes", "strict", "", "", "abc", ["-s", "-c", "1"]),
+    ("ct40-both-lists", "strict", "", "", "abc", ["-b", "1", "-c", "1"]),
+    ("ct41-z-unterminated", "strict", "printf 'a:b\\0c:d' > zt", "", "",
+     ["-z", "-d", ":", "-f", "2", "zt"]),
+    ("ct42-f-past-end", "strict", "", "", "a:b", ["-d", ":", "-f", "5"]),
+    ("ct43-complement-delim", "strict", "", "", "a:b:c",
+     ["-d", ":", "-f", "1,2", "--complement"]),
+    ("ct44-trailing-delim", "strict", "", "", "a:b:", ["-d", ":", "-f", "2"]),
+    ("ct45-open-start-complement", "strict", "", "", "a:b:c",
+     ["-d", ":", "-f", "-2", "--complement"]),
+    # -z with -d '' : field delimiter == record delimiter (cut.c
+    # cut_fields; #1511) — the whole input is one record.
+    ("ct46-zero-empty-delim", "strict", "printf 'a\\0b\\0c\\0' > zn", "", "",
+     ["-z", "-d", "", "-f", "2", "zn"]),
+    ("ct47-zero-empty-delim-complement", "strict",
+     "printf 'a\\0b\\0c\\0' > zn", "", "",
+     ["-z", "--complement", "-d", "", "-f", "2", "zn"]),
+    ("ct48-zero-empty-delim-suppress", "strict", "printf 'abc' > plain", "", "",
+     ["-z", "-s", "-d", "", "-f", "1", "plain"]),
 ]
 
 tr_rows = [
@@ -2194,8 +2254,22 @@ tr_rows = [
     ("tr33-d-without-s-2ops", "strict", "", "", "ab", ["-d", "a", "b"]),
     ("tr34-plain-range", "strict", "", "", "abcd", ["a-d", "1234"]),
     ("tr35-range-partial", "strict", "", "", "a[b", ["a-", "XY"]),
-    ("tr36-help", "strict", "", "", "", ["--help"]),
-    ("tr37-version", "strict", "", "", "", ["--version"]),
+    ("tr36-help", "win", "", "", "", ["--help"]),
+    ("tr37-version", "win", "", "", "", ["--version"]),
+
+    # wave-W2 wire (#1488): -A is GNU's undocumented no-op (the library
+    # rejected it before the wire), plus the clustered/complement forms the
+    # wired body must keep byte-exact.
+    ("tr38-undocumented-A", "strict", "", "", "abc", ["-A", "a-z", "A-Z"]),
+    ("tr39-C-complement", "strict", "", "", "abc", ["-C", "a", "x"]),
+    ("tr40-squeeze-space", "strict", "", "", "a  b   c", ["-s", " "]),
+    ("tr41-cd-digit", "strict", "", "", "a1b2", ["-cd", "[:digit:]"]),
+    ("tr42-ds-two-sets", "strict", "", "", "aabb", ["-ds", "a", "b"]),
+    ("tr43-range-lower", "strict", "", "", "HELLO", ["A-Z", "a-z"]),
+    ("tr44-nested-class", "strict", "", "", "a1b2", ["[[:digit:]]", "x"]),
+    ("tr45-truncate-short", "strict", "", "", "abcd", ["-t", "abcd", "xy"]),
+    # tr.c validate(): [=c=] in string2 while translating is fatal.
+    ("tr46-equiv-string2", "strict", "", "", "aba", ["a", "[=a=]"]),
 ]
 
 od_rows = [
@@ -2234,8 +2308,51 @@ od_rows = [
     ("od32-width3-hex", "strict", "", "", "abcde", ["-An", "-w3", "-tx1"]),
     ("od33-long-forms", "strict", "", "", "abc", ["--format=o2", "--address-radix=d"]),
     ("od34-dir-operand", "strict", "mkdir d", "", "", ["-An", "-c", "d"]),
-    ("od35-help", "strict", "", "", "", ["--help"]),
-    ("od36-version", "strict", "", "", "", ["--version"]),
+    ("od35-help", "win", "", "", "", ["--help"]),
+    ("od36-version", "win", "", "", "", ["--version"]),
+
+    # wave-W2 wire (#1488): -j/-N print addresses in the combined input's
+    # coordinate space, plus the -S/--strings and old-style operand forms
+    # the 1.x body carried (od.c dump_strings / parse_old_offset).
+    ("od37-j-address", "strict", "", "", "abcd", ["-j", "2", "-c"]),
+    ("od38-N-address", "strict", "", "", "abcd", ["-N", "2", "-c"]),
+    ("od39-strings", "strict", "printf 'xxhello\\0world\\n' > s1", "", "",
+     ["-An", "-S5", "s1"]),
+    ("od40-strings-address", "strict", "printf 'xxhello\\0' > s2", "", "",
+     ["-S5", "s2"]),
+    ("od41-strings-type-conflict", "strict", "", "", "abc", ["-S5", "-tx1"]),
+    ("od42-trad-offset", "strict", "", "", "abcdef", ["--traditional", "2"]),
+    ("od43-trad-label", "strict", "", "", "abcdef",
+     ["--traditional", "2", "3"]),
+    ("od44-trad-label-an", "strict", "", "", "abcdef",
+     ["-An", "--traditional", "2", "16"]),
+    ("od45-strings-N", "strict", "printf 'hello\\0wo' > s3", "", "",
+     ["-An", "-S3", "-N8", "s3"]),
+    ("od46-trad-file-offset", "strict", "printf 'abcdefghij' > g1", "", "",
+     ["g1", "2"]),
+    ("od47-trad-two-files", "strict",
+     "printf 'abc' > g1; printf 'def' > g2", "", "",
+     ["--traditional", "g1", "g2"]),
+    ("od48-strings-default", "strict", "printf 'xxhello\\0' > s4", "", "",
+     ["--strings", "s4"]),
+    ("od49-strings-invalid", "strict", "", "", "x", ["-Sabc"]),
+    # od.c main(): every operand failing to open skips dump() entirely.
+    ("od50-missing-file", "strict", "", "", "", ["nosuch"]),
+    # obsolescent CASE_OLD_ARG letters and the multi-spec pad/order rules
+    # (differential regressions 79/80); the `z` trailer belongs to the spec
+    # it is spelled on.
+    ("od51-legacy-letters", "strict", "printf 'abcdefgh' > g5", "", "",
+     ["-D", "-e", "-H", "-O", "g5"]),
+    ("od52-legacy-cluster", "strict", "printf 'abcdefgh' > g5", "", "",
+     ["-bc", "g5"]),
+    ("od53-spec-order", "strict", "printf 'ab' > g6", "", "",
+     ["-t", "x1", "-b", "g6"]),
+    ("od54-z-per-type", "strict", "printf 'ab' > g6", "", "",
+     ["-tx1z", "-to1", "g6"]),
+    ("od55-multi-pad", "strict", "printf 'abcd' > g6", "", "",
+     ["-An", "-t", "x1", "-t", "o1", "g6"]),
+    ("od56-named-char", "strict", "printf 'ab' > g6", "", "",
+     ["-a", "-c", "g6"]),
 ]
 
 sum_rows = [
@@ -2260,9 +2377,25 @@ sum_rows = [
     ("sm15-both-flags", "strict", "", "", "abc", ["-r", "-s"]),
     ("sm16-bogus-long", "strict", "", "", "", ["--bogus"]),
     ("sm17-dir-operand", "strict", "mkdir d", "", "", ["d"]),
-    ("sm18-help", "strict", "", "", "", ["--help"]),
-    ("sm19-version", "strict", "", "", "", ["--version"]),
+    ("sm18-help", "win", "", "", "", ["--help"]),
+    ("sm19-version", "win", "", "", "", ["--version"]),
     ("sm20-newlines", "strict", "printf '1\\n2\\n3\\n4\\n5\\n' > f", "", "", ["f"]),
+
+    # wave-W2 wire (#1488): clustered algorithm flags keep GNU's
+    # last-one-wins, the SysV path past one 512-byte block, and the
+    # stdin/multi-operand shapes the wired body must keep byte-exact.
+    ("sm21-clustered-rs", "strict", "printf 'abcdef' > f", "", "", ["-rs", "f"]),
+    ("sm22-clustered-sr", "strict", "printf 'abcdef' > f", "", "", ["-sr", "f"]),
+    ("sm23-sysv-700", "strict",
+     "i=0; while [ $i -lt 70 ]; do printf 'abcdefghij'; i=$((i+1)); done > f; :",
+     "", "", ["-s", "f"]),
+    ("sm24-two-dash-stdin", "strict", "", "", "ab", ["-", "-"]),
+    ("sm25-sysv-dir", "strict", "mkdir d", "", "", ["-s", "d"]),
+    ("sm26-bsd-1025", "strict",
+     "i=0; while [ $i -lt 102 ]; do printf 'abcdefghij'; i=$((i+1)); done > f; printf 'abcde' >> f",
+     "", "", ["f"]),
+    ("sm27-long-sysv", "strict", "printf 'abcdef' > f", "", "", ["--sysv", "f"]),
+    ("sm28-empty-dash", "strict", "", "", "", ["-"]),
 ]
 
 mktemp_rows = [
@@ -2291,8 +2424,8 @@ mktemp_rows = [
     ("mk23-dir-quiet", "exit", "", "", "", ["-d", "-q", "d.XXXXXX"]),
     ("mk24-tmpdir-env", "exit", "TMPDIR=/tmp", "", "", ["--tmpdir", "mte.XXXXXX"]),
     ("mk25-bogus-long", "strict", "", "", "", ["--bogus"]),
-    ("mk26-help", "strict", "", "", "", ["--help"]),
-    ("mk27-version", "strict", "", "", "", ["--version"]),
+    ("mk26-help", "win", "", "", "", ["--help"]),
+    ("mk27-version", "win", "", "", "", ["--version"]),
 ]
 
 NICE_CHILD_SETUP = (
@@ -2515,6 +2648,331 @@ rev_rows = [
      ["r12"]),
 ]
 
+# ---------------------------------------------------------------------------
+# `grep` (#1488 grep wave) — GNU grep 3.11 (WSL oracle) byte-for-byte.
+# BRE/ERE compile through winux-regex; -F is literal; -P is NOT gated here
+# (the C++ PCRE2 path owns it — the wired dispatcher routes -P before the
+# rust2 library runs, so a -P row would compare the routing error against
+# real PCRE2 output). Binary files, recursion order (one file per dir /
+# chains only — readdir order is platform-owned), diagnostics and the
+# --color SGR bytes are all strict rows.
+# ---------------------------------------------------------------------------
+
+GREP_T_SETUP = "printf 'foo bar\\nbaz\\nfoofoo\\n' > t.txt"
+GREP_C_SETUP = (
+    "printf 'l1 no\\nl2 fox\\nl3 no\\nl4 no\\nl5 fox\\nl6 no\\n' > c.txt"
+)
+GREP_BIN_SETUP = "printf 'abc\\0def\\nfox here\\n' > bin.txt"
+
+grep_rows = [
+    ("gp01-plain", "strict", GREP_T_SETUP, "", "", ["foo", "t.txt"]),
+    ("gp02-nomatch", "strict", GREP_T_SETUP, "", "", ["zzz", "t.txt"]),
+    ("gp03-stdin", "strict", "", "", "foo bar\\nbaz\\n", ["foo"]),
+    ("gp04-stdin-empty", "strict", "", "", "", ["foo"]),
+    ("gp05-two-files", "strict",
+     GREP_T_SETUP + "; printf 'bar\\nfoo\\n' > u.txt", "", "",
+     ["foo", "t.txt", "u.txt"]),
+    ("gp06-h-two-files", "strict",
+     GREP_T_SETUP + "; printf 'foo\\n' > u.txt", "", "",
+     ["-h", "foo", "t.txt", "u.txt"]),
+    ("gp07-H-single", "strict", GREP_T_SETUP, "", "",
+     ["-H", "foo", "t.txt"]),
+    ("gp08-c-single", "strict", GREP_T_SETUP, "", "", ["-c", "foo", "t.txt"]),
+    ("gp09-c-multifile", "strict",
+     GREP_T_SETUP + "; cp t.txt u.txt", "", "", ["-c", "foo", "t.txt", "u.txt"]),
+    ("gp10-c-v", "strict", GREP_T_SETUP, "", "", ["-c", "-v", "foo", "t.txt"]),
+    ("gp11-c-empty-file", "strict", ": > e.txt", "", "",
+     ["-c", "foo", "e.txt"]),
+    ("gp12-l-match", "strict", GREP_T_SETUP, "", "", ["-l", "foo", "t.txt"]),
+    ("gp13-l-nomatch", "strict", GREP_T_SETUP, "", "", ["-l", "zzz", "t.txt"]),
+    ("gp14-L-match", "strict", GREP_T_SETUP, "", "", ["-L", "foo", "t.txt"]),
+    ("gp15-L-nomatch", "strict", GREP_T_SETUP, "", "", ["-L", "zzz", "t.txt"]),
+    ("gp16-q-match", "strict", GREP_T_SETUP, "", "", ["-q", "foo", "t.txt"]),
+    ("gp17-q-nomatch", "strict", GREP_T_SETUP, "", "", ["-q", "zzz", "t.txt"]),
+    ("gp18-q-missing-match", "strict", GREP_T_SETUP, "", "",
+     ["-q", "foo", "missing.txt", "t.txt"]),
+    ("gp19-q-missing-nomatch", "strict", GREP_T_SETUP, "", "",
+     ["-q", "zzz", "missing.txt", "t.txt"]),
+    ("gp20-missing-single", "strict", GREP_T_SETUP, "", "",
+     ["foo", "missing.txt"]),
+    ("gp21-missing-middle", "strict",
+     "printf 'foo\\n' > u.txt", "", "",
+     ["foo", "missing.txt", "u.txt"]),
+    ("gp22-missing-s", "strict", GREP_T_SETUP, "", "",
+     ["-s", "foo", "missing.txt", "t.txt"]),
+    ("gp23-missing-nomatch-s", "strict", GREP_T_SETUP, "", "",
+     ["-s", "zzz", "missing.txt", "t.txt"]),
+    ("gp24-n", "strict", GREP_T_SETUP, "", "", ["-n", "foo", "t.txt"]),
+    ("gp25-b", "strict", GREP_T_SETUP, "", "", ["-b", "foo", "t.txt"]),
+    ("gp26-n-b", "strict", "printf 'abc\\nfox\\n' > nb.txt", "", "",
+     ["-n", "-b", "fox", "nb.txt"]),
+    ("gp27-T-n-b", "strict", "printf 'abc\\nfox\\n' > nb.txt", "", "",
+     ["-T", "-n", "-b", "fox", "nb.txt"]),
+    ("gp28-o-basic", "strict", GREP_T_SETUP, "", "", ["-o", "foo", "t.txt"]),
+    ("gp29-o-b", "strict", "printf 'aa fox\\nbb fox\\n' > bo.txt", "", "",
+     ["-b", "-o", "fox", "bo.txt"]),
+    ("gp30-o-empty", "strict", GREP_T_SETUP, "", "", ["-o", "", "t.txt"]),
+    ("gp31-o-i", "strict", "printf 'FoO fOo\\n' > io.txt", "", "",
+     ["-i", "-o", "foo", "io.txt"]),
+    ("gp32-o-w", "strict", "printf 'fox foxes firefox afox\\n' > w.txt", "", "",
+     ["-o", "-w", "fox", "w.txt"]),
+    ("gp33-o-leftmost-longest", "strict",
+     "printf 'foobar here\\n' > m.txt", "", "",
+     ["-o", "-e", "foo", "-e", "foobar", "m.txt"]),
+    ("gp34-o-bre-interval", "strict", "printf 'sooooo\\n' > s.txt", "", "",
+     ["-o", "o\\{2,3\\}", "s.txt"]),
+    ("gp35-o-v", "strict", GREP_T_SETUP, "", "", ["-v", "-o", "foo", "t.txt"]),
+    ("gp36-i", "strict", "printf 'FOO foo Foo\\n' > i.txt", "", "",
+     ["-i", "foo", "i.txt"]),
+    ("gp37-w", "strict", "printf 'fox foxes firefox afox\\n' > w.txt", "", "",
+     ["-w", "fox", "w.txt"]),
+    ("gp38-x", "strict", "printf 'foo\\nfoo bar\\nxfoox\\n' > x.txt", "", "",
+     ["-x", "foo", "x.txt"]),
+    ("gp39-x-E-alt", "strict", "printf 'foo\\nfoo bar\\nbaz\\n' > x.txt", "", "",
+     ["-x", "-E", "foo|baz", "x.txt"]),
+    ("gp40-x-empty", "strict", "printf 'a\\n\\nb\\n' > x.txt", "", "",
+     ["-c", "-x", "", "x.txt"]),
+    ("gp41-v", "strict", GREP_T_SETUP, "", "", ["-v", "foo", "t.txt"]),
+    ("gp42-v-empty", "strict", GREP_T_SETUP, "", "", ["-v", "", "t.txt"]),
+    ("gp43-v-m1", "strict", GREP_C_SETUP, "", "", ["-v", "-m1", "no", "c.txt"]),
+    ("gp44-m1", "strict",
+     "printf 'foo\\nbar\\nfoo\\nfoo\\n' > m2.txt", "", "",
+     ["-m1", "foo", "m2.txt"]),
+    ("gp45-m2", "strict",
+     "printf 'foo\\nbar\\nfoo\\nfoo\\n' > m2.txt", "", "",
+     ["-m2", "foo", "m2.txt"]),
+    ("gp46-m0", "strict", GREP_T_SETUP, "", "", ["-m0", "foo", "t.txt"]),
+    ("gp47-m0-missing", "strict", GREP_T_SETUP, "", "",
+     ["-m0", "foo", "missing.txt"]),
+    ("gp48-m-beyond", "strict", GREP_T_SETUP, "", "",
+     ["-m5", "foo", "t.txt"]),
+    ("gp49-m-c", "strict", GREP_T_SETUP, "", "", ["-m1", "-c", "foo", "t.txt"]),
+    ("gp50-m-invalid", "exit", GREP_T_SETUP, "", "", ["-m", "x", "foo", "t.txt"]),
+    ("gp51-E-alt", "strict", GREP_T_SETUP, "", "", ["-E", "foo|baz", "t.txt"]),
+    ("gp52-E-interval", "strict", "printf 'sooooo\\nso\\n' > s.txt", "", "",
+     ["-E", "-o", "o{2,3}", "s.txt"]),
+    ("gp53-BRE-alt", "strict", GREP_T_SETUP, "", "",
+     ["\\(foo\\|baz\\)", "t.txt"]),
+    ("gp54-BRE-plus", "strict", "printf 'sooooo\\nso\\n' > s.txt", "", "",
+     ["-o", "o\\+", "s.txt"]),
+    ("gp55-BRE-qmark", "strict", "printf 'color\\ncolour\\n' > q.txt", "", "",
+     ["colou\\?r", "q.txt"]),
+    ("gp56-BRE-backref", "strict", "printf 'abcabc\\nabcx\\n' > r.txt", "", "",
+     ["\\(abc\\)\\1", "r.txt"]),
+    ("gp57-ERE-backref", "strict", "printf 'aa\\nab\\n' > r.txt", "", "",
+     ["-E", "(a)\\1", "r.txt"]),
+    ("gp58-class", "strict", GREP_T_SETUP, "", "",
+     ["-o", "[[:alpha:]]\\+", "t.txt"]),
+    ("gp59-F-metachars", "strict", "printf 'f.o\\nfoo\\n' > fm.txt", "", "",
+     ["-F", "f.o", "fm.txt"]),
+    ("gp60-fixed-regexp", "strict", "printf 'f.o\\nfoo\\n' > fm.txt", "", "",
+     ["--fixed-regexp", "f.o", "fm.txt"]),
+    ("gp61-A1", "strict", GREP_C_SETUP, "", "", ["-A1", "fox", "c.txt"]),
+    ("gp62-B1", "strict", GREP_C_SETUP, "", "", ["-B1", "fox", "c.txt"]),
+    ("gp63-C1-merge", "strict", GREP_C_SETUP, "", "", ["-C1", "fox", "c.txt"]),
+    ("gp64-A2", "strict", GREP_C_SETUP, "", "", ["-A2", "fox", "c.txt"]),
+    ("gp65-C1-groupsep", "strict",
+     "printf 'l1 no\\nl2 fox\\nl3 no\\nl4 gap\\nl5 fox\\nl6 no\\n' > c.txt",
+     "", "", ["-C1", "--group-separator=%%", "fox", "c.txt"]),
+    ("gp66-nogroupsep", "strict",
+     "printf 'l1 no\\nl2 fox\\nl3 no\\nl4 gap\\nl5 fox\\nl6 no\\n' > c.txt",
+     "", "", ["-A1", "--no-group-separator", "fox", "c.txt"]),
+    ("gp67-2digit", "strict", "printf 'a\\nfox\\nb\\n' > d.txt", "", "",
+     ["-2", "fox", "d.txt"]),
+    ("gp68-m-context", "strict",
+     "printf 'l1\\nfox\\nl3\\nl4\\nfox\\nl6\\n' > am.txt", "", "",
+     ["-m1", "-A1", "fox", "am.txt"]),
+    ("gp69-bin-match", "strict", GREP_BIN_SETUP, "", "", ["fox", "bin.txt"]),
+    ("gp70-bin-c", "strict", GREP_BIN_SETUP, "", "", ["-c", "fox", "bin.txt"]),
+    ("gp71-bin-l", "strict", GREP_BIN_SETUP, "", "", ["-l", "fox", "bin.txt"]),
+    ("gp72-bin-q", "exit", GREP_BIN_SETUP, "", "", ["-q", "fox", "bin.txt"]),
+    ("gp73-bin-I", "strict", GREP_BIN_SETUP, "", "", ["-I", "fox", "bin.txt"]),
+    ("gp74-bin-a", "strict", GREP_BIN_SETUP, "", "", ["-a", "fox", "bin.txt"]),
+    ("gp75-bin-without", "strict", GREP_BIN_SETUP, "", "",
+     ["--binary-files=without-match", "fox", "bin.txt"]),
+    ("gp76-bin-stdin", "strict", GREP_BIN_SETUP, "", "", ["fox", "-"]),
+    ("gp77-z-c", "strict", "printf 'a\\0b\\nc\\0b\\n' > z.bin", "", "",
+     ["-c", "-z", "b", "z.bin"]),
+    ("gp78-r-one-file", "strict",
+     "mkdir -p sub; printf 'fox sub\\n' > sub/b1.txt", "", "",
+     ["-r", "fox", "sub"]),
+    ("gp79-r-missing", "strict", "", "", "", ["-r", "fox", "nodir"]),
+    ("gp80-r-include", "strict",
+     "mkdir -p sub; printf 'fox s\\n' > sub/b1.txt; printf 'fox l\\n' > a.log",
+     "", "", ["-r", "--include=*.log", "fox", "."]),
+    ("gp81-r-exclude", "strict",
+     "mkdir -p w/sub; printf 'fox s\\n' > w/sub/b1.txt; printf 'fox l\\n' > w/a.log",
+     "", "", ["-r", "--exclude=*.log", "fox", "w"]),
+    ("gp82-r-exclude-dir", "strict",
+     "mkdir -p w/sub; printf 'fox s\\n' > w/sub/b1.txt; printf 'fox t\\n' > w/a1.txt",
+     "", "", ["-r", "--exclude-dir=sub", "fox", "w"]),
+    ("gp83-r-explicit-deep", "strict",
+     "mkdir -p d1/d2; printf 'fox d2\\n' > d1/d2/f.txt", "", "",
+     ["-r", "fox", "d1"]),
+    ("gp84-r-h", "strict",
+     "mkdir -p sub; printf 'fox s\\n' > sub/b1.txt", "", "",
+     ["-r", "-h", "fox", "sub"]),
+    ("gp85-r-c", "strict",
+     "mkdir -p sub; printf 'fox s\\n' > sub/b1.txt", "", "",
+     ["-r", "-c", "fox", "sub"]),
+    ("gp86-r-chain", "strict",
+     "mkdir -p s1/s2; printf 'fox deep\\n' > s1/s2/c1.txt", "", "",
+     ["-r", "fox", "s1"]),
+    ("gp87-exclude-operand", "strict", "printf 'fox\\n' > a1.txt", "", "",
+     ["--exclude=a1.txt", "fox", "a1.txt"]),
+    ("gp88-include-operand", "strict", "printf 'fox\\n' > a1.txt", "", "",
+     ["--include=*.log", "fox", "a1.txt"]),
+    ("gp89-label-stdin", "strict", "", "", "foo\\nbar\\n",
+     ["--label=LAB", "-H", "foo"]),
+    ("gp90-label-file", "strict", GREP_T_SETUP, "", "",
+     ["--label=LAB", "-H", "foo", "t.txt"]),
+    ("gp91-Z-H", "strict", GREP_T_SETUP, "", "", ["-Z", "-H", "foo", "t.txt"]),
+    ("gp92-u-warning", "strict", "printf 'fox\\n' > t.txt", "", "",
+     ["-u", "-n", "fox", "t.txt"]),
+    ("gp93-U", "strict", "printf 'fox\\n' > t.txt", "", "",
+     ["-U", "fox", "t.txt"]),
+    ("gp94-line-buffered", "strict", GREP_T_SETUP, "", "",
+     ["--line-buffered", "foo", "t.txt"]),
+    ("gp95-color", "strict", GREP_T_SETUP, "", "",
+     ["--color=always", "foo", "t.txt"]),
+    ("gp96-color-n", "strict", GREP_T_SETUP, "", "",
+     ["--color=always", "-n", "foo", "t.txt"]),
+    ("gp97-color-never", "strict", GREP_T_SETUP, "", "",
+     ["--color=never", "foo", "t.txt"]),
+    ("gp98-color-bogus", "exit", GREP_T_SETUP, "", "",
+     ["--color=bogus", "foo", "t.txt"]),
+    ("gp99-d-bogus", "exit", GREP_T_SETUP, "", "",
+     ["-d", "bogus", "foo", "t.txt"]),
+    ("gp100-D-bogus", "exit", GREP_T_SETUP, "", "", ["-D", "bogus", "foo"]),
+    ("gp101-binaryfiles-bogus", "exit", GREP_T_SETUP, "", "",
+     ["--binary-files=bogus", "foo"]),
+    ("gp102-d-skip-dir", "strict",
+     "mkdir -p dd; printf 'fox\\n' > dd/f.txt", "", "",
+     ["-d", "skip", "fox", "dd"]),
+    ("gp103-d-read-dir", "strict", "mkdir -p dd", "", "", ["foo", "dd"]),
+    ("gp104-A-invalid", "exit", GREP_T_SETUP, "", "", ["-A", "-1", "foo"]),
+    ("gp105-invalid-regex", "strict", GREP_T_SETUP, "", "", ["[", "t.txt"]),
+    ("gp106-invalid-regex-s", "strict", GREP_T_SETUP, "", "",
+     ["-s", "[", "t.txt"]),
+    ("gp107-no-pattern", "strict", GREP_T_SETUP, "", "", []),
+    ("gp108-e-missing-arg", "exit", GREP_T_SETUP, "", "", ["-e"]),
+    ("gp109-ex-ambiguous", "exit", GREP_T_SETUP, "", "", ["--ex", "x"]),
+    ("gp110-posixly-correct", "strict", GREP_T_SETUP, "POSIXLY_CORRECT=1", "",
+     ["foo", "t.txt", "--bogus"]),
+    ("gp111-dashdash", "strict", GREP_T_SETUP, "", "", ["--", "-n", "t.txt"]),
+    ("gp112-e-dash-pattern", "strict", "printf '-n ok\\n' > d.txt", "", "",
+     ["-e", "-n", "d.txt"]),
+    ("gp113-f-file", "strict",
+     "printf 'fox\\n\\nplain\\n' > pats.txt; printf 'plain\\n' > n.txt",
+     "", "", ["-f", "pats.txt", "n.txt"]),
+    ("gp114-f-empty", "strict", ": > ep.txt; printf 'foo\\n' > t.txt", "", "",
+     ["-f", "ep.txt", "t.txt"]),
+    ("gp115-f-empty-v", "strict", ": > ep.txt; printf 'foo\\n' > t.txt", "", "",
+     ["-v", "-f", "ep.txt", "t.txt"]),
+    ("gp116-f-missing", "strict", GREP_T_SETUP, "", "", ["-f", "missing.txt", "t.txt"]),
+    ("gp117-f-stdin", "strict", "printf 'plain\\n' > n.txt", "", "",
+     ["-f", "-", "n.txt"]),
+    ("gp118-utf8-dot", "strict",
+     "printf 'caf\\xc3\\xa9 next\\ncafe next\\n' > u.txt", "",
+     "", ["-o", ".", "u.txt"]),
+    ("gp119-crlf-match", "strict", "printf 'bar\\r\\nfoo\\n' > cr.txt", "", "",
+     ["bar", "cr.txt"]),
+    ("gp120-crlf-anchor", "strict", "printf 'bar\\r\\nfoo\\n' > cr.txt", "", "",
+     ["-c", "bar$", "cr.txt"]),
+    ("gp121-help", "win", GREP_T_SETUP, "", "", ["--help"]),
+    ("gp122-version", "win", GREP_T_SETUP, "", "", ["--version"]),
+    ("gp123-V", "win", GREP_T_SETUP, "", "", ["-V"]),
+    ("gp124-y-alias", "strict", "printf 'FOO\\n' > t.txt", "", "",
+     ["-y", "foo", "t.txt"]),
+    ("gp125-regexp-long", "strict", GREP_T_SETUP, "", "",
+     ["--regexp=foo", "t.txt"]),
+    ("gp126-max-count-long", "strict",
+     "printf 'foo\\nbar\\nfoo\\n' > m2.txt", "", "",
+     ["--max-count=2", "foo", "m2.txt"]),
+    ("gp127-D-read-devnull", "strict", "", "", "", ["-D", "skip", "foo", "/dev/null"]),
+    ("gp128-conflict", "exit", GREP_T_SETUP, "", "", ["-E", "-F", "foo", "t.txt"]),
+    ("gp129-same-matcher-twice", "strict", GREP_T_SETUP, "", "",
+     ["-E", "-E", "foo|baz", "t.txt"]),
+    ("gp130-no-ignore-case", "strict", "printf 'FOO\\n' > t.txt", "", "",
+     ["-i", "--no-ignore-case", "foo", "t.txt"]),
+    ("gp131-o-with-A1", "strict", GREP_C_SETUP, "", "", ["-o", "-A1", "fox", "c.txt"]),
+    ("gp132-empty-e", "strict", GREP_T_SETUP, "", "", ["-c", "-e", "", "t.txt"]),
+    ("gp133-z-line-numbers", "strict", "printf 'a\\0b\\nc\\0b\\n' > z.bin", "", "",
+     ["-n", "-z", "b", "z.bin"]),
+    # review-lane additions (2026-11-14, all probed vs WSL GNU 3.11 on both
+    # sides — see target/grep-review/probe2*.txt)
+    ("gp134-c-Z-multifile", "strict", GREP_T_SETUP + "; printf 'fox\\n' > u.txt",
+     "", "", ["-c", "-Z", "foo", "t.txt", "u.txt"]),
+    # bare `grep -r fox` (no operand) is probe-verified only: the gate
+    # scratch always holds the harness's own run.sh, which a bare -r
+    # sweeps and whose presence differs per side — not gateable here
+    # (target/grep-review/probe2.txt f2-bare-r-dot, byte-identical).
+    ("gp136-R-plain", "strict",
+     "mkdir -p sub; printf 'fox sub\\n' > sub/b1.txt", "", "",
+     ["-R", "fox", "sub"]),
+    ("gp137-F-f-lits", "strict",
+     "printf 'foo\\nbaz\\n' > pats.txt; printf 'fox\\nplain\\nbar\\n' > n.txt",
+     "", "", ["-F", "-f", "pats.txt", "n.txt"]),
+    ("gp138-A1-eof", "strict",
+     "printf 'l1 no\\nl2 fox\\nl3 no\\nl4 no\\nl5 fox\\nl6 no\\n' > e.txt",
+     "", "", ["-A1", "l6", "e.txt"]),
+    ("gp139-exclude-from", "strict",
+     "printf 'b.log\\n' > ex.txt; mkdir -p w; printf 'fox l\\n' > w/a.log;"
+     " printf 'fox b\\n' > w/b.log; printf 'no c\\n' > w/c.txt",
+     "", "", ["-r", "--exclude-from=ex.txt", "fox", "w"]),
+    ("gp140-inc-exc-order", "strict",
+     "mkdir -p m; printf 'fox a\\n' > m/a.log; printf 'fox b\\n' > m/b.log",
+     "", "",
+     ["-r", "--include=*.log", "--exclude=*.log", "fox", "m"]),
+    ("gp141-exc-inc-order", "strict",
+     "mkdir -p m; printf 'fox a\\n' > m/a.log; printf 'fox b\\n' > m/b.log",
+     "", "",
+     ["-r", "--exclude=*.log", "--include=*.log", "fox", "m"]),
+    ("gp142-w-x", "strict", GREP_T_SETUP, "", "", ["-w", "-x", "fox", "t.txt"]),
+    ("gp143-bf-text-long", "strict", "printf 'fox\\n' > n.txt", "", "",
+     ["--binary-files=text", "-c", "fox", "n.txt"]),
+]
+
+# `egrep` — Ubuntu's `exec grep -E "$@"` wrapper: help/version text says
+# "grep", an explicit second matcher conflicts (egrep -P probed conflict).
+egrep_rows = [
+    ("eg01-default-ere", "strict", GREP_T_SETUP, "", "", ["foo|baz", "t.txt"]),
+    ("eg02-P-conflict", "exit", GREP_T_SETUP, "", "", ["-P", "f.o", "t.txt"]),
+    ("eg03-E-ok", "strict", GREP_T_SETUP, "", "", ["-E", "foo|baz", "t.txt"]),
+    ("eg04-G-conflict", "exit", GREP_T_SETUP, "", "", ["-G", "foo", "t.txt"]),
+    ("eg05-help", "win", GREP_T_SETUP, "", "", ["--help"]),
+    ("eg06-version", "win", GREP_T_SETUP, "", "", ["--version"]),
+    ("eg07-no-pattern", "strict", GREP_T_SETUP, "", "", []),
+    ("eg08-c", "strict", GREP_T_SETUP, "", "", ["-c", "foo", "t.txt"]),
+    # review-lane additions (2026-11-14)
+    ("eg09-o-leftmost", "strict", GREP_T_SETUP, "", "",
+     ["-o", "foo(bar)?|foo", "t.txt"]),
+    ("eg10-C1", "strict", GREP_C_SETUP, "", "", ["-C1", "l2", "c.txt"]),
+    ("eg11-w", "strict", "printf 'foxes firefox afox\\n' > w.txt", "", "",
+     ["-w", "fox", "w.txt"]),
+]
+
+# `fgrep` — `exec grep -F "$@"`.
+fgrep_rows = [
+    ("fg01-default-fixed", "strict", "printf 'f.o\\nfoo\\n' > fm.txt", "", "",
+     ["f.o", "fm.txt"]),
+    ("fg02-E-conflict", "exit", GREP_T_SETUP, "", "", ["-E", "foo", "t.txt"]),
+    ("fg03-F-ok", "strict", "printf 'f.o\\nfoo\\n' > fm.txt", "", "",
+     ["-F", "f.o", "fm.txt"]),
+    ("fg04-help", "win", GREP_T_SETUP, "", "", ["--help"]),
+    ("fg05-version", "win", GREP_T_SETUP, "", "", ["--version"]),
+    ("fg06-i", "strict", "printf 'FoO\\n' > i.txt", "", "",
+     ["-i", "foo", "i.txt"]),
+    ("fg07-x", "strict", "printf 'foo bar\\nfoo\\n' > t.txt", "", "",
+     ["-x", "foo bar", "t.txt"]),
+    # review-lane additions (2026-11-14)
+    ("fg08-w", "strict", "printf 'foxes firefox afox\\n' > w.txt", "", "",
+     ["-w", "fox", "w.txt"]),
+    ("fg09-c-f-multilits", "strict",
+     "printf 'foo\\nbaz\\n' > pats.txt; printf 'fox\\nplain\\nbar\\n' > n.txt",
+     "", "", ["-c", "-f", "pats.txt", "n.txt"]),
+]
+
 # `factor` — operand grammar and u64 factorizations (all values probed
 # against WSL coreutils 9.4). Multi-line stdin cannot pass through the
 # case harness (stdin column is a single printf %s token), so stdin rows
@@ -2625,8 +3083,8 @@ nice_rows = [
     ("nc16-n-50", "strict", "", "", "", ["-n", "50"]),
     ("nc17-n-minus-50", "strict", "", "", "", ["-n", "-50"]),
     ("nc18-n-plus", "strict", "", "", "", ["-n", "+3"]),
-    ("nc19-help", "strict", "", "", "", ["--help"]),
-    ("nc20-version", "strict", "", "", "", ["--version"]),
+    ("nc19-help", "win", "", "", "", ["--help"]),
+    ("nc20-version", "win", "", "", "", ["--version"]),
     ("nc21-child-eq1", "exit", "printf '#!/bin/sh\\nexit 1\\n' > cmd; chmod +x cmd; export PATH=\"$PWD:$PATH\"",
      "", "", ["cmd", "/c", "exit", "1"]),
 ]
@@ -2860,6 +3318,27 @@ nohup_rows = [
     ("nh27-nonpe-badformat", "win", NH_PLAIN_SETUP, "", "", ["./plain.txt"]),
     # a directory operand is EACCES: 126 "Permission denied" (probed GNU)
     ("nh28-dir-operand", "strict", "", "", "", ["."]),
+    # ---- terminal faces (StdioMeta injection lane) ----
+    # The harness always redirects all three streams (< .stdin > .out
+    # 2> .err), so no pty exists on ANY side and GNU takes the same
+    # no-redirect path: the classification probes are strict. The
+    # face-dependent shapes stay `note` records — the host cannot
+    # allocate a pty in-harness; real console evidence is the ConPTY
+    # probe (rust2/gate/conpty-nohup.py) mirrored by WSL `script`
+    # typescripts (target/probe/nohup-tty.sh).
+    ("nh29-tty-class-probe", "strict", "", "", "",
+     ["sh", "-c",
+      "for f in 0 1 2; do [ -t $f ] && echo \"$f tty\" || echo \"$f notty\"; done"]),
+    ("nh30-nohup-out-absent", "strict", "", "", "",
+     ["sh", "-c", "ls nohup.out 2>/dev/null || echo absent"]),
+    # under a real console GNU feeds the child /dev/null: the read sees
+    # EOF instead of the piped "zz" bytes — record-only here.
+    ("nh31-stdin-read-record", "note", "", "", "zz",
+     ["sh", "-c", "read x; echo \"read=$x\""]),
+    # under a real console stdout is a tty: GNU appends to nohup.out and
+    # notices on stderr instead of passing "hi" through — record-only.
+    ("nh32-append-face-record", "note", "", "", "",
+     ["sh", "-c", "echo hi"]),
 ]
 
 pathchk_rows = [
@@ -3278,11 +3757,28 @@ mkfifo_rows = [
     ("mf17-Z-attached-invalid", "strict", "", "", "", ["-Zctx2", "pz2"]),
     ("mf18-context-after-dashdash", "strict", "", "", "", ["--", "--context=x"]),
     ("mf19-two-names", "strict", "", "", "", ["pa", "pb"]),
-    ("mf20-help", "strict", "", "", "", ["--help"]),
-    ("mf21-version", "strict", "", "", "", ["--version"]),
+    # sole --help/--version are the product's branded dispatcher surface
+    # (wave6 convention); the GNU help body is pinned by the rust2 unit
+    # test help_version_surface instead.
+    ("mf20-help", "win", "", "", "", ["--help"]),
+    ("mf21-version", "win", "", "", "", ["--version"]),
     ("mf22-mixed-failure", "strict", "", "", "", ["ok", "nodir/bad", "ok2"]),
     ("mf23-missing-value", "strict", "", "", "", ["-m"]),
     ("mf24-bogus-long", "strict", "", "", "", ["--bogus"]),
+    # wave-W4 additions (probed w4-mkfifo-mknod.sh)
+    ("mf25-mode-long-eq", "strict", "", "", "", ["--mode=644", "p"]),
+    ("mf26-mode-last-wins", "strict", "", "", "", ["-m", "600", "-m", "640", "p"]),
+    ("mf27-mode-empty-value", "strict", "", "", "", ["-m", "", "p"]),
+    ("mf28-mode-combined", "strict", "", "", "", ["-m", "u=rw,go=r", "p"]),
+    # --context= (empty PRESENT value) warns; bare --context does not
+    ("mf29-context-empty-value", "strict", "", "", "", ["--context=", "pz5"]),
+    # getopt_long unambiguous abbreviation, expanded by the dispatcher and
+    # accepted by the library scan alike
+    ("mf30-context-abbrev", "strict", "", "", "", ["--con=cval", "pz6"]),
+    ("mf31-context-abbrev-bare", "strict", "", "", "", ["--c", "pz7"]),
+    ("mf32-dashdash-operand", "strict", "", "", "", ["--", "-m"]),
+    # empty NAME is ENOENT, not "the cwd" (probed GNU 9.4)
+    ("mf33-empty-name", "strict", "", "", "", ["@EMPTY@"]),
 ]
 
 mknod_rows = [
@@ -3307,11 +3803,35 @@ mknod_rows = [
     ("mn17-context-warn-fifo", "strict", "", "", "", ["--context=c", "pf", "p"]),
     ("mn18-Z-bare-fifo", "strict", "", "", "", ["-Z", "pz", "p"]),
     ("mn19-missing-parent", "strict", "", "", "", ["nodir/x", "p"]),
-    ("mn20-help", "strict", "", "", "", ["--help"]),
-    ("mn21-version", "strict", "", "", "", ["--version"]),
+    # sole --help/--version: branded product surface (mkfifo mf20/mf21)
+    ("mn20-help", "win", "", "", "", ["--help"]),
+    ("mn21-version", "win", "", "", "", ["--version"]),
     ("mn22-mode-rejected-before-operands", "strict", "", "", "", ["-m", "bogus", "n", "p"]),
     ("mn23-missing-mode-value", "strict", "", "", "", ["-m"]),
     ("mn24-bogus-long", "strict", "", "", "", ["--bogus"]),
+    # wave-W4 additions (probed w4-mkfifo-mknod.sh): an EMPTY device
+    # number is "invalid ... ''" in GNU, never "missing"
+    ("mn25-empty-major", "strict", "", "", "", ["n", "c", "", "3"]),
+    ("mn26-empty-minor", "strict", "", "", "", ["n", "c", "1", ""]),
+    # strtoumax accepts '+' and 0x/0-prefixed numbers; device creation is
+    # root-only on the oracle, so these stay win (Rust vs C++ status)
+    ("mn27-plus-major", "win", "", "", "", ["mp", "c", "+1", "3"]),
+    ("mn28-dev-zero", "win", "", "", "", ["mz", "c", "0", "0"]),
+    ("mn29-fifo-mode-empty", "strict", "", "", "", ["-m", "", "n2", "p"]),
+    # --context= (empty present value) warns; bare --context is silent
+    ("mn30-context-empty", "strict", "", "", "", ["--context=", "pe", "p"]),
+    ("mn31-context-abbrev", "strict", "", "", "", ["--con=c", "pf2", "p"]),
+    ("mn32-context-abbrev-bare", "strict", "", "", "", ["--c", "pb2", "p"]),
+    ("mn33-exists-dir", "strict", "mkdir dd", "", "", ["dd", "p"]),
+    # empty NAME: GNU quotes it and reports ENOENT (probed)
+    ("mn34-empty-name", "strict", "", "", "", ["@EMPTY@", "p"]),
+    # TYPE is classified by its FIRST character (probed: pz/pp are fifos,
+    # bz/cx/uz block/char); trailing junk is ignored like GNU
+    ("mn35-type-suffix-fifo", "strict", "", "", "", ["mzs", "pz"]),
+    ("mn36-type-suffix-block", "win", "", "", "", ["mzb", "bz", "1", "2"]),
+    # operand-count errors precede TYPE validation (probed shape)
+    ("mn37-two-operand-bogus-type", "strict", "", "", "", ["xo", "x"]),
+    ("mn38-bad-type-before-minor", "strict", "", "", "", ["xo2", "x", "1", "zz"]),
 ]
 
 chcon_rows = [
@@ -3490,6 +4010,17 @@ chgrp_rows = [
     ("cg23-version", "strict", "", "", "", ["--version"]),
     ("cg24-numeric-two-files", "strict", "printf x > a; printf x > b", "", "",
      ["0", "a", "b"]),
+    # A1 preserve-root closure surfaces (probed WSL coreutils 9.4, 2026-11-14):
+    # dereference state machine, preserve-root parse/order, dot spec refusal.
+    # Named mutators stay exit/note (Windows group database, not GNU gid).
+    ("cg26-deref-with-H", "exit", "printf x > f", "", "",
+     ["-R", "--dereference", "-H", "0", "f"]),
+    ("cg28-preserve-flag", "exit", "mkdir d", "", "",
+     ["-R", "--preserve-root", "0", "d"]),
+    ("cg29-preserve-last-wins", "exit", "mkdir d", "", "",
+     ["-R", "--preserve-root", "--no-preserve-root", "0", "d"]),
+    ("cg32-dot-spec", "strict", "printf x > f", "", "", ["1.2", "f"]),
+    ("cg34-v-retained", "note", "printf x > f", "", "", ["-v", "0", "f"]),
 ]
 
 du_rows = [
@@ -3563,12 +4094,50 @@ du_rows = [
     ("du39-nested-operand", "strict", "mkdir -p d1/d2; echo x > d1/f", "", "",
      ["-b", "d1", "d1/d2"]),
     ("du40-repeated-zero-size", "strict", ": > f0", "", "", ["-b", "f0", "f0"]),
-    ("du28-help", "strict", "", "", "", ["--help"]),
-    ("du29-version", "strict", "", "", "", ["--version"]),
+    ("du28-help", "win", "", "", "", ["--help"]),
+    ("du29-version", "win", "", "", "", ["--version"]),
     ("du30-noargs", "win", "mkdir -p d; printf a > d/x", "", "", ["-b"]),
     ("du31-block-size-bogus", "strict", "printf a > a", "", "",
      ["--block-size=bogus", "a"]),
     ("du32-d0-file", "strict", "printf a > a", "", "", ["-b", "-d", "0", "a"]),
+    # -L/-H operand liveness (#1656, old-exe parity rows for the 1.x fix
+    # landed in d6614d2f): a LIVE directory link is walked under the OPERAND
+    # spelling; a DANGLING link reports "cannot access" with no errno text
+    # and rc 1. `-b` keeps the value platform-free (apparent bytes: dir 0,
+    # file content only). Symlink fixtures need SeCreateSymbolicLinkPrivilege
+    # on the Windows sides, so a host without it reports these SKIPped.
+    ("du41-deref-all-link-bytes", "strict",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["-L", "-b", "dlink"]),
+    ("du42-deref-args-link-bytes", "strict",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["-H", "-b", "dlink"]),
+    ("du43-deref-long-form-link-bytes", "strict",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["--dereference", "-b", "--summarize", "dlink"]),
+    ("du44-deref-dangling-link", "exit",
+     "printf x > gone; ln -s gone dangle; rm gone", "", "", ["-L", "dangle"]),
+    ("du45-deref-args-dangling-link", "exit",
+     "printf x > gone; ln -s gone dangle; rm gone", "", "", ["-H", "dangle"]),
+    # Without -L/-H du lstats the link; the VALUE is platform-bound (ext4
+    # stores short link targets inline at 0 blocks, NTFS/junction records
+    # differ), so the row is win-mode: Rust vs C++ status only.
+    ("du46-noderef-link-value", "win",
+     "mkdir -p d1; printf ab > d1/f; ln -s d1 dlink", "", "",
+     ["-b", "dlink"]),
+    # #1670 (PR #1730) followed-operand identity: GNU hashes `-L` entries by
+    # (st_dev, st_ino), so the same file reached through a link spelling and
+    # its real name counts once, under the spelling that arrived first; -l
+    # disables the dedup. File links keep the row strict-comparable (dir
+    # totals carry the platform's own directory allocation). Symlink
+    # fixtures need SeCreateSymbolicLinkPrivilege on the Windows sides ->
+    # SKIPped on hosts without it, exercised on CI.
+    ("du47-deref-file-operand-dedup", "strict",
+     "printf ab > f; ln -s f flink", "", "", ["-L", "-s", "flink", "f"]),
+    ("du48-deref-file-operand-dedup-reversed", "strict",
+     "printf ab > f; ln -s f flink", "", "", ["-L", "-s", "f", "flink"]),
+    ("du49-deref-args-count-links-keeps-both", "strict",
+     "printf ab > f; ln -s f flink", "", "", ["-L", "-l", "-s", "flink", "f"]),
 ]
 
 date_rows = [
@@ -3707,6 +4276,460 @@ pinky_rows = [
 ]
 
 # ---------------------------------------------------------------------------
+# sed (#1488 sed lane): GNU sed 4.9 oracle (WSL, C.UTF-8).
+#
+# Conventions:
+# * A script that starts with `/` is written with ONE leading blank (sed
+#   skips it): the niubash harness channel rewrites a leading-slash argv
+#   token for native children (`/a/d` -> `A:\d`, measured; see
+#   PROBE-METHODOLOGY.md channel 1), the blank defeats that and is
+#   semantically neutral on every side.
+# * -i rows observe the edit with sed itself: `w /dev/stdout` echoes each
+#   record as written into the in-place output, and listing the backup /
+#   the edited file again as later operands shows their on-disk content
+#   (operands open lazily, after the previous file's rename).
+# * Error rows are strict on stdout+rc; their stderr bytes are compared
+#   by gate/stderr-check.sh (GATE-REPORT.md "sed stderr").
+SED_F5 = "printf 'one\\ntwo\\nthree\\nfour\\nfive\\n' > f"
+SED_F10 = "seq 10 > f"
+SED_AB = "printf 'ab\\ncd\\n' > f"
+SED_NONL = "printf 'a\\nb' > f"
+SED_TWO = "printf 'x1\\nx2\\n' > f1; printf 'y1\\ny2\\n' > f2"
+sed_rows = [
+    # --- options -----------------------------------------------------------
+    ("sd001-print-default", "strict", SED_F5, "", "", ["p", "f"]),
+    ("sd002-n-p", "strict", SED_F5, "", "", ["-n", "2p", "f"]),
+    ("sd003-quiet-long", "strict", SED_F5, "", "", ["--quiet", "3p", "f"]),
+    ("sd004-silent-long", "strict", SED_F5, "", "", ["--silent", "$p", "f"]),
+    ("sd005-e-e-joined", "strict", SED_F5, "", "", ["-n", "-e", "1p", "-e", "3p", "f"]),
+    ("sd006-e-a-continuation", "strict", SED_F5, "", "", ["-e", "1a\\", "-e", "added", "f"]),
+    ("sd007-f-script", "strict", SED_F5 + "; printf '2d\\ns/e/E/g\\n' > s.sed", "", "", ["-f", "s.sed", "f"]),
+    ("sd008-f-stdin-script", "strict", SED_F5, "", "1d", ["-f", "-", "f"]),
+    ("sd009-expression-long", "strict", SED_F5, "", "", ["--expression=s/o/0/g", "f"]),
+    ("sd010-file-long", "strict", SED_F5 + "; printf '$d\\n' > s.sed", "", "", ["--file=s.sed", "f"]),
+    ("sd011-e-and-f-order", "strict", SED_F5 + "; printf 's/t/T/\\n' > s.sed", "", "", ["-e", "s/T/X/", "-f", "s.sed", "-e", "s/T/Y/", "f"]),
+    ("sd012-E-groups", "strict", "", "", "abcabc", ["-E", "s/(b)(c)/\\2\\1/g"]),
+    ("sd013-r-plus", "strict", "", "", "aaab", ["-r", "s/a+/X/"]),
+    ("sd014-regexp-extended-long", "strict", "", "", "a|b", ["--regexp-extended", "s/a|b/X/g"]),
+    ("sd015-E-after-e-ignored", "strict", "", "", "a+b", ["-e", "s/a+/X/", "-E"]),
+    ("sd016-s-last-each", "strict", SED_TWO, "", "", ["-s", "-n", "$p", "f1", "f2"]),
+    ("sd017-separate-long-lines", "strict", SED_TWO, "", "", ["--separate", "=", "f1", "f2"]),
+    ("sd018-concat-stream", "strict", SED_TWO, "", "", ["-n", "$p;1p", "f1", "f2"]),
+    ("sd019-i-noback", "strict", SED_AB, "", "", ["-i", "-e", "s/b/B/", "-e", "w /dev/stdout", "f", "f"]),
+    ("sd020-i-suffix", "strict", SED_AB, "", "", ["-i.bak", "-e", "w /dev/stdout", "-e", "s/a/A/", "f", "f.bak", "f"]),
+    ("sd021-i-star-suffix", "strict", SED_AB, "", "", ["-iold_*", "-e", "w /dev/stdout", "-e", "s/c/C/", "f", "old_f", "f"]),
+    ("sd022-in-place-long", "strict", SED_AB, "", "", ["--in-place=.orig", "-e", "w /dev/stdout", "-e", "s/d/D/", "f", "f.orig", "f"]),
+    ("sd023-i-no-files", "strict", "", "", "", ["-i", "p"]),
+    ("sd024-i-stdin-dash", "strict", "", "", "x", ["-i", "p", "-"]),
+    ("sd025-i-missing-file", "strict", SED_AB, "", "", ["-i", "-e", "w /dev/stdout", "nosuch", "f"]),
+    ("sd026-i-separate-numbers", "strict", SED_TWO, "", "", ["-i", "-n", "-e", "$w /dev/stdout", "-e", "p", "f1", "f2"]),
+    ("sd027-i-q-truncates", "strict", SED_F5, "", "", ["-i", "-e", "2q", "f", "-e", "w /dev/stdout"]),
+    ("sd028-i-dir", "strict", "mkdir d", "", "", ["-i", "p", "d"]),
+    ("sd029-z-null-data", "strict", "printf 'a\\0b\\0c' > f", "", "", ["-z", "s/^./X/", "f"]),
+    ("sd030-z-N-anchor", "strict", "printf 'a\\0b\\0' > f", "", "", ["-z", "N;s/\\n/+/;s/a$/A/M", "f"]),
+    ("sd031-null-data-long", "strict", "printf 'a\\0b\\0' > f", "", "", ["--null-data", "-n", "$=", "f"]),
+    ("sd032-u-unbuffered", "strict", SED_F5, "", "", ["-u", "-n", "2,3p", "f"]),
+    ("sd033-l-length", "strict", "", "", "abcdefghij", ["-l", "4", "-n", "l"]),
+    ("sd034-line-length-long", "strict", "", "", "abcdefghij", ["--line-length=6", "-n", "l"]),
+    ("sd035-l-zero-nowrap", "strict", "", "", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz", ["-l", "0", "-n", "l"]),
+    ("sd036-l-default-70", "strict", "", "", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz", ["-n", "l"]),
+    ("sd037-cols-env", "strict", "", "COLS=11", "abcdefghijklmnopqrstuvwxyz", ["-n", "l"]),
+    ("sd038-posix-rejects-I", "strict", "", "", "a", ["--posix", "s/a/b/I"]),
+    ("sd039-posix-rejects-oneliner", "strict", "", "", "a", ["--posix", "a foo"]),
+    ("sd040-posix-classic-ok", "strict", "", "", "a", ["--posix", "a\\\nfoo"]),
+    ("sd041-posix-no-plus-addr", "strict", SED_F5, "", "", ["--posix", "-n", "2,+1p", "f"]),
+    ("sd042-posixly-correct-N", "strict", SED_F5, "POSIXLY_CORRECT=1", "", ["N;s/\\n/-/", "f"]),
+    ("sd043-gnu-N-last-prints", "strict", SED_F5, "", "", ["N;s/\\n/-/", "f"]),
+    ("sd044-debug-program", "strict", "", "", "abc", ["--debug", "s/b/X/;2d"]),
+    ("sd045-debug-blocks", "strict", SED_AB, "", "", ["--debug", "-n", " /a/{h;x;G;p};$!N;l 3;y/abc/xyz/"]),
+    ("sd046-debug-labels", "strict", SED_AB, "", "", ["--debug", ":top\ns/c/C/;t top\nb end\n:end\n=;F"]),
+    ("sd047-follow-symlinks-regular", "strict", SED_AB, "", "", ["--follow-symlinks", "-i", "-e", "s/a/Z/", "-e", "w /dev/stdout", "f"]),
+    ("sd048-sandbox-rejects-w", "strict", "", "", "a", ["--sandbox", "w out"]),
+    ("sd049-sandbox-rejects-e", "strict", "", "", "a", ["--sandbox", "s/a/b/e"]),
+    ("sd050-sandbox-rejects-r", "strict", "", "", "a", ["--sandbox", "r x"]),
+    ("sd051-sandbox-allows-p", "strict", "", "", "a", ["--sandbox", "p"]),
+    ("sd052-hash-n-first-line", "strict", SED_F5, "", "", ["#n\n2p", "f"]),
+    ("sd053-hash-n-not-first", "strict", SED_F5, "", "", [" #n\n2p", "f"]),
+    ("sd054-binary-noop", "strict", "printf 'a\\r\\nb\\r\\n' > f", "", "", ["-b", "s/$/|/", "f"]),
+    ("sd055-help", "strict", "", "", "", ["--help"]),
+    ("sd056-version", "win", "", "", "", ["--version"]),
+    ("sd057-unknown-short", "strict", "", "", "", ["-k", "p"]),
+    ("sd058-unknown-long", "strict", "", "", "", ["--bogus", "p"]),
+    ("sd059-ambiguous-long", "strict", "", "", "", ["--s", "p"]),
+    ("sd060-missing-e-arg", "strict", "", "", "", ["-e"]),
+    ("sd061-no-script", "strict", "", "", "", []),
+    ("sd062-long-abbrev", "strict", SED_F5, "", "", ["--qui", "--expr=3p", "f"]),
+    ("sd063-options-after-operands", "strict", SED_F5, "", "", ["2p", "f", "-n"]),
+    ("sd064-dashdash", "strict", SED_F5, "", "", ["-n", "--", "4p", "f"]),
+    # --- s command --------------------------------------------------------------
+    ("sd070-s-g", "strict", "", "", "hello world", ["s/o/0/g"]),
+    ("sd071-s-nth", "strict", "", "", "aaaa", ["s/a/X/3"]),
+    ("sd072-s-nth-g", "strict", "", "", "aaaa", ["s/a/X/2g"]),
+    ("sd073-s-p-n", "strict", SED_F5, "", "", ["-n", "s/o/O/p", "f"]),
+    ("sd074-s-w-stdout", "strict", SED_F5, "", "", ["s/e/E/w /dev/stdout", "f"]),
+    ("sd075-s-I", "strict", "", "", "Hello HELLO", ["s/hello/x/Ig"]),
+    ("sd076-s-i-lower", "strict", "", "", "ABC", ["s/b/x/i"]),
+    ("sd077-s-M-anchors", "strict", SED_AB, "", "", ["N;s/^/>/Mg;s/$/</Mg", "f"]),
+    ("sd078-s-m-dot", "strict", SED_AB, "", "", ["N;s/b.c/X/m", "f"]),
+    ("sd079-s-backrefs", "strict", "", "", "abcd", ["s/\\(a\\)\\(b\\)\\(c\\)\\(d\\)/\\4\\3\\2\\1/"]),
+    ("sd080-s-amp", "strict", "", "", "abc", ["s/b/[&]/"]),
+    ("sd081-s-escaped-amp", "strict", "", "", "abc", ["s/b/\\&/"]),
+    ("sd082-s-newline-escape", "strict", "", "", "a,b", ["s/,/\\n/"]),
+    ("sd083-s-newline-literal", "strict", "", "", "a,b", ["s/,/\\\n/"]),
+    ("sd084-s-upper-lower", "strict", "", "", "hello world", ["s/\\(hello\\) \\(world\\)/\\U\\1\\E \\u\\2/"]),
+    ("sd085-s-L-l", "strict", "", "", "HELLO World", ["s/\\(.*\\) \\(.*\\)/\\L\\1 \\l\\2/"]),
+    ("sd086-s-u-carry", "strict", "", "", "baaac", ["s/\\(\\)\\([a-z]\\)/\\u\\1\\2/"]),
+    ("sd087-s-u-then-L", "strict", "", "", "baaac", ["s/\\(b\\)\\(a*\\)/\\u\\L\\2\\1/"]),
+    ("sd088-s-U-amp-l", "strict", "", "", "baaac", ["s/a\\+/\\U&x\\lYZ/"]),
+    ("sd089-s-delim-comma", "strict", "", "", "/usr/bin", ["s,/usr,/opt,"]),
+    ("sd090-s-delim-escaped", "strict", "", "", "a/b", ["s/\\//|/"]),
+    ("sd091-s-delim-pipe-literal", "strict", "", "", "a|b", ["s|a\\|b|X|"]),
+    ("sd092-s-empty-regex-reuse", "strict", SED_F5, "", "", ["-n", " /o/s//0/gp", "f"]),
+    ("sd093-s-empty-match-g", "strict", "", "", "abc", ["s/x*/-/g"]),
+    ("sd094-s-star-after-match", "strict", "", "", "baaac", ["s/a*/x/g"]),
+    ("sd095-s-empty-nth", "strict", "", "", "baaac", ["s/a*/x/2"]),
+    ("sd096-s-caret-g", "strict", "", "", "aaa", ["s/^a/X/g"]),
+    ("sd097-s-dollar", "strict", "", "", "abc", ["s/$/!/"]),
+    ("sd098-s-e-flag", "strict", "", "", "echo from-e", ["s/x*//e"]),
+    ("sd099-s-hex-dec-oct", "strict", "", "", "abc", ["s/b/[\\d65\\o102\\x43]/"]),
+    ("sd100-s-x26-literal-amp", "strict", "", "", "abc", ["s/b/\\x26/"]),
+    ("sd101-s-cX", "strict", "", "", "abc", ["s/b/<\\cA>/"]),
+    ("sd102-s-tab-escape", "strict", "", "", "a b", ["s/ /\\t/"]),
+    ("sd103-s-1496-nesting", "strict", "", "", "xxxx", ["s/^\\(\\(x\\)*\\)*$/[\\1|[\\2]]/"]),
+    ("sd104-s-1496-ere", "strict", "", "", "xxxx", ["-E", "s/^((x)*)*$/[\\1|\\2]/"]),
+    ("sd105-s-1496-min-count", "strict", "", "", "abcabc", ["s/^\\(.*\\)\\{2,\\}$/[\\1]/"]),
+    ("sd106-s-1496-bounded", "strict", "", "", "aaa", ["s/^\\(a*\\)\\{2,3\\}$/[\\1]/"]),
+    ("sd107-s-1496-alt", "strict", "", "", "abcd", ["s/^\\(a\\|ab\\)\\(c\\|bcd\\)\\(d*\\)$/[\\1|\\2|\\3]/"]),
+    ("sd108-s-1495-nested-star", "strict", "", "", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab", ["s/\\(a*\\)*b/[\\1]/"]),
+    ("sd109-s-leftmost-longest", "strict", "", "", "xabcx", ["-E", "s/a|ab|abc/<&>/"]),
+    ("sd110-s-utf8-dot", "strict", "", "", "héllo", ["s/h.l/X/"]),
+    ("sd111-s-utf8-upper", "strict", "", "", "éa", ["s/.*/\\U&/"]),
+    # --- y ---------------------------------------------------------------------------
+    ("sd120-y-basic", "strict", "", "", "hello", ["y/elo/ELO/"]),
+    ("sd121-y-newline", "strict", SED_AB, "", "", ["N;y/\\n/ /", "f"]),
+    ("sd122-y-escaped-delim", "strict", "", "", "a/b", ["y/a\\/b/x|y/"]),
+    ("sd123-y-utf8", "strict", "", "", "héé", ["y/é/e/"]),
+    ("sd124-y-length-error", "strict", "", "", "abc", ["y/abc/xy/"]),
+    ("sd125-y-backslash", "strict", "printf 'a\\\\b\\n' > f", "", "", ["y/\\\\/|/", "f"]),
+    # --- a i c -------------------------------------------------------------------------
+    ("sd130-a-oneliner", "strict", SED_F5, "", "", ["2a  appended", "f"]),
+    ("sd131-i-oneliner", "strict", SED_F5, "", "", ["$i inserted", "f"]),
+    ("sd132-c-oneliner", "strict", SED_F5, "", "", ["3c changed", "f"]),
+    ("sd133-a-classic", "strict", SED_F5, "", "", ["1a\\\n  kept-indent\\\nsecond", "f"]),
+    ("sd134-a-backslash-space", "strict", "", "", "x", ["a\\  lead"]),
+    ("sd135-a-escapes", "strict", "", "", "x", ["a   foo\\tbar\\q"]),
+    ("sd136-c-range", "strict", SED_F5, "", "", ["2,4c\\\nREPL", "f"]),
+    ("sd137-c-negated", "strict", SED_F5, "", "", ["$!c X", "f"]),
+    ("sd138-a-then-q", "strict", SED_F5, "", "", ["1{a after\nq}", "f"]),
+    ("sd139-a-missing-newline", "strict", SED_NONL, "", "", ["$a end", "f"]),
+    ("sd140-i-before-n", "strict", SED_F5, "", "", ["1i head", "f"]),
+    ("sd141-a-r-order", "strict", SED_F5 + "; printf 'R\\n' > r", "", "", ["1r r\n1a A", "f"]),
+    ("sd142-a-empty-backslash", "strict", "", "", "x", ["a\\"]),
+    ("sd143-a-trailing-backslash", "strict", "", "", "x", ["a foo\\"]),
+    ("sd144-a-in-block-eats-brace", "strict", "", "", "x", ["1{a foo}"]),
+    # --- other commands ----------------------------------------------------------------
+    ("sd150-d", "strict", SED_F5, "", "", ["2d", "f"]),
+    ("sd151-D-window", "strict", SED_F5, "", "", ["$!N;P;D", "f"]),
+    ("sd152-n-next", "strict", SED_F5, "", "", ["n;d", "f"]),
+    ("sd153-n-at-eof", "strict", SED_F5, "", "", ["-n", "$!{n;p}", "f"]),
+    ("sd154-N-join", "strict", SED_F5, "", "", ["N;N;s/\\n/,/g", "f"]),
+    ("sd155-P-first-line", "strict", SED_AB, "", "", ["-n", "N;P", "f"]),
+    ("sd156-hold-reverse", "strict", SED_F5, "", "", ["-n", "1!G;h;$p", "f"]),
+    ("sd157-H-g", "strict", SED_F5, "", "", ["-n", "H;${g;p}", "f"]),
+    ("sd158-x-swap", "strict", SED_F5, "", "", ["x", "f"]),
+    ("sd159-x-nonl-hold", "strict", SED_NONL, "", "", ["x", "f"]),
+    ("sd160-b-label", "strict", SED_F5, "", "", [":a;N;$!ba;s/\\n/+/g", "f"]),
+    ("sd161-b-end", "strict", SED_F5, "", "", ["2b;s/./X/", "f"]),
+    ("sd162-t-loop", "strict", "", "", "1234567", [":a;s/\\B[0-9]\\{3\\}\\>/,&/;ta"]),
+    ("sd163-T-branch", "strict", SED_F5, "", "", ["s/o/O/;T;s/$/!/", "f"]),
+    ("sd164-equals", "strict", SED_F5, "", "", ["-n", "$=", "f"]),
+    ("sd165-equals-each", "strict", SED_AB, "", "", ["=", "f"]),
+    ("sd166-l-escapes", "strict", "printf 'a\\tb\\\\c\\001\\n' > f", "", "", ["-n", "l", "f"]),
+    ("sd167-l-utf8-octal", "strict", "", "", "é", ["-n", "l"]),
+    ("sd168-l-arg", "strict", "", "", "abcdef", ["-n", "l 3"]),
+    ("sd169-l-1", "strict", "", "", "abc", ["l 1"]),
+    ("sd170-q-exit", "strict", SED_F5, "", "", ["2q5", "f"]),
+    ("sd171-Q-exit", "strict", SED_F5, "", "", ["2Q 7", "f"]),
+    ("sd172-q-default", "strict", SED_F5, "", "", ["3q", "f"]),
+    ("sd173-r-file", "strict", SED_F5 + "; printf 'INS\\n' > ins", "", "", ["2r ins", "f"]),
+    ("sd174-r-missing-ok", "strict", SED_F5, "", "", ["2r nosuch", "f"]),
+    ("sd175-0r-prepend", "strict", SED_F5 + "; printf 'TOP\\n' > ins", "", "", ["0r ins", "f"]),
+    ("sd176-R-lines", "strict", SED_F5 + "; printf 'r1\\nr2\\n' > rr", "", "", ["R rr", "f"]),
+    ("sd177-R-nonl", "strict", SED_AB + "; printf 'x' > rx", "", "", ["R rx", "f"]),
+    ("sd178-w-stdout", "strict", SED_F5, "", "", ["-n", "2,3w /dev/stdout", "f"]),
+    ("sd179-W-first-line", "strict", SED_AB, "", "", ["-n", "N;W /dev/stdout", "f"]),
+    ("sd180-z-zap", "strict", SED_F5, "", "", ["2z", "f"]),
+    ("sd181-F-stdin", "strict", "", "", "x", ["F"]),
+    ("sd182-F-file", "strict", SED_AB, "", "", ["-n", "1F", "f"]),
+    ("sd183-e-command", "strict", "", "", "x", ["1e echo hi"]),
+    ("sd184-v-ok", "strict", "", "", "x", ["v 4.2"]),
+    ("sd185-v-newer", "strict", "", "", "x", ["v 9.0"]),
+    ("sd186-block-nested", "strict", SED_F5, "", "", ["-n", "2,4{/t/{p}}", "f"]),
+    ("sd187-comments", "strict", SED_F5, "", "", ["-n", "# comment\n2p # trailing\n3p", "f"]),
+    ("sd188-semicolons-braces", "strict", SED_F5, "", "", ["-n", "2{p;p};4p;", "f"]),
+    ("sd189-b-label-space-stops", "strict", SED_F5, "", "", ["-n", "b x\n:x\n1p", "f"]),
+    ("sd190-L-internal-error", "exit", "", "", "a", ["L"]),
+    ("sd191-addr-w-stdout", "strict", SED_F5, "", "", ["-n", " /o/w /dev/stdout", "f"]),
+    # --- addresses ----------------------------------------------------------------------
+    ("sd200-addr-num", "strict", SED_F10, "", "", ["-n", "7p", "f"]),
+    ("sd201-addr-last", "strict", SED_F10, "", "", ["-n", "$p", "f"]),
+    ("sd202-addr-regex", "strict", SED_F5, "", "", ["-n", " /^t/p", "f"]),
+    ("sd203-addr-custom-delim", "strict", SED_F5, "", "", ["-n", "\\%o%p", "f"]),
+    ("sd204-addr-I", "strict", SED_F5, "", "", ["-n", " /ONE/Ip", "f"]),
+    ("sd205-addr-M", "strict", SED_AB, "", "", ["-n", "N; /^cd/Mp", "f"]),
+    ("sd206-addr-empty-last-regex", "strict", SED_F5, "", "", ["-n", " /o/{//p}", "f"]),
+    ("sd207-addr-step", "strict", SED_F10, "", "", ["-n", "0~3p", "f"]),
+    ("sd208-addr-first-step", "strict", SED_F10, "", "", ["-n", "2~4p", "f"]),
+    ("sd209-addr-plus", "strict", SED_F10, "", "", ["-n", " /4/,+2p", "f"]),
+    ("sd210-addr-tilde", "strict", SED_F10, "", "", ["-n", "2,~4p", "f"]),
+    ("sd211-addr-tilde-multiple", "strict", SED_F10, "", "", ["-n", "4,~4p", "f"]),
+    ("sd212-addr-zero-regex", "strict", SED_F5, "", "", ["-n", "0,/o/p", "f"]),
+    ("sd213-addr-one-regex", "strict", SED_F5, "", "", ["-n", "1,/o/p", "f"]),
+    ("sd214-addr-bang-space", "strict", SED_F5, "", "", ["-n", "2,4 ! p", "f"]),
+    ("sd215-addr-reverse-range", "strict", SED_F5, "", "", ["-n", "4,2p", "f"]),
+    ("sd216-addr-regex-range", "strict", SED_F10, "", "", ["-n", " /3/,/5/p", "f"]),
+    ("sd217-addr-range-restart", "strict", "printf 'a\\nb\\na\\nb\\n' > f", "", "", ["-n", " /a/,/b/=", "f"]),
+    ("sd218-addr-last-across-files", "strict", SED_TWO + "; : > empty", "", "", ["-n", "$p", "f1", "f2", "empty"]),
+    ("sd219-addr-plus-zero", "strict", SED_F5, "", "", ["-n", " /t/,+0p", "f"]),
+    ("sd220-addr-step-zero", "strict", SED_F5, "", "", ["-n", "2~0p", "f"]),
+    ("sd221-addr-num-regex-same-line", "strict", SED_F5, "", "", ["-n", "2,/t/p", "f"]),
+    # --- regex GNU extensions ---------------------------------------------------------------
+    ("sd230-re-bre-plus-q", "strict", "", "", "aaab", ["s/a\\+b\\?/X/"]),
+    ("sd231-re-bre-alt", "strict", "", "", "cat dog", ["s/cat\\|dog/X/g"]),
+    ("sd232-re-word", "strict", "", "", "foo_bar baz", ["s/\\w\\+/W/g"]),
+    ("sd233-re-nonword", "strict", "", "", "a, b", ["s/\\W/_/g"]),
+    ("sd234-re-space", "strict", "printf 'a b\\tc\\n' > f", "", "", ["s/\\s/_/g", "f"]),
+    ("sd235-re-nonspace", "strict", "", "", "a b", ["s/\\S/x/g"]),
+    ("sd236-re-boundary", "strict", "", "", "cat concat", ["s/\\bcat\\b/X/g"]),
+    ("sd237-re-nonboundary", "strict", "", "", "cat concat", ["s/\\Bcat/X/g"]),
+    ("sd238-re-word-start-end", "strict", "", "", "foo bar", ["s/\\<b/B/;s/o\\>/O/"]),
+    ("sd239-re-buffer-anchors", "strict", SED_AB, "", "", ["N;s/\\`/[/;s/\\'/]/;s/^/</Mg", "f"]),
+    ("sd240-re-classes", "strict", "", "", "aB3 _", ["s/[[:upper:]]/U/;s/[[:digit:]]/D/;s/[[:space:]]/S/"]),
+    ("sd241-re-escape-newline", "strict", SED_AB, "", "", ["N;s/b\\nc/-/", "f"]),
+    ("sd242-re-bracket-newline", "strict", SED_AB, "", "", ["N;s/[\\n]/-/", "f"]),
+    ("sd243-re-tab-escape", "strict", "printf 'a\\tb\\n' > f", "", "", ["s/\\t/<T>/", "f"]),
+    ("sd244-re-hex-escape", "strict", "", "", "abc", ["s/\\x62/X/"]),
+    ("sd245-re-dec-oct", "strict", "", "", "abc", ["s/\\d97\\o142/X/"]),
+    ("sd246-re-cX", "strict", "printf 'a\\001b\\n' > f", "", "", ["s/\\cA/^A/", "f"]),
+    ("sd247-re-x2e-is-dot", "strict", "", "", "abc", ["s/\\x2e/X/"]),
+    ("sd248-re-ere-interval", "strict", "", "", "aaaa", ["-E", "s/a{2,3}/X/"]),
+    ("sd249-re-bre-interval", "strict", "", "", "aaaa", ["s/a\\{2\\}/X/g"]),
+    ("sd250-re-backref-pattern", "strict", "", "", "abab xyxz", ["-E", "s/(..)\\1/<&>/g"]),
+    ("sd251-re-M-dot-no-newline", "strict", SED_AB, "", "", ["N;s/b.c/X/M", "f"]),
+    ("sd252-re-M-hat-list", "strict", SED_AB, "", "", ["N;s/[^a]*/[&]/M", "f"]),
+    ("sd253-re-icase-class", "strict", "", "", "ABC", ["s/[a-b]*/x/I"]),
+    ("sd254-re-star-literal-bre", "strict", "", "", "a*b", ["s/*b/X/"]),
+    ("sd255-re-utf8-invalid-dot", "strict", "printf 'a\\377b\\n' > f", "", "", ["s/a.b/X/", "f"]),
+    # --- parse errors (stdout+rc strict; stderr via stderr-check.sh) -------------------------
+    ("sd300-err-unterminated-s", "strict", "", "", "a", ["s/a"]),
+    ("sd301-err-unterminated-s2", "strict", "", "", "a", ["s/a/b"]),
+    ("sd302-err-unknown-s-opt", "strict", "", "", "a", ["s/a/b/k"]),
+    ("sd303-err-unmatched-brace", "strict", "", "", "a", ["{p"]),
+    ("sd304-err-unexpected-brace", "strict", "", "", "a", ["p;}"]),
+    ("sd305-err-extra-chars", "strict", "", "", "a", ["p x"]),
+    ("sd306-err-missing-command", "strict", "", "", "a", ["1"]),
+    ("sd307-err-invalid-ref", "strict", "", "", "a", ["s/a/\\1/"]),
+    ("sd308-err-invalid-ref-ere", "strict", "", "", "a", ["-E", "s/(a)/\\2/"]),
+    ("sd309-err-unknown-command", "strict", "", "", "a", ["k"]),
+    ("sd310-err-multiple-bang", "strict", "", "", "a", ["1!!p"]),
+    ("sd311-err-unexpected-comma", "strict", "", "", "a", ["1,p"]),
+    ("sd312-err-line-zero", "strict", "", "", "a", ["0p"]),
+    ("sd313-err-plus-first", "strict", "", "", "a", ["+1p"]),
+    ("sd314-err-expected-backslash", "strict", "", "", "a", ["a"]),
+    ("sd315-err-brace-addr", "strict", "", "", "a", ["{p};1}"]),
+    ("sd316-err-colon-addr", "strict", "", "", "a", ["1:a"]),
+    ("sd317-err-colon-no-label", "strict", "", "", "a", [": "]),
+    ("sd318-err-comment-addr", "strict", "", "", "a", ["1# x"]),
+    ("sd319-err-one-addr", "strict", "", "", "a", ["1,2q"]),
+    ("sd320-err-unterminated-addr", "strict", "", "", "a", [" /a"]),
+    ("sd321-err-unterminated-y", "strict", "", "", "a", ["y/a/"]),
+    ("sd322-err-multiple-p", "strict", "", "", "a", ["s/a/b/pp"]),
+    ("sd323-err-multiple-g", "strict", "", "", "a", ["s/a/b/gg"]),
+    ("sd324-err-multiple-number", "strict", "", "", "a", ["s/a/b/2g3"]),
+    ("sd325-err-zero-number", "strict", "", "", "a", ["s/a/b/0"]),
+    ("sd326-err-missing-filename", "strict", "", "", "a", ["r"]),
+    ("sd327-err-no-label", "strict", "", "", "a", ["b nowhere"]),
+    ("sd328-err-no-previous-regex", "strict", "", "", "a", ["s//x/"]),
+    ("sd329-err-modifier-empty-regex", "strict", "", "", "a", ["s//x/I"]),
+    ("sd330-err-regex-paren", "strict", "", "", "a", ["s/\\(/x/;p"]),
+    ("sd331-err-regex-bracket", "strict", "", "", "a", ["s/[a/x/"]),
+    ("sd332-err-regex-badrpt-ere", "strict", "", "", "a", ["-E", "s/*a/x/"]),
+    ("sd333-err-regex-interval", "strict", "", "", "a", ["s/a\\{x\\}/X/"]),
+    ("sd334-err-regex-ere-brace", "strict", "", "", "a", ["-E", "s/a{1/X/"]),
+    ("sd335-err-class-syntax", "strict", "", "", "a", ["s/[:alpha:]/X/"]),
+    ("sd336-err-recursive-c", "strict", "", "", "a", ["s/\\c\\d/x/"]),
+    ("sd337-err-f-missing", "strict", "", "", "a", ["-f", "nosuch.sed"]),
+    ("sd338-err-f-line", "strict", "printf 'p\\n{\\np\\n' > s.sed", "", "a", ["-f", "s.sed"]),
+    ("sd339-err-f-line-junk", "strict", "printf 'p\\n\\nq x\\n' > s.sed", "", "a", ["-f", "s.sed"]),
+    ("sd340-err-second-expression", "strict", "", "", "a", ["-e", "p", "-e", "s/x"]),
+    ("sd341-err-unknown-dot-cmd", "strict", "", "", "a", ["1,3 ,p"]),
+    ("sd342-err-ere-close-paren", "strict", "", "", "a", ["-E", "s/)/x/"]),
+    ("sd343-err-bre-star-star", "strict", "", "", "a", ["s/a**/x/"]),
+    ("sd344-err-posix-incomplete", "strict", "", "", "a", ["--posix", "a\\"]),
+    # --- input stream / files -------------------------------------------------------------------
+    ("sd400-missing-final-newline", "strict", SED_NONL, "", "", ["s/b/B/", "f"]),
+    ("sd401-missing-newline-p", "strict", SED_NONL, "", "", ["p", "f"]),
+    ("sd402-missing-newline-concat", "strict", "printf 'a' > f1; printf 'b\\n' > f2", "", "", ["p", "f1", "f2"]),
+    ("sd403-cant-read", "strict", SED_F5, "", "", ["-n", "1p", "nosuch", "f"]),
+    ("sd404-cant-read-last", "strict", SED_F5, "", "", ["-n", "$p", "f", "nosuch"]),
+    ("sd405-dir-operand", "strict", "mkdir d", "", "", ["p", "d"]),
+    ("sd406-crlf-data", "strict", "printf 'a\\r\\nb\\r\\n' > f", "", "", ["-n", "l", "f"]),
+    ("sd407-crlf-dollar", "strict", "printf 'ab\\r\\n' > f", "", "", ["s/b$/X/", "f"]),
+    ("sd408-stdin-dash-mixed", "strict", "printf 'F\\n' > f", "", "S", ["p", "f", "-", "f"]),
+    ("sd409-empty-input", "strict", ": > f", "", "", ["$=", "f"]),
+    ("sd410-empty-pattern-lines", "strict", "printf '\\n\\n' > f", "", "", ["-n", "l;=", "f"]),
+    ("sd411-q-exit-overridden-bad-input", "strict", SED_F5, "", "", ["1q3", "nosuch", "f"]),
+    ("sd412-long-line", "strict", "s=ab; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do s=$s$s; done; printf \x27%s\\n\x27 \"$s\" > f", "", "", ["-n", "s/\\(ab\\)*$/X/p", "f"]),
+    ("sd413-nul-in-line", "strict", "printf 'a\\0b\\n' > f", "", "", ["s/\\x00/<0>/", "f"]),
+    ("sd414-many-files-lineno", "strict", SED_TWO, "", "", ["-n", "$=;F", "f1", "f2", "f1"]),
+    # --- deeper probes (fast-harness round 2) ---------------------------------------------
+    ('sd500-bang-range-c', 'strict', SED_F5, '', '', ['-n', '2,3!c X', 'f']),
+    ('sd501-z-aic-equals', 'strict', "printf 'a\\0b\\0' > f", '', '', ['-z', '1i I\n$a A\n=', 'f']),
+    ('sd502-z-l-delim', 'strict', "printf 'a\\0b\\0' > f", '', '', ['-z', '-n', 'l', 'f']),
+    ('sd503-a-then-Q-drops', 'strict', SED_F5, '', '', ['2{a A\nQ}', 'f']),
+    ('sd504-r-dev-stdin', 'strict', SED_F5, '', 'IN', ['2r /dev/stdin', 'f']),
+    ('sd505-R-dev-stdin', 'strict', SED_F5, '', 'S1', ['R /dev/stdin', 'f']),
+    ('sd506-w-dev-stderr', 'strict', SED_F5, '', '', ['w /dev/stderr', 'f']),
+    ('sd507-e-pattern-space', 'strict', '', '', 'echo hi', ['e']),
+    ('sd508-s-F-per-file', 'strict', "printf 'a\\nb\\n' > f1; printf 'c\\n' > f2", '', '', ['-s', 'F', 'f1', 'f2']),
+    ('sd509-t-flag-reset-by-n', 'strict', SED_F5, '', '', ['s/o/O/;n;t x;s/$/-/;b;:x;s/$/+/', 'f']),
+    ('sd510-s-empty-nth', 'strict', '', '', 'abcbd', ['s/b*/x/3']),
+    ('sd511-s-empty-nth-g', 'strict', '', '', 'abcbd', ['s/b*/x/2g']),
+    ('sd512-u-each-word', 'strict', '', '', '1a b', ['s/[^ ]*/\\u&/g']),
+    ('sd513-y-escapes', 'strict', '', '', 'abc', ['y/abc/\\n\\t\\\\/']),
+    ('sd514-f-hash-n', 'strict', SED_F5 + "; printf '#n\\n3p\\n' > s.sed", '', '', ['-f', 's.sed', 'f']),
+    ('sd515-s-last-per-file', 'strict', "printf 'a\\nb\\n' > f1; printf 'c\\n' > f2", '', '', ['-s', '-n', '$=', 'f1', 'f2']),
+    ('sd516-posix-plus-literal', 'strict', '', '', 'aa+', ['--posix', 's/a\\+/X/']),
+    ('sd517-posix-alt-literal', 'strict', '', '', 'a|b', ['--posix', 's/a\\|b/X/']),
+    ('sd518-posix-w-literal', 'strict', '', '', 'aw b', ['--posix', 's/\\w/X/']),
+    ('sd519-posixly-correct-paren', 'strict', '', 'POSIXLY_CORRECT=1', 'a)b', ['-E', 's/)/X/']),
+    ('sd520-range-regex-equals', 'strict', SED_F5, '', '', ['-n', ' /one/,/t/{=}', 'f']),
+    ('sd521-N-join-D', 'strict', SED_F5, '', '', ['$!N;s/\\n/ /;D', 'f']),
+    ('sd522-D-no-newline', 'strict', SED_F5, '', '', ['D', 'f']),
+    ('sd523-i-n-w-stdout', 'strict', SED_F5, '', '', ['-i', 'n;w /dev/stdout', 'f']),
+    ('sd524-debug-y-utf8-c', 'strict', SED_F5, '', '', ['--debug', '-n', '-e', '2{y/éa/eb/;c\\', '-e', 'C', '-e', '}', 'f']),
+    ('sd525-s-w-in-block', 'strict', SED_F5, '', '', ['-n', '2{s/w/W/w /dev/stdout\n}', 'f']),
+    ('sd526-s-newline-P-D', 'strict', '', '', 'x', ['s/x/a\\\nb/;P;D']),
+    ('sd527-G-G-l-chomp', 'strict', '', '', 'x', ['G;G;l']),
+    ('sd528-s-nth-then-g', 'strict', '', '', 'hello', ['s/l/L/2;s/l/X/g']),
+    ('sd529-debug-unmatched-group', 'strict', '', '', 'x', ['--debug', 's/\\(x\\)\\(y\\)*/\\2\\1/']),
+    ('sd530-alt-unmatched-group', 'strict', '', '', 'abc', ['s/\\(a\\)\\|b/[\\1]/g']),
+    ('sd531-a-classic-escaped-space', 'strict', '', '', 'x', ['a\\\n\\  sp']),
+    ('sd532-i-classic-multi', 'strict', '', '', 'x', ['i\\\n  multi\\\n  line']),
+    ('sd533-not-last-d-a', 'strict', '', '', 'x', ['$!d;a end']),
+    ('sd534-c-backslash-empty', 'strict', '', '', 'x', ['c\\']),
+    ('sd535-empty-regex-after-s', 'strict', '', '', 'x', ['s/x/&&/;s//y/']),
+    ('sd536-empty-regex-negated', 'strict', SED_F5, '', '', ['-n', ' /t/{//!p}', 'f']),
+    ('sd537-s-nth-dot', 'strict', '', '', 'a.b.c', ['s/\\./-/2']),
+    ('sd538-s-newline-l', 'strict', '', '', 'abc', ['s/\\(b\\)/\\n\\1\\n/;l']),
+    ('sd539-s-nth-beyond', 'strict', '', '', 'aaa', ['s/a/b/4']),
+    ('sd540-hold-reverse-single', 'strict', '', '', 'x', ['1!G;h;$!d']),
+    ('sd541-posix-block', 'strict', '', '', 'x', ['--posix', '1{p}']),
+    ('sd542-p-p-q', 'strict', '', '', 'x', ['p;p;q;p']),
+    ('sd543-s-swap-P-D', 'strict', '', '', 'a b', ['s/\\(a\\) \\(b\\)/\\2\\n\\1/;P;D']),
+    ('sd544-y-chain', 'strict', '', '', 'x', ['y/x/y/;y,y,z,']),
+    ('sd545-cX-escapes', 'strict', '', '', 'x', ['s/x/\\cz\\c[/;l']),
+    ('sd546-empty-number-escapes', 'strict', '', '', 'x', ['s/x/\\o\\d\\x/']),
+    ('sd547-d300-wraps', 'strict', '', '', 'x', ['s/x/\\d300/;l']),
+    ('sd548-class-interval', 'strict', '', '', 'abc', ['s/[[:alpha:]]\\{2\\}/X/']),
+    ('sd549-collating-dot', 'strict', '', '', 'abc', ['s/[[.a.]]/X/']),
+    ('sd550-bracket-close', 'strict', '', '', 'a]b', ['s/[]]/X/']),
+    ('sd551-bracket-caret', 'strict', '', '', 'a^b', ['s/[\\^]/X/g']),
+    ('sd552-empty-group-ref', 'strict', '', '', 'ab', ['s/a\\(\\)b/X\\1Y/']),
+    ('sd553-t-branch-skip', 'strict', '', '', 'x', ['s/x/a/;tl;s/a/b/;:l;s/a/c/']),
+    ('sd554-e-a-continuation-2', 'strict', '', '', 'x', ['-e', 'a\\', '-e', 'l1\\', '-e', 'l2']),
+    ('sd555-e-a-oneliner-then-p', 'strict', '', '', 'x', ['-e', 'a hello', '-e', 'p']),
+    ('sd556-posix-a-continuation', 'strict', '', '', 'x', ['--posix', '-e', 'a\\', '-e', 'foo']),
+    ('sd557-comment-after-s', 'strict', '', '', 'x', ['s/x/y/;#comment\np']),
+    ('sd558-blank-semicolon', 'strict', '', '', 'x', ['s/x/y/ ; p']),
+    ('sd559-y-then-p', 'strict', '', '', 'x', ['y/x/y/;p']),
+    ('sd560-block-semicolons', 'strict', '', '', 'x', ['{;p;}']),
+    ('sd561-blocks-sequence', 'strict', '', '', 'x', ['{p};{p}']),
+    ('sd562-extra-brace', 'strict', '', '', 'x', ['{p}}']),
+    ('sd563-b-then-brace', 'strict', '', '', 'x', ['b;}']),
+    ('sd564-s-backslash-repl', 'strict', '', '', 'xyz', ['s/y/\\\\/']),
+    ('sd565-s-escaped-slash-repl', 'strict', '', '', 'xyz', ['s/y/a\\/b/']),
+    ('sd566-s-escaped-comma-delim', 'strict', '', '', 'xyz', ['s,y,a\\,b,']),
+    ('sd567-s-amp-delim', 'strict', '', '', 'x&z', ['s&\\&&+&']),
+    ('sd568-s-backslash-zero', 'strict', '', '', 'x', ['s/x/[\\0]/']),
+    ('sd569-ere-ten-groups', 'strict', '', '', 'abcdefghij', ['-E', 's/(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)/\\9\\10/']),
+    ('sd570-s-w-missing-filename', 'strict', '', '', 'x', ['s/x/y/w']),
+    ('sd571-step-bang', 'strict', '', '', 'x', ['1~2!p']),
+    ('sd572-step-zero-first-last', 'strict', 'seq 12 > f', '', '', ['-n', '0~4p;$p', 'f']),
+    ('sd573-regex-tilde-range', 'strict', 'seq 12 > f', '', '', ['-n', ' /1/,~5p', 'f']),
+    ('sd574-reversed-and-plus', 'strict', 'seq 12 > f', '', '', ['-n', '5,3p;8,+1p', 'f']),
+    ('sd575-nested-ranges', 'strict', 'seq 12 > f', '', '', ['2,4{4,6p}', 'f']),
+    ('sd576-nested-range-equals', 'strict', 'seq 5 > f', '', '', ['-n', '2,4{=;4,5p}', 'f']),
+    ('sd577-zero-regex-delete', 'strict', 'seq 5 > f', '', '', ['0,/1/d', 'f']),
+    ('sd578-one-regex-delete', 'strict', 'seq 5 > f', '', '', ['1,/1/d', 'f']),
+    ('sd579-zero-num-error', 'strict', 'seq 5 > f', '', '', ['0,5d', 'f']),
+    ('sd580-zero-step-error', 'strict', 'seq 5 > f', '', '', ['0~0p', 'f']),
+    ('sd581-dollar-bang-nested', 'strict', 'seq 5 > f', '', '', ['-n', '$!{$!p}', 'f']),
+    ('sd582-n-n-p', 'strict', 'seq 5 > f', '', '', ['-n', '2{n;n;p}', 'f']),
+    ('sd583-N-N-N-N-N-at-eof', 'strict', 'seq 5 > f', '', '', ['N;N;N;N;N;s/\\n/,/g', 'f']),
+    ('sd584-debug-N-P-D', 'strict', 'seq 3 > f', '', '', ['--debug', 'N;P;D', 'f']),
+    ('sd585-debug-hold-ops', 'strict', 'seq 3 > f', '', '', ['--debug', '-s', 'x;G;H;g;z', 'f']),
+    ('sd586-debug-mixed', 'strict', 'seq 3 > f', '', '', ['--debug', '-n', '1~2{l 2;=};$!{n};2q;3Q 2;R f', 'f']),
+    ('sd587-debug-s-flags', 'strict', 'seq 3 > f', '', '', ['--debug', '-n', 's/1/x/2gpw /dev/stdout\ns/2/\\U&\\l\\E\\u&/i', 'f']),
+    ('sd588-debug-escapes', 'strict', '', '', 'x', ['--debug', 's/x/[\\t\\n\\\\]/;a\\\n\\tq']),
+    ('sd589-debug-addr-flags', 'strict', '', '', 'x', ['--debug', ' /x/I,/y/M!{$b};\\,a,d;:a']),
+    # --- #1496/#1495 capture family (main WIP 4961285a differential matrix;
+    # wc-sed2 winux-regex must match GNU opening-order numbering + glibc
+    # empty-iteration accounting byte-for-byte) ---
+    ('sd590-cap-nest-star-bre', 'strict', '', '', 'xxxx', ['s/^\\(\\(x\\)*\\)*$/[\\1|[\\2]]/']),
+    ('sd591-cap-nest-star-ere', 'strict', '', '', 'xxxx', ['-E', 's/^((x)*)*$/[\\1|\\2]/']),
+    ('sd592-cap-triple-nest', 'strict', '', '', 'xxxx', ['s/^\\(\\(\\(x\\)*\\)*\\)*$/[\\1|[\\2]|[\\3]]/']),
+    ('sd593-cap-repeat-last-iter', 'strict', '', '', 'abab', ['s/^\\(a\\(b\\)*\\)*$/[\\1|[\\2]]/']),
+    ('sd594-interval-min-empty', 'strict', '', '', 'abcabc', ['s/^\\(.*\\)\\{2,\\}$/[\\1]/']),
+    ('sd595-interval-empty-line', 'strict', "printf '\\n' > f", '', '', ['-n', 's/^\\(.*\\)\\{2,\\}$/[\\1]/p', 'f']),
+    ('sd596-interval-exact-empty', 'strict', '', '', 'aaa', ['s/^\\(a*\\)\\{2\\}$/[\\1]/']),
+    ('sd597-interval-bounded-restore', 'strict', '', '', 'aaa', ['s/^\\(a*\\)\\{2,3\\}$/[\\1]/']),
+    ('sd598-posix-alternation-pick', 'strict', '', '', 'abcd', ['-E', 's/(a|ab)(c|bcd)(d*)/[\\1][\\2][\\3]/']),
+    # --- probed edge divergences / rc paths ---
+    # KNOWN DIVERGENCE while unfixed: GNU panics "couldn't readlink nosuch"
+    # (rc 4) under --follow-symlinks; rust2 currently falls through to
+    # "can't read" (rc 2). This row is the ledger pin for that gap.
+    ('sd599-follow-symlinks-missing', 'strict', '', '', 'x', ['--follow-symlinks', '-e', 'p', 'nosuch']),
+    ('sd600-q-n-exit-stdin', 'strict', "printf 'one\\ntwo\\nthree\\nfour\\nfive\\n' > f", '', '', ['-n', '2q3', 'f']),
+    ('sd601-v-too-new', 'strict', '', '', 'x', ['v9.0']),
+]
+
+
+def _sed_printf_file(name, text):
+    """Setup snippet writing `text` byte-exact (TSV rows cannot carry a raw
+    newline, so multi-line scripts travel through printf escapes)."""
+    esc = (text.replace("\\", "\\\\").replace("%", "%%")
+           .replace("'", "'\\''").replace("\n", "\\n"))
+    return "printf '%s' > %s" % (esc, name)
+
+
+def _sed_multiline(rows):
+    """Rewrite every multi-line script argument into a `-f sN.sed` script
+    file written by the setup (a script operand or the value of `-e`)."""
+    out = []
+    for cid, mode, setup, env, stdin, args in rows:
+        new_args, snippets, n, i = [], [], 0, 0
+        while i < len(args):
+            a = args[i]
+            if a == "-e" and i + 1 < len(args) and "\n" in args[i + 1]:
+                a, i = args[i + 1], i + 1
+            if "\n" in a:
+                n += 1
+                fname = "s%d.sed" % n
+                snippets.append(_sed_printf_file(fname, a))
+                new_args += ["-f", fname]
+            else:
+                new_args.append(a)
+            i += 1
+        if snippets:
+            setup = "; ".join(([setup] if setup else []) + snippets)
+        out.append((cid, mode, setup, env, stdin, new_args))
+    return out
+
+
+sed_rows = _sed_multiline(sed_rows)
+
+
 # #1488: xargs — GNU findutils 4.9.0 oracle. Multi-line inputs come from
 # setup-created files read with -a (the stdin column carries one line, no
 # newline). Child commands follow the nohup/timeout convention: the default
@@ -3881,6 +4904,504 @@ xargs_rows = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# cp (WP-J, #1488 rust2 library lane; coreutils 9.4 oracle)
+#
+# Every expected value was probed first (rust2/target/probe/p-cp1..4.sh in the
+# lane report). Junction rows materialize the POSIX symlink on the GNU side
+# (`ln -s`) and its unprivileged Windows analog on the exe sides
+# (`cmd /c mklink /J`), so the #1647 link paths gate without Developer Mode.
+# cp88-cp90 are `note` SKIP rows: file-symlink creation needs Developer Mode
+# (the same bound NOTE-QC records for ln22-ln25).
+# ---------------------------------------------------------------------------
+CP_ROWS = [
+    ('cp01-basic', 'strict', "printf 'A\\n' > a", '', '', ['a', 'b']),
+    ('cp02-overwrite', 'strict', 'printf A > a; printf B > b', '', '', ['a', 'b']),
+    ('cp03-into-dir', 'strict', 'printf A > a; mkdir d', '', '', ['a', 'd']),
+    ('cp04-multi-into-dir', 'strict', 'printf A > a; printf B > b; mkdir d', '', '', ['a', 'b', 'd']),
+    ('cp05-multi-verbose', 'strict', 'printf A > a; printf B > b; mkdir d', '', '', ['-v', 'a', 'b', 'd']),
+    ('cp06-missing-src', 'strict', '', '', '', ['nosuch', 'out']),
+    ('cp07-missing-dest', 'strict', 'printf A > a', '', '', ['a']),
+    ('cp08-target-missing', 'strict', 'printf A > a; printf B > b', '', '', ['a', 'b', 'nodir']),
+    ('cp09-three-nondir', 'strict', 'printf A > a; printf B > b; printf C > c', '', '', ['a', 'b', 'c']),
+    ('cp10-t-ok', 'strict', 'printf A > a; printf B > b; mkdir d', '', '', ['-t', 'd', 'a', 'b']),
+    ('cp11-t-missing', 'strict', 'printf A > a', '', '', ['-t', 'nodir', 'a']),
+    ('cp12-t-nondir', 'strict', 'printf A > a; printf B > b', '', '', ['-t', 'b', 'a']),
+    ('cp13-t-and-T', 'strict', 'printf A > a; mkdir d', '', '', ['-t', 'd', '-T', 'a']),
+    ('cp14-T-create', 'strict', 'printf A > a', '', '', ['-T', 'a', 'b']),
+    ('cp15-T-dir', 'strict', 'printf A > a; mkdir d', '', '', ['-T', 'a', 'd']),
+    ('cp16-no-r-dir', 'strict', 'mkdir d', '', '', ['d', 'e']),
+    ('cp17-r-create', 'strict', 'mkdir s; printf A > s/f', '', '', ['-r', 's', 't']),
+    ('cp18-r-existing', 'strict', 'mkdir s d; printf A > s/f', '', '', ['-r', 's', 'd']),
+    ('cp19-r-self', 'strict', 'mkdir s; printf A > s/f', '', '', ['-r', 's', 's']),
+    ('cp20-r-subdir-self', 'strict', 'mkdir -p s/sub', '', '', ['-r', 's', 's/sub']),
+    ('cp21-same-file', 'strict', 'printf A > a', '', '', ['a', 'a']),
+    ('cp22-verbose', 'strict', 'printf A > a', '', '', ['-v', 'a', 'b']),
+    ('cp23-verbose-into-dir', 'strict', 'printf A > a; mkdir d', '', '', ['-v', 'a', 'd']),
+    ('cp24-verbose-recursive', 'strict', 'mkdir s; printf A > s/f', '', '', ['-rv', 's', 't']),
+    ('cp25-vt', 'strict', 'printf A > a; mkdir d', '', '', ['-vt', 'd', 'a']),
+    ('cp26-i-no', 'strict', 'printf A > a; printf B > b', '', 'n', ['-i', 'a', 'b']),
+    ('cp27-i-eof', 'strict', 'printf A > a; printf B > b', '', '', ['-i', 'a', 'b']),
+    ('cp28-i-yes', 'strict', 'printf A > a; printf B > b', '', 'y', ['-i', 'a', 'b']),
+    ('cp29-i-fresh', 'strict', 'printf A > a', '', '', ['-i', 'a', 'b']),
+    ('cp30-i-then-f', 'strict', 'printf A > a; printf B > b', '', 'n', ['-i', '-f', 'a', 'b']),
+    ('cp31-f-then-i', 'strict', 'printf A > a; printf B > b', '', 'n', ['-f', '-i', 'a', 'b']),
+    ('cp32-i-then-n', 'strict', 'printf A > a; printf B > b', '', 'y', ['-v', '-i', '-n', 'a', 'b']),
+    ('cp33-n-then-i', 'strict', 'printf A > a; printf B > b', '', 'y', ['-v', '-n', '-i', 'a', 'b']),
+    ('cp34-n-skip-v', 'strict', 'printf A > a; printf B > b', '', '', ['-nv', 'a', 'b']),
+    ('cp35-n-new', 'strict', 'printf A > a', '', '', ['-n', 'a', 'c']),
+    ('cp36-u-skip', 'strict', 'printf A > a; printf B > b; touch -t 202001010000 a; touch -t 202101010000 b', '', '', ['-uv', 'a', 'b']),
+    ('cp37-u-copy', 'strict', 'printf A > a; printf B > b; touch -t 202201010000 a; touch -t 202101010000 b', '', '', ['-uv', 'a', 'b']),
+    ('cp38-update-none', 'strict', 'printf A > a; printf B > b', '', '', ['--update=none', 'a', 'b']),
+    ('cp39-update-all-after-n', 'strict', 'printf A > a; printf B > b', '', '', ['-nv', '--update=all', 'a', 'b']),
+    ('cp40-update-bad', 'strict', 'printf A > a', '', '', ['--update=bogus', 'a', 'b']),
+    ('cp41-backup', 'strict', 'printf A > a; printf B > b', '', '', ['-b', 'a', 'b']),
+    ('cp42-backup-v', 'strict', 'printf A > a; printf B > b', '', '', ['-vb', 'a', 'b']),
+    ('cp43-backup-suffix', 'strict', 'printf A > a; printf B > b', '', '', ['-b', '-S', '.bak', 'a', 'b']),
+    ('cp44-backup-numbered', 'strict', 'printf A > a; printf B > b', '', '', ['--backup=numbered', 'a', 'b']),
+    ('cp45-backup-invalid', 'strict', 'printf A > a', '', '', ['--backup=bogus', 'a', 'b']),
+    ('cp46-backup-empty', 'strict', 'printf A > a', '', '', ['--backup=', 'a', 'b']),
+    ('cp47-suffix-alone', 'strict', 'printf A > a; printf B > b', '', '', ['-S', '.bak', 'a', 'b']),
+    ('cp48-b-with-arg', 'strict', 'printf A > a; printf B > b', '', '', ['-b', 'numbered', 'a', 'b']),
+    ('cp49-hard-link', 'strict', 'printf A > a', '', '', ['-l', 'a', 'b']),
+    ('cp50-hard-link-exists', 'strict', 'printf A > a; printf B > b', '', '', ['-l', 'a', 'b']),
+    ('cp51-s-l-conflict', 'strict', 'printf A > a', '', '', ['-s', '-l', 'a', 'b']),
+    ('cp52-preserve-bad', 'strict', 'printf A > a', '', '', ['--preserve=bogus', 'a', 'b']),
+    ('cp53-preserve-empty', 'strict', 'printf A > a', '', '', ['--preserve=', 'a', 'b']),
+    ('cp54-sparse-bad', 'strict', 'printf A > a', '', '', ['--sparse=bogus', 'a', 'b']),
+    ('cp55-reflink-bad', 'strict', 'printf A > a', '', '', ['--reflink=bogus', 'a', 'b']),
+    ('cp56-reflink-always', 'strict', 'printf A > a', '', '', ['--reflink=always', 'a', 'b']),
+    ('cp57-reflink-auto', 'strict', 'printf A > a', '', '', ['--reflink=auto', 'a', 'b']),
+    ('cp58-reflink-sparse', 'strict', 'printf A > a', '', '', ['--reflink=always', '--sparse=never', 'a', 'b']),
+    ('cp59-unknown-long', 'strict', 'printf A > a', '', '', ['--bogus', 'a', 'b']),
+    ('cp60-unknown-short', 'strict', 'printf A > a', '', '', ['-Y', 'a', 'b']),
+    ('cp61-empty-src', 'strict', '', '', '', ['@EMPTY@', 'out']),
+    ('cp62-empty-dest', 'strict', 'printf A > a', '', '', ['a', '@EMPTY@']),
+    ('cp63-dot-recursive', 'strict', 'mkdir d; printf A > d/f', '', '', ['-r', '.', 't']),
+    ('cp64-parents', 'strict', 'mkdir -p p/q; printf A > p/q/f; mkdir d', '', '', ['--parents', 'p/q/f', 'd']),
+    ('cp65-parents-v', 'strict', 'mkdir -p p/q; printf A > p/q/f; mkdir d', '', '', ['-v', '--parents', 'p/q/f', 'd']),
+    ('cp66-parents-nondir', 'strict', 'mkdir -p p/q; printf A > p/q/f; printf x > d', '', '', ['--parents', 'p/q/f', 'd']),
+    ('cp67-dest-slash-missing', 'strict', 'printf A > a', '', '', ['a', 'nodir/']),
+    ('cp68-src-trailing-slash', 'strict', 'printf A > a', '', '', ['a/', 'b']),
+    ('cp69-strip-trailing', 'strict', 'printf A > a', '', '', ['--strip-trailing-slashes', 'a/', 'b']),
+    ('cp70-dashdash', 'strict', 'printf A > a', '', '', ['--', 'a', 'b']),
+    ('cp71-r-file', 'strict', 'printf A > a', '', '', ['-r', 'a', 'b']),
+    ('cp72-r-dest-file', 'strict', 'mkdir s; printf A > s/f; printf B > b', '', '', ['-r', 's', 'b']),
+    ('cp73-x', 'strict', 'mkdir s; printf A > s/f', '', '', ['-rx', 's', 't']),
+    ('cp74-copy-contents', 'strict', 'mkdir s; printf A > s/f', '', '', ['-r', '--copy-contents', 's', 't']),
+    ('cp75-attrs-only-v', 'strict', 'printf ABC > a', '', '', ['-v', '--attributes-only', 'a', 'b']),
+    ('cp76-just-created', 'strict', 'mkdir x y d; printf 1 > x/f; printf 2 > y/f', '', '', ['x/f', 'y/f', 'd']),
+    ('cp77-dup-source-v', 'strict', 'printf A > a; mkdir d', '', '', ['-v', 'a', 'a', 'd']),
+    ('cp78-i-multi-decline', 'strict', 'printf A > a; printf B > b; mkdir d; printf X > d/a; printf X > d/b', '', 'n\\nn\\n', ['-iv', 'a', 'b', 'd']),
+    ('cp79-preserve-p-v', 'strict', 'printf A > a', '', '', ['-vp', 'a', 'b']),
+    ('cp80-archive-v', 'strict', 'mkdir s; printf A > s/f', '', '', ['-av', 's', 't']),
+    ('cp81-junction-recursive-v', 'strict', 'mkdir real s; printf A > real/f; if [ "$(uname -s)" = Linux ]; then ln -s ../real s/l; else cmd /c mklink /J \'s\\l\' real; fi', '', '', ['-rv', 's', 't']),
+    ('cp82-junction-cmdline-v', 'strict', 'mkdir real; printf A > real/f; if [ "$(uname -s)" = Linux ]; then ln -s real l; else cmd /c mklink /J l real; fi', '', '', ['-rv', 'l', 'out']),
+    ('cp83-junction-deref-no-r', 'strict', 'mkdir real; if [ "$(uname -s)" = Linux ]; then ln -s real l; else cmd /c mklink /J l real; fi', '', '', ['l', 'out']),
+    ('cp84-junction-L-v', 'strict', 'mkdir real; printf A > real/f; if [ "$(uname -s)" = Linux ]; then ln -s real l; else cmd /c mklink /J l real; fi', '', '', ['-rvL', 'l', 'out']),
+    ('cp85-junction-P-last', 'strict', 'mkdir real s; printf A > real/f; if [ "$(uname -s)" = Linux ]; then ln -s ../real s/l; else cmd /c mklink /J \'s\\l\' real; fi', '', '', ['-rL', '-P', 's', 't']),
+    ('cp86-junction-dangling-d', 'strict', 'if [ "$(uname -s)" = Linux ]; then ln -s nosuch l; else cmd /c mklink /J l nosuch; fi', '', '', ['-dv', 'l', 'out']),
+    ('cp87-junction-archive-v', 'strict', 'mkdir real s; printf A > real/f; if [ "$(uname -s)" = Linux ]; then ln -s ../real s/l; else cmd /c mklink /J \'s\\l\' real; fi', '', '', ['-av', 's', 't']),
+    ('cp88-file-symlink-note', 'note', 'printf A > f; if [ "$(uname -s)" = Linux ]; then ln -s f l; else cmd /c mklink l f >/dev/null 2>&1 || true; fi', '', '', ['-dv', 'l', 'out']),
+    ('cp89-file-symlink-deref-note', 'note', 'printf A > f; if [ "$(uname -s)" = Linux ]; then ln -s f l; else cmd /c mklink l f >/dev/null 2>&1 || true; fi', '', '', ['-v', 'l', 'out']),
+    ('cp90-create-symlink-note', 'note', 'printf A > a', '', '', ['-s', 'a', 'b']),
+    ('cp91-permuted-options', 'strict', 'printf A > a', '', '', ['a', 'b', '-v']),
+    ('cp92-long-abbrev', 'strict', 'printf A > a', '', '', ['--verb', 'a', 'b']),
+    ('cp93-value-abbrev', 'strict', 'printf A > a', '', '', ['--sparse=n', 'a', 'b']),
+    ('cp94-dash-named-operand', 'strict', 'printf A > ./-x', '', '', ['--', '-x', 'out']),
+    ('cp95-t-no-operand', 'strict', '', '', '', ['-t', 'nodir']),
+    ('cp96-t-missing-arg', 'strict', '', '', '', ['-t']),
+    ('cp97-t-multiple', 'strict', 'printf A > a; mkdir d e', '', '', ['-t', 'd', '-t', 'e', 'a']),
+    ('cp98-cyclic-link', 'strict', "mkdir a; printf A > a/f; if [ \"$(uname -s)\" = Linux ]; then ln -s . a/loop; else cmd /c mklink /J 'a\\loop' a; fi", '', '', ['-rL', 'a', 'b']),
+    # #1700 / #1732 regressions on the Rust path (probed against WSL
+    # coreutils 9.4, LC_ALL=C.UTF-8, 2026-11-14).  Junction rows use the
+    # unprivileged Windows directory-link form; LX rows build the genuine
+    # WSL DrvFs reparse tag with `wsl.exe ln -s` on the exe side.
+    ('cp99-junction-dangling-deref', 'strict', "if [ \"$(uname -s)\" = Linux ]; then ln -s nosuch l; else cmd /c mklink /J l nosuch; fi", '', '', ['l', 'out']),
+    ('cp100-junction-into-itself', 'strict', "mkdir real; printf A > real/f; if [ \"$(uname -s)\" = Linux ]; then ln -s real dirlink; else cmd /c mklink /J dirlink real; fi", '', '', ['-r', 'real', 'dirlink']),
+    ('cp101-junction-H-cmdline', 'strict', "mkdir real; printf A > real/f; if [ \"$(uname -s)\" = Linux ]; then ln -s real l; else cmd /c mklink /J l real; fi", '', '', ['-rH', 'l', 'out']),
+    ('cp102-junction-H-nested-v', 'strict', "mkdir real s; printf A > real/f; if [ \"$(uname -s)\" = Linux ]; then ln -s ../real s/l; else cmd /c mklink /J 's\\l' real; fi", '', '', ['-rvH', 's', 't']),
+    ('cp103-junction-H-verbose', 'strict', "mkdir real; printf A > real/f; if [ \"$(uname -s)\" = Linux ]; then ln -s real l; else cmd /c mklink /J l real; fi", '', '', ['-rvH', 'l', 'out']),
+    ('cp104-lx-file-deref', 'strict', "printf A > a; if [ \"$(uname -s)\" = Linux ]; then ln -s a l; else wsl.exe ln -s a l; fi", '', '', ['l', 'out']),
+    ('cp105-lx-dangling', 'strict', "if [ \"$(uname -s)\" = Linux ]; then ln -s missing l; else wsl.exe ln -s missing l; fi", '', '', ['l', 'out']),
+    ('cp106-lx-H-dirlink', 'strict', "mkdir real; printf A > real/f; if [ \"$(uname -s)\" = Linux ]; then ln -s real l; else wsl.exe ln -s real l; fi", '', '', ['-rH', 'l', 'out']),
+    ('cp107-lx-L-nested', 'strict', "mkdir real; printf D > real/a; if [ \"$(uname -s)\" = Linux ]; then ln -s a real/l; ln -s real l; else wsl.exe ln -s a real/l; wsl.exe ln -s real l; fi", '', '', ['-rL', 'l', 'out']),
+]
+FIND_FX = ("mkdir -p t/a/b t/d; printf hello > t/a/f5; printf %3000s x > t/a/b/big; "
+           ": > t/e; : > t/d/.hid; : > t/a/x.rs; : > t/a/b/y.rs; "
+           "touch -d @1577836800 t/a/f5 t/a/b/big")
+FIND_JX = (FIND_FX + "; ln -s ../d t/a/jd 2>/dev/null || MSYS_NO_PATHCONV=1 "
+           "cmd /c \"mklink /J t\\a\\jd t\\d\" >/dev/null")
+FIND_LOOP = ("mkdir -p loop/x; ln -s .. loop/x/up 2>/dev/null || MSYS_NO_PATHCONV=1 "
+             "cmd /c \"mklink /J loop\\x\\up %CD%\\loop\" >/dev/null")
+# dangling link: GNU `ln -s missing`; Windows junction via cmd mklink /J,
+# which (unlike PowerShell New-Item -ItemType Junction) accepts a missing
+# target (measured on the gate host, 2026-11-14)
+FIND_DANG = ("ln -s missing dang 2>/dev/null || MSYS_NO_PATHCONV=1 cmd /c "
+             "\"mklink /J dang missing\"")
+# (no '?', '|' or case-only twins: Windows file names cannot carry them)
+FIND_RX = ("mkdir r; for n in ab aab 'a+b' 'a(b)' 'a{2}' aa a.b 'x^y' 'x$y' "
+           "'[x]' b abab aXb; do : > \"r/$n\"; done")
+FIND_TZ = "TZ=UTC0"
+
+find_rows = [
+    # ---- help / version / leading options ----
+    ("fd001-help", "strict", "", "", "", ["--help"]),
+    ("fd002-help-single-dash", "strict", "", "", "", ["-help"]),
+    ("fd003-version", "strict", "", "", "", ["--version"]),
+    ("fd004-version-single-dash", "strict", "", "", "", ["-version"]),
+    ("fd005-help-after-tests", "strict", FIND_FX, "", "", ["t", "-name", "x", "--help"]),
+    ("fd006-D-help", "strict", "", "", "", ["-D", "help"]),
+    ("fd007-D-glued-help", "strict", "", "", "", ["-Dhelp"]),
+    ("fd008-D-bogus-ignored", "strict", FIND_FX, "", "", ["-D", "bogus", "t", "-maxdepth", "0"]),
+    ("fd009-D-missing", "strict", "", "", "", ["-D"]),
+    ("fd010-O-empty", "strict", "", "", "", ["-O"]),
+    ("fd011-O-nondigit", "strict", "", "", "", ["-Ox", "."]),
+    ("fd012-O3", "strict", FIND_FX, "", "", ["-O3", "t", "-maxdepth", "0"]),
+    ("fd013-O9-accepted", "strict", FIND_FX, "", "", ["-O9", "t", "-maxdepth", "0"]),
+    ("fd014-P-H-L-last-wins", "sorted", FIND_JX, "", "", ["-L", "-P", "t/a", "-type", "l"]),
+    ("fd015-dashdash-end", "strict", FIND_FX, "", "", ["--", "t", "-maxdepth", "0"]),
+    # ---- parse diagnostics ----
+    ("fd020-unknown-predicate", "strict", "", "", "", [".", "-foo"]),
+    ("fd021-missing-name", "strict", "", "", "", [".", "-name"]),
+    ("fd022-paths-must-precede", "strict", FIND_FX, "", "", ["t", "-name", "x", "t/a"]),
+    ("fd023-regextype-bogus", "strict", "", "", "", [".", "-regextype", "foo"]),
+    ("fd024-size-bad-suffix", "strict", "", "", "", [".", "-size", "3q"]),
+    ("fd025-size-empty", "strict", "", "", "", [".", "-size", "@EMPTY@"]),
+    ("fd026-size-bad-number", "strict", "", "", "", [".", "-size", "k"]),
+    ("fd027-type-unknown", "strict", "", "", "", [".", "-type", "z"]),
+    ("fd028-type-trailing-comma", "strict", "", "", "", [".", "-type", "f,"]),
+    ("fd029-type-no-separator", "strict", "", "", "", [".", "-type", "ff"]),
+    ("fd030-type-duplicate", "strict", "", "", "", [".", "-type", "f,f"]),
+    ("fd031-type-empty", "strict", "", "", "", [".", "-type", "@EMPTY@"]),
+    ("fd032-type-door", "strict", "", "", "", [".", "-type", "D"]),
+    ("fd033-perm-bad-octal", "strict", "", "", "", [".", "-perm", "999"]),
+    ("fd034-perm-plus-octal", "strict", "", "", "", [".", "-perm", "+644"]),
+    ("fd035-mtime-bad", "strict", "", "", "", [".", "-mtime", "x"]),
+    ("fd036-maxdepth-negative", "strict", "", "", "", [".", "-maxdepth", "-1"]),
+    ("fd037-maxdepth-suffix", "strict", "", "", "", [".", "-maxdepth", "1x"]),
+    ("fd038-newer-missing-file", "strict", "", "", "", [".", "-newer", "nonexist"]),
+    ("fd039-user-empty", "strict", "", "", "", [".", "-user", "@EMPTY@"]),
+    ("fd040-user-unknown", "strict", "", "", "", [".", "-user", "nosuchuser99"]),
+    ("fd041-group-unknown", "strict", "", "", "", [".", "-group", "nosuchgrp99"]),
+    ("fd042-group-numeric-suffix", "strict", "", "", "", [".", "-group", "12x"]),
+    ("fd043-used-bad", "strict", "", "", "", [".", "-used", "x"]),
+    ("fd044-printf-trailing-percent", "strict", "", "", "", [".", "-printf", "%"]),
+    ("fd045-printf-reserved", "strict", "", "", "", [".", "-printf", "%{"]),
+    ("fd046-exec-no-terminator", "strict", "", "", "", [".", "-exec", "echo", "{}"]),
+    ("fd047-exec-plus-two-braces", "strict", "", "", "", [".", "-exec", "echo", "{}x", "{}", "+"]),
+    ("fd048-exec-plus-braces-glued", "strict", "", "", "", [".", "-exec", "echo", "x{}", "+"]),
+    ("fd049-execdir-braces-in-utility", "strict", "", "", "", [".", "-execdir", "{}", "x", ";"]),
+    ("fd050-ok-missing", "strict", "", "", "", [".", "-ok"]),
+    ("fd051-open-paren-only", "strict", "", "", "", [".", "("]),
+    ("fd052-empty-parens", "strict", "", "", "", [".", "(", ")"]),
+    ("fd053-too-many-close", "strict", "", "", "", [".", "-name", "x", ")"]),
+    ("fd054-not-dangling", "strict", "", "", "", [".", "!"]),
+    ("fd055-and-leading", "strict", "", "", "", [".", "-a"]),
+    ("fd056-or-dangling", "strict", "", "", "", [".", "-name", "x", "-o"]),
+    ("fd057-or-before-close", "strict", "", "", "", [".", "-name", "x", "-o", ")"]),
+    ("fd058-paren-or-close", "strict", "", "", "", [".", "(", "-name", "x", "-o", ")"]),
+    ("fd059-prune-delete", "strict", "", "", "", [".", "-prune", "-delete"]),
+    ("fd060-context", "strict", "", "", "", [".", "-context", "x"]),
+    ("fd061-newerXY-bad-letters", "strict", "", "", "", [".", "-newerXY", "x"]),
+    ("fd062-newertm-invalid", "strict", "", "", "", [".", "-newertm", "x"]),
+    ("fd063-newermt-garbage", "strict", "", "", "", [".", "-newermt", "garbage"]),
+    ("fd064-newermm-missing", "strict", "", "", "", [".", "-newermm"]),
+    ("fd065-samefile-missing", "strict", "", "", "", [".", "-samefile", "nonexist"]),
+    ("fd066-files0-with-operand", "strict", "", "", "", [".", "-files0-from", "x"]),
+    ("fd067-inum-bad", "strict", "", "", "", [".", "-inum", "x"]),
+    ("fd068-links-bad", "strict", "", "", "", [".", "-links", "+x"]),
+    ("fd069-uid-bad", "strict", "", "", "", [".", "-uid", "1.5"]),
+    ("fd070-regex-unmatched-group", "strict", "", "", "", [".", "-regex", "\\(a"]),
+    ("fd071-posix-extended-leading-star", "strict", "", "", "",
+     [".", "-regextype", "posix-extended", "-regex", "*a"]),
+    ("fd072-fprintf-one-arg", "strict", "", "", "", [".", "-fprintf", "out"]),
+    ("fd073-missing-maxdepth", "strict", "", "", "", [".", "-maxdepth"]),
+    ("fd074-missing-perm", "strict", "", "", "", [".", "-perm"]),
+    ("fd075-unknown-double-dash", "strict", "", "", "", [".", "--name", "x"]),
+    # ---- traversal / starting points ----
+    ("fd080-default-walk", "sorted", FIND_FX, "", "", ["-path", "./t*"]),
+    ("fd081-explicit-root", "sorted", FIND_FX, "", "", ["t"]),
+    ("fd082-root-trailing-slash", "sorted", FIND_FX, "", "", ["t/"]),
+    ("fd083-root-dot-slash", "sorted", FIND_FX, "", "", ["./t"]),
+    ("fd084-root-double-slash", "sorted", FIND_FX, "", "", ["t//", "-maxdepth", "1"]),
+    ("fd085-two-roots", "sorted", FIND_FX, "", "", ["t/a", "t/d"]),
+    ("fd086-missing-root-continues", "sorted", FIND_FX, "", "", ["t/d", "nosuch", "t/e"]),
+    ("fd087-empty-root", "strict", "", "", "", ["@EMPTY@"]),
+    ("fd088-maxdepth-0", "strict", FIND_FX, "", "", ["t", "-maxdepth", "0"]),
+    ("fd089-maxdepth-1", "sorted", FIND_FX, "", "", ["t", "-maxdepth", "1"]),
+    ("fd090-maxdepth-2", "sorted", FIND_FX, "", "", ["t", "-maxdepth", "2"]),
+    ("fd091-mindepth-2", "sorted", FIND_FX, "", "", ["t", "-mindepth", "2"]),
+    ("fd092-min-max-window", "sorted", FIND_FX, "", "", ["t", "-mindepth", "1", "-maxdepth", "1"]),
+    ("fd093-mindepth-beyond", "strict", FIND_FX, "", "", ["t", "-mindepth", "9"]),
+    ("fd094-depth-postorder-single-chain", "strict", "mkdir -p c/d/e", "", "", ["c", "-depth"]),
+    ("fd095-d-deprecated", "strict", "mkdir -p c/d/e", "", "", ["c", "-d"]),
+    ("fd096-file-root", "strict", FIND_FX, "", "", ["t/e"]),
+    ("fd097-file-root-trailing-slash", "strict", FIND_FX, "", "", ["t/e/"]),
+    ("fd098-missing-root-trailing-slash", "strict", "", "", "", ["nosuch/"]),
+    ("fd099-preorder-single-chain", "strict", "mkdir -p c/d/e", "", "", ["c"]),
+    ("fd100-dot-root", "sorted", FIND_FX, "", "", [".", "-path", "./t/a*"]),
+    ("fd101-close-paren-as-path", "strict", "", "", "", [")"]),
+    ("fd102-comma-as-path", "strict", "", "", "", [","]),
+    ("fd103-dash-is-path", "strict", "", "", "", ["-"]),
+    ("fd104-noleaf-xdev-mount", "sorted", FIND_FX, "", "", ["t", "-noleaf", "-xdev", "-mount"]),
+    ("fd105-ignore-race", "sorted", FIND_FX, "", "", ["t", "-ignore_readdir_race", "-type", "f"]),
+    ("fd106-noignore-race", "sorted", FIND_FX, "", "", ["t", "-noignore_readdir_race", "-type", "d"]),
+    # ---- names / paths ----
+    ("fd110-name-glob", "sorted", FIND_FX, "", "", ["t", "-name", "*.rs"]),
+    ("fd111-iname", "sorted", FIND_FX + "; : > t/UP.RS", "", "", ["t", "-iname", "*.rs"]),
+    ("fd112-name-case-sensitive", "sorted", FIND_FX + "; : > t/UP.RS", "", "", ["t", "-name", "*.rs"]),
+    ("fd113-name-with-slash-false", "strict", FIND_FX, "", "", ["t", "-name", "a/b"]),
+    ("fd114-name-bracket", "sorted", FIND_FX, "", "", ["t", "-name", "[a-e]*"]),
+    ("fd115-name-negated-bracket", "sorted", FIND_FX, "", "", ["t", "-name", "[!a-e]*"]),
+    ("fd116-name-caret-bracket", "sorted", FIND_FX, "", "", ["t", "-name", "[^a-e]*"]),
+    ("fd117-name-escaped-star", "strict", FIND_FX, "", "", ["t", "-name", "\\*"]),
+    ("fd118-name-dotfile", "strict", FIND_FX, "", "", ["t", "-name", ".*"]),
+    ("fd119-name-root-trailing-slash", "strict", FIND_FX, "", "", ["t/", "-name", "t"]),
+    ("fd120-name-class", "sorted", FIND_FX, "", "", ["t", "-name", "*[[:digit:]]"]),
+    ("fd121-path", "sorted", FIND_FX, "", "", ["t", "-path", "t/a/*"]),
+    ("fd122-path-star-crosses-slash", "sorted", FIND_FX, "", "", ["t", "-path", "t*rs"]),
+    ("fd123-ipath", "sorted", FIND_FX, "", "", ["t", "-ipath", "T/A/*"]),
+    ("fd124-wholename", "sorted", FIND_FX, "", "", ["t", "-wholename", "t/d*"]),
+    ("fd125-iwholename", "sorted", FIND_FX, "", "", ["t", "-iwholename", "T/D*"]),
+    ("fd126-path-trailing-slash-warns", "strict", FIND_FX, "", "", ["t", "-path", "t/a/"]),
+    ("fd127-name-question", "sorted", FIND_FX, "", "", ["t", "-name", "?"]),
+    # ---- regex (default emacs + every -regextype) ----
+    ("fd130-regex-default-emacs", "sorted", FIND_FX, "", "", ["t", "-regex", ".*\\.rs"]),
+    ("fd131-regex-emacs-plus", "sorted", FIND_RX, "", "", ["r", "-regex", "r/a+b"]),
+    ("fd132-regex-emacs-escaped-plus", "strict", FIND_RX, "", "", ["r", "-regex", "r/a\\+b"]),
+    ("fd133-regex-emacs-group-alt", "strict", FIND_RX, "", "", ["r", "-regex", "r/\\(a\\|b\\)"]),
+    ("fd134-regex-emacs-literal-braces", "strict", FIND_RX, "", "", ["r", "-regex", "r/a\\{2\\}"]),
+    ("fd135-regex-emacs-no-classes", "strict", FIND_RX, "", "", ["r", "-regex", ".*[[:upper:]].*"]),
+    ("fd136-regex-emacs-backref", "strict", FIND_RX, "", "", ["r", "-regex", "r/\\(ab\\)\\1"]),
+    ("fd137-regex-whole-path", "strict", FIND_RX, "", "", ["r", "-regex", "ab"]),
+    ("fd138-iregex", "sorted", FIND_RX, "", "", ["r", "-iregex", "r/AXB"]),
+    ("fd139-regextype-posix-basic", "sorted", FIND_RX, "", "", ["r", "-regextype", "posix-basic", "-regex", "r/a\\+b"]),
+    ("fd140-regextype-posix-extended", "sorted", FIND_RX, "", "", ["r", "-regextype", "posix-extended", "-regex", "r/a{1,2}b"]),
+    ("fd141-regextype-posix-egrep", "sorted", FIND_RX, "", "", ["r", "-regextype", "posix-egrep", "-regex", "r/(a|b)"]),
+    ("fd142-regextype-egrep", "sorted", FIND_RX, "", "", ["r", "-regextype", "egrep", "-regex", "r/a?b"]),
+    ("fd143-regextype-grep", "sorted", FIND_RX, "", "", ["r", "-regextype", "grep", "-regex", "r/a\\{2\\}"]),
+    ("fd144-regextype-sed", "strict", FIND_RX, "", "", ["r", "-regextype", "sed", "-regex", "r/a**"]),
+    ("fd145-regextype-ed", "sorted", FIND_RX, "", "", ["r", "-regextype", "ed", "-regex", "r/a\\?b"]),
+    ("fd146-regextype-emacs-explicit", "sorted", FIND_RX, "", "", ["r", "-regextype", "emacs", "-regex", "r/a?b"]),
+    ("fd147-regextype-findutils-default", "sorted", FIND_RX, "", "", ["r", "-regextype", "findutils-default", "-regex", "r/a.b"]),
+    ("fd148-regextype-posix-awk", "sorted", FIND_RX, "", "", ["r", "-regextype", "posix-awk", "-regex", "r/(ab)\\1"]),
+    ("fd149-regextype-awk", "sorted", FIND_RX, "", "", ["r", "-regextype", "awk", "-regex", ".*[\\]x].*"]),
+    ("fd150-regextype-gnu-awk", "sorted", FIND_RX, "", "", ["r", "-regextype", "gnu-awk", "-regex", "r/a\\w"]),
+    ("fd151-regextype-posix-minimal-basic", "strict", FIND_RX, "", "", ["r", "-regextype", "posix-minimal-basic", "-regex", "r/a\\+b"]),
+    ("fd152-regextype-positional", "sorted", FIND_RX, "", "",
+     ["r", "-regex", "r/a+b", "-o", "-regextype", "posix-basic", "-regex", "r/a\\?b"]),
+    ("fd153-regex-posix-basic-badrepeat", "strict", FIND_RX, "", "", ["r", "-regextype", "posix-basic", "-regex", "r/a**"]),
+    # ---- type / size / empty ----
+    ("fd160-type-f", "sorted", FIND_FX, "", "", ["t", "-type", "f"]),
+    ("fd161-type-d", "sorted", FIND_FX, "", "", ["t", "-type", "d"]),
+    ("fd162-type-list", "sorted", FIND_FX, "", "", ["t", "-type", "d,f"]),
+    ("fd163-type-l-junction", "strict", FIND_JX, "", "", ["t", "-type", "l"]),
+    ("fd164-type-l-not-descended", "sorted", FIND_JX, "", "", ["t/a", "-mindepth", "1"]),
+    ("fd165-xtype-d-junction", "sorted", FIND_JX, "", "", ["t/a", "-xtype", "d"]),
+    ("fd166-L-follows", "sorted", FIND_JX, "", "", ["-L", "t/a", "-mindepth", "1"]),
+    ("fd167-L-type-l-none", "strict", FIND_JX, "", "", ["-L", "t", "-type", "l"]),
+    ("fd168-L-xtype-l", "strict", FIND_JX, "", "", ["-L", "t", "-xtype", "l"]),
+    ("fd169-H-root-link", "sorted", FIND_JX, "", "", ["-H", "t/a/jd"]),
+    ("fd170-P-root-link", "strict", FIND_JX, "", "", ["t/a/jd"]),
+    ("fd171-follow-option", "sorted", FIND_JX, "", "", ["t/a", "-follow", "-mindepth", "1"]),
+    ("fd172-loop-detected", "sorted", FIND_LOOP, "", "", ["-L", "loop"]),
+    ("fd173-loop-no-follow", "sorted", FIND_LOOP, "", "", ["loop"]),
+    ("fd174-printf-y-Y-link", "strict", FIND_JX, "", "", ["t/a/jd", "-printf", "%y %Y\\n"]),
+    ("fd175-lname", "strict", FIND_JX, "", "", ["t", "-lname", "*d"]),
+    ("fd176-ilname", "strict", FIND_JX, "", "", ["t", "-ilname", "*D"]),
+    ("fd177-size-c", "strict", FIND_FX, "", "", ["t", "-type", "f", "-size", "5c"]),
+    ("fd178-size-blocks-round-up", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-size", "1"]),
+    ("fd179-size-less-than", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-size", "-1"]),
+    ("fd180-size-k", "strict", FIND_FX, "", "", ["t", "-type", "f", "-size", "3k"]),
+    ("fd181-size-minus-k", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-size", "-3k"]),
+    ("fd182-size-plus-c", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-size", "+4c"]),
+    ("fd183-size-M", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-size", "1M"]),
+    ("fd184-size-w", "strict", FIND_FX, "", "", ["t", "-type", "f", "-size", "1500w"]),
+    ("fd185-size-G-zero", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-size", "0G"]),
+    ("fd186-size-b", "strict", FIND_FX, "", "", ["t", "-type", "f", "-size", "6b"]),
+    ("fd187-empty", "sorted", FIND_FX, "", "", ["t", "-empty"]),
+    ("fd188-empty-dir", "sorted", FIND_FX + "; mkdir t/z", "", "", ["t", "-type", "d", "-empty"]),
+    ("fd189-not-empty", "sorted", FIND_FX, "", "", ["t", "!", "-empty"]),
+    # ---- operators ----
+    ("fd190-false", "strict", FIND_FX, "", "", ["t", "-false"]),
+    ("fd191-true-or-print", "strict", FIND_FX, "", "", ["t", "-true", "-o", "-print"]),
+    ("fd192-comma", "sorted", FIND_FX, "", "", ["t/a", "-maxdepth", "1", "-print", ",", "-print"]),
+    ("fd193-parens-or", "sorted", FIND_FX, "", "", ["t", "(", "-name", "f5", "-o", "-name", "e", ")", "-print"]),
+    ("fd194-or-binds-looser", "strict", FIND_FX, "", "", ["t", "-name", "f5", "-o", "-name", "e", "-print"]),
+    ("fd195-not-and-not", "sorted", FIND_FX, "", "", ["t", "!", "-name", "*.rs", "-not", "-type", "d"]),
+    ("fd196-and-or-words", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-and", "-name", "x*", "-or", "-name", "e"]),
+    ("fd197-maxdepth-noop-in-or", "strict", FIND_FX, "", "", ["t", "-maxdepth", "0", "-o", "-print"]),
+    ("fd198-explicit-a", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-a", "-name", "*5"]),
+    ("fd199-nested-parens", "sorted", FIND_FX, "", "",
+     ["t", "(", "(", "-name", "f5", ")", "-o", "(", "-name", "big", ")", ")"]),
+    # ---- time ----
+    ("fd200-newer", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-newer", "t/a/f5"]),
+    ("fd201-not-newer", "sorted", FIND_FX, "", "", ["t", "-type", "f", "!", "-newer", "t/a/f5"]),
+    ("fd202-cnewer", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-cnewer", "t/a/f5"]),
+    ("fd203-anewer", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-anewer", "t/a/f5"]),
+    ("fd204-mtime-plus", "sorted", FIND_FX, "", "", ["t", "-mtime", "+1"]),
+    ("fd205-mtime-minus", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-mtime", "-1"]),
+    ("fd206-mtime-zero", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-mtime", "0"]),
+    ("fd207-mmin-minus", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-mmin", "-30"]),
+    ("fd208-mmin-plus", "sorted", FIND_FX, "", "", ["t", "-mmin", "+60"]),
+    ("fd209-atime-plus", "sorted", FIND_FX, "", "", ["t", "-atime", "+1000"]),
+    ("fd210-amin-fraction", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-amin", "-30.5"]),
+    ("fd211-ctime-zero", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-ctime", "0"]),
+    ("fd212-cmin-plus", "strict", FIND_FX, "", "", ["t", "-type", "f", "-cmin", "+600"]),
+    ("fd213-daystart", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-daystart", "-mtime", "+1"]),
+    ("fd214-newermt-iso", "sorted", FIND_FX, FIND_TZ, "", ["t", "-type", "f", "-newermt", "2021-01-01"]),
+    ("fd215-newermt-epoch", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-newermt", "@1577836801"]),
+    ("fd216-newermt-utc-older", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-newermt", "2019-12-31 23:00 UTC"]),
+    ("fd217-newerat", "sorted", FIND_FX, FIND_TZ, "", ["t", "-type", "f", "-newerat", "2021-01-01"]),
+    ("fd218-newermm-ref", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-newermm", "t/a/f5"]),
+    ("fd219-newerBt-birth", "note", FIND_FX, "", "", ["t", "-newerBt", "2021-01-01"]),
+    ("fd220-used", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-used", "-1"]),
+    ("fd221-newer-equal-time-false", "strict", FIND_FX, "", "", ["t/a/b/big", "-newer", "t/a/f5"]),
+    # ---- perm / access ----
+    ("fd230-perm-exact-files", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-perm", "644"]),
+    ("fd231-perm-dirs-755", "sorted", FIND_FX, "", "", ["t", "-perm", "0755"]),
+    ("fd232-perm-at-least", "sorted", FIND_FX, "", "", ["t", "-perm", "-644"]),
+    ("fd233-perm-any-exec", "sorted", FIND_FX, "", "", ["t", "-perm", "/111"]),
+    ("fd234-perm-symbolic-at-least", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-perm", "-u=rw"]),
+    ("fd235-perm-symbolic-exact", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-perm", "u=rw,g=r,o=r"]),
+    ("fd236-perm-slash-000-warns", "strict", FIND_FX, "", "", ["t", "-maxdepth", "0", "-perm", "/000"]),
+    ("fd237-perm-readonly", "strict", FIND_FX + "; chmod a-w t/a/f5", "", "", ["t", "-type", "f", "-perm", "444"]),
+    ("fd238-perm-junction-777", "strict", FIND_JX, "", "", ["t", "-perm", "777"]),
+    ("fd239-perm-symbolic-X", "sorted", FIND_FX, "", "", ["t", "-perm", "/a+X"]),
+    ("fd240-readable", "sorted", FIND_FX, "", "", ["t", "-readable"]),
+    ("fd241-writable-not-readonly", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-writable"]),
+    ("fd242-executable-dirs", "sorted", FIND_FX, "", "", ["t", "-executable"]),
+    # ---- printf (platform-neutral directives) ----
+    ("fd250-printf-path-parts", "sorted", FIND_FX, "", "", ["t", "-printf", "%p|%f|%h|%P|%H|%d|%y\\n"]),
+    ("fd251-printf-root-slash", "sorted", FIND_FX, "", "", ["t/", "-maxdepth", "1", "-printf", "%p|%f|%h|%P|%H\\n"]),
+    ("fd252-printf-dot", "strict", FIND_FX, "", "", [".", "-maxdepth", "0", "-printf", "%h|%f|%P|%H\\n"]),
+    ("fd253-printf-dotdot", "strict", FIND_FX, "", "", ["..", "-maxdepth", "0", "-printf", "%h|%f\\n"]),
+    ("fd254-printf-dirname-quirk", "strict", "mkdir -p a/b", "", "", ["a/", "-maxdepth", "0", "-printf", "%h|%f\\n"]),
+    ("fd255-printf-size-mode", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-printf", "%s %m %M %p\\n"]),
+    ("fd256-printf-widths", "strict", FIND_FX, "", "", ["t/a/f5", "-printf", "[%10p][%-10p][%.3p][%5s][%-5s|][%05s]\\n"]),
+    ("fd257-printf-numeric-flags", "strict", FIND_FX, "", "", ["t/a/f5", "-printf", "[%+5d][%05d][%-5d|][% d][%#m][%5m][%05m][%-6m|][%+m]\\n"]),
+    ("fd258-printf-escapes", "strict", FIND_FX, "", "", ["t/a/f5", "-printf", "a\\tb\\\\c\\101\\1012\\0z\\n"]),
+    ("fd259-printf-unknown-directive", "strict", FIND_FX, "", "", ["t/a/f5", "-printf", "%q|%5x|\\q|%5%|ab%%\\n"]),
+    ("fd260-printf-stop-escape", "strict", FIND_FX, "", "", ["t/a/f5", "-printf", "one\\ctwo"]),
+    ("fd261-printf-time-T", "strict", FIND_FX, FIND_TZ, "",
+     ["t/a/f5", "-printf", "%T@|%TT|%TS|%T+|%TX|%Tc|%Tx|%Tr|%TD|%Tk|%Tl|%Ts|%TZ|%Tz|%Tj\\n"]),
+    ("fd262-printf-time-T-names", "strict", FIND_FX, FIND_TZ, "",
+     ["t/a/f5", "-printf", "%TU|%TW|%Ta|%TA|%Tb|%TB|%Th|%TH|%TI|%Tp|%TM|%Ty|%TY|%Tm|%Td|%Te|%Tq|%TV|%TG|%Tu|%Tw|%TR|%TF\\n"]),
+    ("fd263-printf-ctime-format", "strict", FIND_FX, FIND_TZ, "", ["t/a/f5", "-printf", "%t|%a\\n"]),
+    ("fd264-printf-atime-A", "strict", FIND_FX, FIND_TZ, "", ["t/a/f5", "-printf", "%A@|%AY-%Am-%Ad\\n"]),
+    ("fd265-printf-time-width", "strict", FIND_FX, FIND_TZ, "", ["t/a/f5", "-printf", "[%20TY][%-6TH]\\n"]),
+    ("fd266-printf-A-dangling", "strict", FIND_FX, "", "", ["t/a/f5", "-printf", "%A"]),
+    ("fd267-printf-trailing-backslash", "strict", FIND_FX, "", "", ["t/a/f5", "-printf", "x\\"]),
+    ("fd268-printf-l-nonlink-empty", "strict", FIND_FX, "", "", ["t/a/f5", "-printf", "[%l][%5l]\\n"]),
+    ("fd269-printf-depth-dirs", "sorted", FIND_FX, "", "", ["t", "-type", "d", "-printf", "%d %p\\n"]),
+    ("fd270-printf-no-newline", "strict", FIND_FX, "", "", ["t/a/f5", "t/e", "-printf", "%f,"]),
+    # ---- platform-inherent metadata (win: Rust vs C++ rc; stdout recorded) ----
+    ("fd280-printf-ids", "win", FIND_FX, "", "", ["t/a/f5", "-printf", "%u %g %U %G\\n"]),
+    ("fd281-printf-inode-dev-links", "win", FIND_FX, "", "", ["t/a/f5", "-printf", "%i %D %n\\n"]),
+    ("fd282-printf-blocks", "win", FIND_FX, "", "", ["t/a/f5", "-printf", "%b %k %S\\n"]),
+    ("fd283-printf-fstype", "win", FIND_FX, "", "", ["t/a/f5", "-printf", "%F\\n"]),
+    ("fd284-ls", "win", FIND_FX, "", "", ["t/a/f5", "-ls"]),
+    ("fd285-printf-ctime", "win", FIND_FX, "", "", ["t/a/f5", "-printf", "%c %C@\\n"]),
+    ("fd286-printf-birth", "win", FIND_FX, "", "", ["t/a/f5", "-printf", "%B@\\n"]),
+    ("fd287-printf-link-target", "win", FIND_JX, "", "", ["t/a/jd", "-printf", "%l\\n"]),
+    ("fd288-links-dir", "win", FIND_FX, "", "", ["t", "-type", "d", "-links", "1"]),
+    ("fd289-uid-current", "win", FIND_FX, "", "", ["t", "-maxdepth", "0", "-uid", "+0"]),
+    ("fd290-nouser", "exit", FIND_FX, "", "", ["t", "-nouser"]),
+    ("fd291-nogroup", "exit", FIND_FX, "", "", ["t", "-nogroup"]),
+    ("fd292-fstype-mismatch", "strict", FIND_FX, "", "", ["t", "-fstype", "nosuchfs"]),
+    ("fd293-printf-Z", "strict", FIND_FX, "", "", ["t/a/f5", "-printf", "[%Z]\\n"]),
+    # ---- portable link/inode tests ----
+    ("fd295-links-files", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-links", "1"]),
+    ("fd296-links-plus0", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-links", "+0"]),
+    ("fd297-samefile", "strict", FIND_FX, "", "", ["t", "-samefile", "t/a/f5"]),
+    ("fd298-samefile-hardlink", "sorted", FIND_FX + "; ln t/a/f5 t/hl", "", "", ["t", "-samefile", "t/a/f5"]),
+    ("fd299-inum-zero-none", "strict", FIND_FX, "", "", ["t", "-inum", "0"]),
+    # ---- actions ----
+    ("fd300-print0", "strict", FIND_FX, "", "", ["t/a/f5", "t/e", "-print0"]),
+    ("fd301-fprint-file", "strict", FIND_FX, "", "", ["t", "-fprint", "out.txt"]),
+    ("fd302-fprint-and-print", "sorted", FIND_FX, "", "", ["t", "-type", "d", "-fprint", "o", "-print"]),
+    ("fd303-fprintf", "strict", FIND_FX, "", "", ["t", "-fprintf", "o", "%p\\n"]),
+    ("fd304-fls", "strict", FIND_FX, "", "", ["t", "-fls", "o"]),
+    ("fd305-fprint0", "strict", FIND_FX, "", "", ["t", "-fprint0", "o"]),
+    ("fd306-prune", "strict", FIND_FX, "", "", ["t", "-prune"]),
+    ("fd307-prune-subtree", "sorted", FIND_FX, "", "", ["t", "-name", "a", "-prune", "-o", "-print"]),
+    ("fd308-prune-implicit-print", "strict", FIND_FX, "", "", ["t", "-name", "a", "-prune"]),
+    ("fd309-prune-with-depth-noop", "sorted", FIND_FX, "", "", ["t", "-depth", "-name", "a", "-prune", "-o", "-type", "f", "-print"]),
+    ("fd310-quit", "strict", FIND_FX, "", "", ["t", "-quit"]),
+    ("fd311-quit-after-match", "strict", "mkdir -p c/d/e", "", "", ["c", "-name", "d", "-print", "-quit"]),
+    ("fd312-quit-skips-rest", "strict", FIND_FX, "", "", ["t", "-quit", "-print"]),
+    ("fd313-delete-files", "sorted", FIND_FX, "", "", ["t", "-name", "*.rs", "-delete", "-print"]),
+    ("fd314-delete-tree-depth", "sorted", FIND_FX, "", "", ["t/a", "-delete", "-print"]),
+    ("fd315-delete-nonempty-fails", "strict", "mkdir -p ne/z; : > ne/z/q", "", "", ["ne/z", "-maxdepth", "0", "-delete"]),
+    ("fd316-delete-dot-skipped", "strict", "", "", "", [".", "-maxdepth", "0", "-delete"]),
+    ("fd317-delete-no-match", "strict", FIND_FX, "", "", ["t", "-name", "nope", "-delete"]),
+    ("fd318-delete-readonly", "strict", FIND_FX + "; chmod a-w t/e", "", "", ["t/e", "-delete", "-print"]),
+    ("fd319-delete-then-gone", "strict", FIND_FX, "", "", ["t/d", "-delete", "-o", "-print"]),
+    ("fd320-exec-semicolon", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-exec", "echo", "X", "{}", ";"]),
+    ("fd321-exec-brace-substring", "strict", FIND_FX, "", "", ["t/a/f5", "-exec", "echo", "<{}>", "{}{}", ";"]),
+    ("fd322-exec-plus-single", "strict", "mkdir -p s; : > s/one", "", "", ["s", "-type", "f", "-exec", "echo", "B", "{}", "+"]),
+    ("fd323-exec-plus-lines", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-exec", "printf", "%s\\n", "{}", "+"]),
+    ("fd324-exec-false-semicolon", "strict", FIND_FX, "", "", ["t/e", "-exec", "grep", "-q", "nomatch", "{}", ";"]),
+    ("fd325-exec-false-plus-rc1", "strict", FIND_FX, "", "", ["t/e", "-exec", "grep", "-q", "nomatch", "{}", "+"]),
+    ("fd326-exec-result-as-test", "strict", FIND_FX, "", "", ["t/a/f5", "t/e", "-exec", "grep", "-q", ".", "{}", ";", "-print"]),
+    ("fd327-exec-order-with-print", "strict", "mkdir -p s; : > s/one", "", "", ["s/one", "-print", "-exec", "echo", "after", "{}", ";"]),
+    ("fd328-exec-missing-command", "exit", FIND_FX, "", "", ["t/e", "-exec", "nosuchcmd99", ";"]),
+    ("fd329-execdir-semicolon", "sorted", FIND_FX, "", "", ["t", "-type", "f", "-execdir", "echo", "{}", ";"]),
+    ("fd330-execdir-plus-per-dir", "sorted", "mkdir -p s/u; : > s/one; : > s/u/two", "", "",
+     ["s", "-type", "f", "-execdir", "echo", "{}", "+"]),
+    ("fd331-execdir-root", "strict", "mkdir -p s/u", "", "", ["s/u", "-execdir", "echo", "{}", ";"]),
+    ("fd332-ok-yes", "strict", FIND_FX, "", "y", ["t/e", "-ok", "echo", "hi", "{}", ";"]),
+    ("fd333-ok-no", "strict", FIND_FX, "", "n", ["t/e", "-ok", "echo", "hi", "{}", ";"]),
+    ("fd334-ok-eof", "strict", FIND_FX, "", "", ["t/e", "-ok", "echo", "hi", "{}", ";"]),
+    ("fd335-okdir-yes", "strict", FIND_FX, "", "y", ["t/e", "-okdir", "echo", "hi", "{}", ";"]),
+    ("fd336-ok-plus-not-allowed", "strict", "", "", "", [".", "-ok", "echo", "{}", "+"]),
+    ("fd337-exec-plus-quit-flushes", "strict", "mkdir -p c/d", "", "", ["c", "-name", "d", "-quit", "-o", "-exec", "echo", "Q", "{}", "+"]),
+    ("fd338-two-exec-plus", "strict", "mkdir -p s; : > s/one", "", "",
+     ["s/one", "-exec", "echo", "A", "{}", "+", "-exec", "echo", "B", "{}", "+"]),
+    # ---- files0-from / warnings / names ----
+    ("fd340-files0-from", "sorted", FIND_FX + "; printf 't/a\\0t/d\\0' > list", "", "", ["-files0-from", "list", "-maxdepth", "0"]),
+    ("fd341-files0-from-empty", "strict", ": > list", "", "", ["-files0-from", "list"]),
+    ("fd342-files0-from-zero-length", "sorted", FIND_FX + "; printf 't/d\\0\\0' > list", "", "", ["-files0-from", "list", "-maxdepth", "0"]),
+    ("fd343-files0-from-missing", "strict", "", "", "", ["-files0-from", "nolist"]),
+    ("fd344-warn-global-after-test", "strict", FIND_FX, "", "", ["t", "-warn", "-name", "e", "-maxdepth", "1"]),
+    ("fd345-nowarn", "strict", FIND_FX, "", "", ["t", "-nowarn", "-name", "e", "-maxdepth", "1"]),
+    ("fd346-warn-name-slash", "strict", FIND_FX, "", "", ["t", "-warn", "-name", "a/e"]),
+    ("fd347-dev-null-root", "exit", "", "", "", ["/dev/null", "-maxdepth", "0", "-type", "c"]),
+    ("fd348-unicode-names", "sorted", "mkdir -p u; : > u/caf\u00e9; : > 'u/\u4e2d\u6587'", "", "", ["u", "-name", "*"]),
+    ("fd349-space-names", "sorted", "mkdir -p 'sp ace'; : > 'sp ace/a b'", "", "", ["sp ace", "-name", "* *"]),
+    # ---- dangling links (review probes vs GNU 4.9, 2026-11-14): GNU makes a
+    # symlink to a missing target; the Windows sides a junction via cmd
+    # mklink /J (PowerShell New-Item Junction requires the target to exist).
+    # Both are `-type l` entries whose followed stat fails; GNU visits them
+    # with the lstat fallback (no error, rc 0) and -L -type l finds them.
+    ("fd350-dang-root", "strict", FIND_DANG, "", "", ["dang"]),
+    ("fd351-dang-H", "strict", FIND_DANG, "", "", ["-H", "dang"]),
+    ("fd352-dang-L", "strict", FIND_DANG, "", "", ["-L", "dang"]),
+    ("fd353-L-dang-type-l", "strict", FIND_DANG, "", "", ["-L", ".", "-type", "l"]),
+    ("fd354-dang-printf-Y", "strict", FIND_DANG, "", "", ["dang", "-printf", "%y %Y\\n"]),
+    ("fd355-dang-delete", "strict", FIND_DANG, "", "", ["dang", "-delete", "-print"]),
+    # ---- 4.9 oracle probe pins (find lane review, probes P1-P15) ----
+    ("fd356-path-matches-root", "strict", FIND_FX, "", "", ["t", "-maxdepth", "0", "-path", "t"]),
+    ("fd357-iname-bracket-casefold", "strict", "mkdir q; : > q/ABC", "", "",
+     ["q", "-iname", "[a-c]*"]),
+    ("fd358-perm-minus-000", "strict", FIND_FX, "", "", ["t", "-maxdepth", "0", "-perm", "-000"]),
+    ("fd359-ok-uppercase-Y", "strict", FIND_FX, "", "Y", ["t/e", "-ok", "echo", "hi", "{}", ";"]),
+    ("fd360-exec-plus-no-match", "strict", FIND_FX, "", "",
+     ["t", "-name", "nope", "-exec", "echo", "B", "{}", "+"]),
+    ("fd361-multi-root-quit", "strict", "mkdir -p r1 r2", "", "",
+     ["r1", "r2", "-name", "nope", "-o", "-print", "-quit"]),
+    # fd362 (-fprint /dev/stdout) was probed and DROPPED: the gate host's
+    # niubash-family bash rewrites the literal '/dev/stdout' operand to
+    # CONOUT$ in native-child argv (MSYS_NO_PATHCONV ineffective, measured
+    # 2026-11-14), so the driver's open_file /dev/stdout spelling match
+    # never fires through this transport and the write lands on the
+    # console. GNU-comparable only via a unit test or the posix-mode
+    # PowerShell transport; the find-side special-case itself is correct.
+    ("fd363-type-multi-letters-link", "sorted", FIND_JX, "", "", ["t", "-type", "l,f"]),
+]
+
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -3926,8 +5447,17 @@ def collect():
         ("chcon", chcon_rows), ("runcon", runcon_rows), ("cksum", cksum_rows),
         ("chgrp", chgrp_rows), ("du", du_rows), ("date", date_rows),
         ("pinky", pinky_rows),
+        # sed lane (#1488)
+        ("sed", sed_rows),
+        ("find", find_rows),
         # #1488: xargs (findutils 4.9 oracle)
         ("xargs", xargs_rows),
+        # WP-J: cp (rust2 library lane)
+        ("cp", CP_ROWS),
+        # grep wave (#1488)
+        ("grep", grep_rows),
+        ("egrep", egrep_rows),
+        ("fgrep", fgrep_rows),
     ]
 
 

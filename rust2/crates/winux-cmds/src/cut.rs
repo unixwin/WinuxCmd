@@ -24,12 +24,12 @@
 //! Windows subset: none — this command is fully honest.
 
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Write};
 
 use crate::argopt::{self, OptSpec};
-use crate::fsutil::{gnu_open_reason, quotef, resolve};
+use crate::fsutil::{gnu_open_reason, quotef};
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -108,23 +108,21 @@ fn strtol_skip(text: &[u8], mut i: usize) -> usize {
 
 /// Parse cut's LIST exactly like cut.c's strtol loop. Errors carry the
 /// exact GNU diagnostic (already quoted where GNU quotes).
-fn parse_list(list: &str, mode: ListMode) -> Result<Vec<PosRange>, String> {
+fn parse_list(ctx: &Ctx, list: &str, mode: ListMode) -> Result<Vec<PosRange>, String> {
     let field_mode = mode == ListMode::Fields;
     let text = list.as_bytes();
-    let value_word = if field_mode {
-        "field value"
-    } else {
-        "byte/character position"
-    };
-    let range_word = if field_mode {
-        "invalid field range"
-    } else {
-        "invalid byte or character range"
-    };
     let numbered_word = if field_mode {
-        "fields are numbered from 1"
+        tr!(
+            ctx,
+            "command.cut.error.numbered_from_one_fields",
+            "fields are numbered from 1"
+        )
     } else {
-        "byte/character positions are numbered from 1"
+        tr!(
+            ctx,
+            "command.cut.error.numbered_from_one_positions",
+            "byte/character positions are numbered from 1"
+        )
     };
     let mut ranges: Vec<PosRange> = Vec::new();
     let mut i = 0usize;
@@ -146,10 +144,28 @@ fn parse_list(list: &str, mode: ListMode) -> Result<Vec<PosRange>, String> {
             if k == start {
                 if i >= text.len() {
                     // bare "-" with nothing after
-                    return Err("invalid range with no endpoint: -".to_string());
+                    return Err(tr!(
+                        ctx,
+                        "command.cut.error.range_no_endpoint",
+                        "invalid range with no endpoint: -"
+                    ));
                 }
-                let rest = &list[start.min(list.len())..];
-                return Err(format!("invalid {value_word} \u{2018}{rest}\u{2019}"));
+                let rest = &list[start.min(list.len())..].to_string();
+                return Err(if field_mode {
+                    tr!(
+                        ctx,
+                        "command.cut.error.invalid_field_value",
+                        "invalid field value \u{2018}{rest}\u{2019}",
+                        rest = rest
+                    )
+                } else {
+                    tr!(
+                        ctx,
+                        "command.cut.error.invalid_byte_position",
+                        "invalid byte/character position \u{2018}{rest}\u{2019}",
+                        rest = rest
+                    )
+                });
             }
             let m: u64 = list[start..k]
                 .parse()
@@ -195,18 +211,54 @@ fn parse_list(list: &str, mode: ListMode) -> Result<Vec<PosRange>, String> {
             }
             low = n1;
         } else {
+            // An empty element (leading ',', ",,") is strtol's 0 in GNU's
+            // set-fields.c, which then reports the numbered-from-1 fatal
+            // (probed: `cut -f 1,,2` -> "fields are numbered from 1").
+            if text.get(start) == Some(&b',') {
+                return Err(numbered_word.to_string());
+            }
             // junk where a number was expected: GNU names the rest
-            let rest = &list[start.min(list.len())..];
-            return Err(format!("invalid {value_word} \u{2018}{rest}\u{2019}"));
+            let rest = &list[start.min(list.len())..].to_string();
+            return Err(if field_mode {
+                tr!(
+                    ctx,
+                    "command.cut.error.invalid_field_value",
+                    "invalid field value \u{2018}{rest}\u{2019}",
+                    rest = rest
+                )
+            } else {
+                tr!(
+                    ctx,
+                    "command.cut.error.invalid_byte_position",
+                    "invalid byte/character position \u{2018}{rest}\u{2019}",
+                    rest = rest
+                )
+            });
         }
         if high < low {
-            return Err("invalid decreasing range".to_string());
+            return Err(tr!(
+                ctx,
+                "command.cut.error.decreasing_range",
+                "invalid decreasing range"
+            ));
         }
         ranges.push(PosRange { low, high });
         if closed_range {
             // after a range GNU only accepts ',' or end ("1-2-3" dies)
             if i < text.len() && text[i] != b',' {
-                return Err(range_word.to_string());
+                return Err(if field_mode {
+                    tr!(
+                        ctx,
+                        "command.cut.error.invalid_field_range",
+                        "invalid field range"
+                    )
+                } else {
+                    tr!(
+                        ctx,
+                        "command.cut.error.invalid_byte_range",
+                        "invalid byte or character range"
+                    )
+                });
             }
         } else {
             // after a single value strtol's whitespace skip applies:
@@ -225,7 +277,7 @@ fn parse_list(list: &str, mode: ListMode) -> Result<Vec<PosRange>, String> {
         continue;
     }
     if ranges.is_empty() {
-        return Err(numbered_word.to_string());
+        return Err(numbered_word.clone());
     }
     Ok(ranges)
 }
@@ -245,7 +297,11 @@ fn merge_ranges(ranges: &[PosRange]) -> Vec<(u64, u64)> {
     let mut out: Vec<(u64, u64)> = Vec::new();
     for (l, h) in pts {
         match out.last_mut() {
-            Some(last) if l <= last.1.saturating_add(1) => {
+            // set-fields.c merges only OVERLAPPING ranges (p->lo <=
+            // prev->hi); merely adjacent specs stay separate so the byte
+            // mode's output delimiter can mark each range start (probed:
+            // `cut -b 1-2,3 --output-delimiter='|'` -> ab|c).
+            Some(last) if l <= last.1 => {
                 last.1 = last.1.max(h);
             }
             _ => out.push((l, h)),
@@ -324,35 +380,52 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         });
     }
 
-    let mut mode: Option<ListMode> = None;
-    let mut list_text = String::new();
-    if let Some(v) = p.value_of("fields") {
-        mode = Some(ListMode::Fields);
-        list_text = v.to_string();
-    }
-    let bytes_val = p.value_of("bytes").or_else(|| p.value_of("characters"));
-    if let Some(v) = bytes_val {
-        if mode.is_some() {
-            let _ = writeln!(io.stderr, "cut: only one list may be specified");
-            let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
-            return Ok(1);
-        }
-        mode = Some(ListMode::Bytes);
-        list_text = v.to_string();
-    }
-    let Some(mode) = mode else {
+    // cut.c: -b/-c/-f each set the operating mode once; a SECOND list
+    // (any spelling, any combination, even the same option twice) is
+    // "only one list may be specified". The parsed value list keeps argv
+    // order, so counting the list-carrying keys reproduces getopt's
+    // ordering without re-parsing.
+    let list_specs: Vec<(&str, &str)> = p
+        .values
+        .iter()
+        .filter(|(k, _)| matches!(k.as_str(), "fields" | "bytes" | "characters"))
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    if list_specs.len() > 1 {
         let _ = writeln!(
             io.stderr,
-            "cut: you must specify a list of bytes, characters, or fields"
+            "cut: {}",
+            tr!(
+                ctx,
+                "command.cut.error.only_one_list",
+                "only one list may be specified"
+            )
         );
-        let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
         return Ok(1);
+    }
+    let (mode, list_text) = match list_specs.first() {
+        Some(("fields", v)) => (ListMode::Fields, v.to_string()),
+        Some((_, v)) => (ListMode::Bytes, v.to_string()),
+        None => {
+            let _ = writeln!(
+                io.stderr,
+                "cut: {}",
+                tr!(
+                    ctx,
+                    "command.cut.error.no_list",
+                    "you must specify a list of bytes, characters, or fields"
+                )
+            );
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
+            return Ok(1);
+        }
     };
-    let ranges = match parse_list(&list_text, mode) {
+    let ranges = match parse_list(ctx, &list_text, mode) {
         Ok(r) => r,
         Err(msg) => {
             let _ = writeln!(io.stderr, "cut: {msg}");
-            let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
             return Ok(1);
         }
     };
@@ -361,16 +434,29 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if delim_specified && mode == ListMode::Bytes {
         let _ = writeln!(
             io.stderr,
-            "cut: an input delimiter may be specified only when operating on fields"
+            "cut: {}",
+            tr!(
+                ctx,
+                "command.cut.error.input_delim_only_fields",
+                "an input delimiter may be specified only when operating on fields"
+            )
         );
-        let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
         return Ok(1);
     }
     let delim_str = p.value_of("delimiter").unwrap_or("\t").to_string();
     // probed: `-d ''` selects the NUL delimiter; only a longer string errs
     if delim_str.len() > 1 {
-        let _ = writeln!(io.stderr, "cut: the delimiter must be a single character");
-        let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+        let _ = writeln!(
+            io.stderr,
+            "cut: {}",
+            tr!(
+                ctx,
+                "command.cut.error.delimiter_single_char",
+                "the delimiter must be a single character"
+            )
+        );
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
         return Ok(1);
     }
     let delim_str = if delim_str.is_empty() {
@@ -383,24 +469,27 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if p.has("only-delimited") && mode == ListMode::Bytes {
         let _ = writeln!(
             io.stderr,
-            "cut: suppressing non-delimited lines makes sense only when operating on fields"
+            "cut: {}",
+            tr!(
+                ctx,
+                "command.cut.error.suppress_only_fields",
+                "suppressing non-delimited lines makes sense\n\tonly when operating on fields"
+            )
         );
-        let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cut"));
         return Ok(1);
     }
+    // cut.c has no "output delimiter only for fields" check: -b/-c accept
+    // --output-delimiter and print it at each range start (cut_bytes).
     let out_delim_given = p.has("output-delimiter");
-    if out_delim_given && mode == ListMode::Bytes {
-        let _ = writeln!(
-            io.stderr,
-            "cut: an output delimiter may be specified only when operating on fields"
-        );
-        let _ = writeln!(io.stderr, "Try 'cut --help' for more information.");
-        return Ok(1);
-    }
-    let out_delim = p
-        .value_of("output-delimiter")
-        .unwrap_or(&delim_str)
-        .to_string();
+    // cut.c: `--output-delimiter=''` means NUL between printed fields
+    // (the empty string is interpreted as '\0'; probed: `cut -d: -f1,3
+    // --output-delimiter= <<< 'a:b:c'` emits a\0c).
+    let out_delim = match p.value_of("output-delimiter") {
+        None => delim_str.clone(),
+        Some("") => "\0".to_string(),
+        Some(v) => v.to_string(),
+    };
     let complement = p.has("complement");
     let record_delim: u8 = if p.has("zero-terminated") { 0 } else { b'\n' };
 
@@ -422,26 +511,71 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let mut input = Vec::new();
         if file == "-" {
             if io.stdin.read_to_end(&mut input).is_err() {
-                let _ = writeln!(io.stderr, "cut: read error");
+                let _ = writeln!(
+                    io.stderr,
+                    "cut: {}",
+                    tr!(ctx, "command.cut.error.read_error", "read error")
+                );
                 failed = true;
                 continue;
             }
         } else {
-            match std::fs::File::open(resolve(ctx, file)) {
+            match crate::fsutil::open_read_operand(ctx, file) {
                 Ok(mut f) => {
                     if f.read_to_end(&mut input).is_err() {
-                        let _ = writeln!(io.stderr, "cut: {file}: read error");
+                        let _ = writeln!(
+                            io.stderr,
+                            "cut: {}: {}",
+                            file,
+                            tr!(ctx, "command.cut.error.read_error", "read error")
+                        );
                         failed = true;
                         continue;
                     }
                 }
                 Err(e) => {
                     let reason = gnu_open_reason(ctx, file, &e, false);
-                    let _ = writeln!(io.stderr, "cut: {}: {reason}", quotef(file));
+                    let _ = writeln!(
+                        io.stderr,
+                        "cut: {}",
+                        tr!(
+                            ctx,
+                            "command.cut.error.open_operand",
+                            "{file}: {reason}",
+                            file = quotef(file),
+                            reason = reason
+                        )
+                    );
                     failed = true;
                     continue;
                 }
             }
+        }
+        // [GNU] delimiter == record delimiter needs cut.c's cut_fields
+        // character-stream algorithm: the whole input is one record whose
+        // fields are the NUL-separated segments, and a trailing delimiter
+        // terminates the record instead of opening an empty last field
+        // (#1511). The record-at-a-time loop below cannot express it.
+        if mode == ListMode::Fields && delim == record_delim {
+            if run_fields_stream(
+                &input,
+                delim,
+                &ranges,
+                complement,
+                only_delimited,
+                out_delim.as_bytes(),
+                io.stdout,
+            )
+            .is_err()
+            {
+                let _ = writeln!(
+                    io.stderr,
+                    "cut: {}",
+                    tr!(ctx, "command.cut.error.write_error", "write error")
+                );
+                failed = true;
+            }
+            continue;
         }
         // process records, keeping each terminator
         let mut rest: &[u8] = &input;
@@ -466,27 +600,45 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             if line_ok {
                 let out_bytes: Vec<u8> = if mode == ListMode::Bytes {
-                    // byte selection: input order, exactly once
-                    let mut sel: Vec<u8> = Vec::new();
-                    for block in &merged {
-                        let lo = block.0 as usize;
-                        let hi = block.1.min(content.len() as u64) as usize;
-                        if lo <= content.len() && lo <= hi {
-                            sel.extend_from_slice(&content[lo - 1..hi]);
-                        }
-                    }
-                    if complement {
-                        let mut comp: Vec<u8> = Vec::new();
-                        for (i, &b) in content.iter().enumerate() {
-                            let pos = (i + 1) as u64;
-                            if !position_selected(&ranges, pos) {
-                                comp.push(b);
+                    // cut.c cut_bytes(): selection in input order exactly
+                    // once; a user-specified --output-delimiter is printed
+                    // at each range start after the first printed byte
+                    // (print_delimiter && is_range_start_index).
+                    let len = content.len() as u64;
+                    let blocks: Vec<(u64, u64)> = if complement {
+                        // set_fields() complements into gap ranges
+                        let mut gaps: Vec<(u64, u64)> = Vec::new();
+                        let mut next = 1u64;
+                        for b in &merged {
+                            if b.0 > next {
+                                gaps.push((next, b.0 - 1));
                             }
+                            next = next.max(b.1.saturating_add(1));
                         }
-                        comp
+                        if next <= len {
+                            gaps.push((next, len));
+                        }
+                        gaps
                     } else {
-                        sel
+                        merged.clone()
+                    };
+                    let mut sel: Vec<u8> = Vec::new();
+                    let mut printed_any = false;
+                    for (lo, hi) in blocks {
+                        if lo > len {
+                            break;
+                        }
+                        let hi = hi.min(len);
+                        if lo > hi {
+                            continue;
+                        }
+                        if printed_any && out_delim_given {
+                            sel.extend_from_slice(out_delim.as_bytes());
+                        }
+                        sel.extend_from_slice(&content[lo as usize - 1..hi as usize]);
+                        printed_any = true;
                     }
+                    sel
                 } else {
                     // field mode
                     let has_delim = content.contains(&delim);
@@ -517,7 +669,11 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 if io.stdout.write_all(&out_bytes).is_err()
                     || io.stdout.write_all(&[record_delim]).is_err()
                 {
-                    let _ = writeln!(io.stderr, "cut: write error");
+                    let _ = writeln!(
+                        io.stderr,
+                        "cut: {}",
+                        tr!(ctx, "command.cut.error.write_error", "write error")
+                    );
                     failed = true;
                     break;
                 }
@@ -525,6 +681,117 @@ pub fn cut_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     }
     Ok(if failed { 1 } else { 0 })
+}
+
+/// cut.c cut_fields() for the delim == line-delimiter shape (#1511): the
+/// input is ONE record whose fields are the segments between delimiter
+/// bytes. A delimiter followed by more input separates fields; a
+/// delimiter at end of input terminates the record. With `-s`, a record
+/// with no delimiter at all is suppressed. Ported statement by statement
+/// from the 1.x C++ `run_fields_stream` (which mirrored cut.c:276-437).
+// Statement-for-statement mirror of cut.c cut_fields(): `c` is written in
+// places the next iteration overwrites, exactly like GNU's variable.
+#[allow(unused_assignments)]
+fn run_fields_stream(
+    input: &[u8],
+    delim: u8,
+    ranges: &[PosRange],
+    complement: bool,
+    suppress: bool,
+    out_delim: &[u8],
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    if input.is_empty() {
+        return Ok(()); // GNU: first getc is EOF — nothing to do.
+    }
+    let print_kth = |k: u64| -> bool { position_selected(ranges, k) != complement };
+    let mut output: Vec<u8> = Vec::new();
+    let mut pos = 0usize;
+    let buffer_first_field = suppress ^ !print_kth(1);
+    let mut field_idx: u64 = 1;
+    let mut found_any_selected_field = false;
+    // GNU's `int c`: Some(delim) = ended on a delimiter, Some(0) = not yet
+    // known, None = EOF.
+    let mut c: Option<u8> = Some(0);
+
+    loop {
+        if field_idx == 1 && buffer_first_field {
+            let start = pos;
+            let mut hit_delim = false;
+            while pos < input.len() {
+                let b = input[pos];
+                pos += 1;
+                if b == delim {
+                    hit_delim = true;
+                    break;
+                }
+            }
+            let field_1 = &input[start..pos];
+            if field_1.is_empty() {
+                break; // EOF: no more records
+            }
+            c = Some(0);
+            if !hit_delim {
+                if !suppress {
+                    output.extend_from_slice(field_1);
+                    if field_1.last() != Some(&delim) {
+                        output.push(delim);
+                    }
+                    c = Some(delim);
+                }
+                continue;
+            }
+            if print_kth(1) {
+                output.extend_from_slice(&field_1[..field_1.len() - 1]);
+                // cut.c peeks at the next byte: a delimiter with more input
+                // after it separates fields instead of terminating.
+                if pos < input.len() {
+                    found_any_selected_field = true;
+                }
+            }
+            field_idx += 1;
+        }
+
+        let selected = print_kth(field_idx);
+        if selected {
+            if found_any_selected_field {
+                output.extend_from_slice(out_delim);
+            }
+            found_any_selected_field = true;
+        }
+        while pos < input.len() && input[pos] != delim {
+            if selected {
+                output.push(input[pos]);
+            }
+            pos += 1;
+        }
+        c = if pos < input.len() {
+            let b = input[pos];
+            pos += 1;
+            Some(b)
+        } else {
+            None
+        };
+
+        if c == Some(delim) && pos >= input.len() {
+            c = None; // a delimiter at EOF terminates the record
+        }
+
+        if c == Some(delim) {
+            field_idx += 1;
+        } else {
+            if found_any_selected_field || !(suppress && field_idx == 1) {
+                output.push(delim);
+            }
+            if c.is_none() {
+                break;
+            }
+            field_idx = 1;
+            found_any_selected_field = false;
+        }
+    }
+
+    out.write_all(&output)
 }
 
 #[cfg(test)]
@@ -557,7 +824,9 @@ mod tests {
 
     #[test]
     fn list_parse() {
-        let ok = |l: &str, m: ListMode| parse_list(l, m).unwrap();
+        let sc = ScratchCtx::new("cut-list");
+        let ctx = sc.ctx();
+        let ok = |l: &str, m: ListMode| parse_list(&ctx, l, m).unwrap();
         assert_eq!(
             ok("2", ListMode::Fields),
             vec![PosRange { low: 2, high: 2 }]
@@ -579,32 +848,32 @@ mod tests {
         );
         // strtol whitespace skip: "1 3" selects both, probed
         assert_eq!(ok("1 3", ListMode::Fields).len(), 2);
-        assert!(parse_list("3x", ListMode::Fields)
+        assert!(parse_list(&ctx, "3x", ListMode::Fields)
             .err()
             .unwrap()
             .contains("invalid field value"));
-        assert!(parse_list("3x", ListMode::Bytes)
+        assert!(parse_list(&ctx, "3x", ListMode::Bytes)
             .err()
             .unwrap()
             .contains("invalid byte/character position"));
         assert_eq!(
-            parse_list("1-2-3", ListMode::Bytes).err().unwrap(),
+            parse_list(&ctx, "1-2-3", ListMode::Bytes).err().unwrap(),
             "invalid byte or character range"
         );
         assert_eq!(
-            parse_list("-", ListMode::Bytes).err().unwrap(),
+            parse_list(&ctx, "-", ListMode::Bytes).err().unwrap(),
             "invalid range with no endpoint: -"
         );
         assert_eq!(
-            parse_list("0", ListMode::Bytes).err().unwrap(),
+            parse_list(&ctx, "0", ListMode::Bytes).err().unwrap(),
             "byte/character positions are numbered from 1"
         );
         assert_eq!(
-            parse_list("", ListMode::Fields).err().unwrap(),
+            parse_list(&ctx, "", ListMode::Fields).err().unwrap(),
             "fields are numbered from 1"
         );
         assert_eq!(
-            parse_list("2-1", ListMode::Fields).err().unwrap(),
+            parse_list(&ctx, "2-1", ListMode::Fields).err().unwrap(),
             "invalid decreasing range"
         );
     }

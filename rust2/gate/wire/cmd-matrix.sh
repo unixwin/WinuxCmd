@@ -27,6 +27,18 @@ LEDGER="$OUT/ledger.tsv"
 mkdir -p "$OUT/scratch"
 cd "$OUT/scratch"
 
+# Per-command stdout normalization for the ledger hash only (the raw .out
+# bytes stay as evidence). `mktemp` prints a RANDOM name on success — the
+# recipe's gate-c rule for it is "exit status only"; normalizing the random
+# X-run tail (plus an optional fixed --suffix) keeps the path SHAPE in the
+# comparison, so a changed directory or template prefix still shows up.
+normalize_out() {
+  case "$CMD" in
+    mktemp) sed -E 's/[A-Za-z0-9]{3,}/RAND/g' ;;
+    *) cat ;;
+  esac
+}
+
 run_case() {
   local cname="$1" id="$2" envspec="$3" stdin_data="$4"; shift 4
   local o="$OUT/$cname-$id.out" e="$OUT/$cname-$id.err" rc
@@ -44,8 +56,10 @@ run_case() {
     fi
   fi
   rc=$?
+  local ohash
+  ohash=$(normalize_out <"$o" | sha256sum | cut -d' ' -f1)
   printf '%s|%s|%s|%s|%s\n' "$cname" "$id" "$rc" \
-    "$(sha256sum "$o" | cut -d' ' -f1)" "$(sha256sum "$e" | cut -d' ' -f1)" >>"$LEDGER"
+    "$ohash" "$(sha256sum "$e" | cut -d' ' -f1)" >>"$LEDGER"
 }
 
 # Idempotent per-command fixture, run before EVERY case so all sides and all
@@ -101,6 +115,31 @@ setup_fixture() {
       rm -rf flong fwords
       printf 'The quick brown fox jumps over the lazy dog again and again.\n' > flong
       printf 'supercalifragilisticexpialidocious antidisestablishmentarianism word\n' > fwords ;;
+    # wave-W2 wire (#1488): cut/tr/od/sum fixtures. All relative names, no
+    # POSIX spellings (the MSYS probe channel must not rewrite operands).
+    cut)
+      rm -rf cf cs cbin czon
+      printf 'a,b,c\nd,e,f\n' > cf
+      printf 'a,b\nnodelim\nx\n' > cs
+      printf 'aa\0bb\0cc' > czon
+      printf 'one\ttwo\tthree\n' > cbin ;;
+    tr)
+      : ;;
+    od)
+      rm -rf of os1
+      printf 'abcdefghijklmnopqrstuvwxyz0123456789' > of
+      printf 'xxhello\0world\0' > os1 ;;
+    sum)
+      rm -rf su6 su512 su700 su1024 su1025 su0
+      printf 'abcdef' > su6
+      i=0; while [ $i -lt 51 ]; do printf 'abcdefghij'; i=$((i+1)); done > su512
+      printf 'xy' >> su512
+      i=0; while [ $i -lt 70 ]; do printf 'abcdefghij'; i=$((i+1)); done > su700
+      i=0; while [ $i -lt 102 ]; do printf 'abcdefghij'; i=$((i+1)); done > su1024
+      printf 'abcde' >> su1024
+      cp su1024 su1025 2>/dev/null
+      printf 'f' >> su1025
+      : > su0 ;;
     fmt)
       rm -rf fpara fpre
       printf 'This is the first paragraph of the sample text used by the fmt matrix. It has enough words to wrap around several times when the width is small.\n\nThis is the second paragraph.\n' > fpara
@@ -126,16 +165,96 @@ setup_fixture() {
       printf 'not a checksum line at all\n' > ck.garbage ;;
     sha224sum)
       printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  mf\n' > ck
-      printf '0000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
-      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  no-such-file-xyz\n' > ck.missing
+      printf '0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  no-such-file-xyz\n' > ck.missing ;;
     sha384sum)
       printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  mf\n' > ck
-      printf '000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
-      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  no-such-file-xyz\n' > ck.missing
+      printf '00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
+      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  no-such-file-xyz\n' > ck.missing ;;
     tac)
       rm -f tf; printf 'a\nb\nc\n' > tf ;;
     truncate)
       rm -f trf; printf 0123456789ABCDEF > trf ;;
+    du)
+      # wave-W3 fixture: a pinned file/dir tree, a 4097-byte apparent file,
+      # a --files0-from list, and two junctions (live + dangling) for the
+      # -L/-H operand-liveness rows (#1656). Junctions need no privilege,
+      # unlike real symlinks; `rm -rf` on a junction is not used (cmd rmdir
+      # removes the reparse point only).
+      cmd /c "rmdir dujunc" >/dev/null 2>&1 || true
+      cmd /c "rmdir dudangle" >/dev/null 2>&1 || true
+      rm -rf duf duempty dud du4k dulist.nul due.nul
+      printf '12345' > duf; : > duempty
+      mkdir -p dud/d2; printf a > dud/x; printf b > dud/d2/y
+      head -c 4097 /dev/zero | tr '\0' 'x' > du4k
+      printf 'dud\0dud/d2\0' > dulist.nul
+      : > due.nul
+      touch -d @1577836800 duf
+      cmd /c "mklink /J dujunc dud" >/dev/null 2>&1 || true
+      cmd /c "mklink /J dudangle nosuchdir" >/dev/null 2>&1 || true ;;
+    mktemp)
+      rm -rf md; mkdir -p md ;;
+    nice)
+      : ;;
+    nohup)
+      : ;;
+    cp)
+      # wave-cp fixture (#1488 cp wire): files/dirs, a live + a dangling
+      # junction (unprivileged Windows directory link), WSL/LX links, and a
+      # >MAX_PATH tree (6 x 50-char components; operand plus cwd > 260).
+      cmd /c "rmdir cpjunc" >/dev/null 2>&1 || true
+      cmd /c "rmdir cpdangle" >/dev/null 2>&1 || true
+      cmd /c "rmdir out" >/dev/null 2>&1 || true
+      # An LX link is not a Win32 symlink: MSYS `rm` resolves it and cannot
+      # unlink the reparse point, so a stale cplxdir makes the next `ln -s`
+      # create cplxdir/cpreal inside the target.  WSL's rm unlinks the tag
+      # itself (the GNU side falls back to plain rm below).
+      wsl.exe rm -f cplx cplxdir cplxdang >/dev/null 2>&1 || true
+      rm -rf cpa cpb cpc cpd cps cpreal cplx cplxdir cplxdang cpjunc \
+             cpdangle dst out outdir cphard cpjunc2
+      rm -rf "$(printf 'a%.0s' $(seq 1 50))/$(printf 'b%.0s' $(seq 1 50))"
+      printf 'A\n' > cpa; printf 'B\n' > cpb; printf 'C\n' > cpc
+      printf 'OLD\n' > dst
+      mkdir -p cpd cps/sub cpreal outdir
+      printf 'S\n' > cps/f; printf 'R\n' > cpreal/f
+      printf 'OLD\n' > cpd/cpa
+      touch -t 202001010000 cpa; touch -t 202101010000 dst
+      cmd /c "mklink /J cpjunc cpreal" >/dev/null 2>&1 || ln -s cpreal cpjunc
+      cmd /c "mklink /J cpdangle nosuch" >/dev/null 2>&1 || ln -s nosuch cpdangle
+      wsl.exe ln -s cpa cplx >/dev/null 2>&1 || ln -s cpa cplx
+      wsl.exe ln -s cpreal cplxdir >/dev/null 2>&1 || ln -s cpreal cplxdir
+      wsl.exe ln -s missing cplxdang >/dev/null 2>&1 || ln -s missing cplxdang
+      L1=$(printf 'a%.0s' $(seq 1 50)); L2=$(printf 'b%.0s' $(seq 1 50))
+      LONGREL="$L1/$L2/$L1/$L2/$L1/$L2"
+      mkdir -p "$LONGREL"; printf 'LONG' > "$LONGREL/f.txt" ;;
+    grep|egrep|fgrep)
+      # Shared grep-family fixture (#1488 wire matrix): text files, a
+      # pattern file, an empty pattern file, a NUL-carrying binary, and a
+      # recursion tree with an excluded dir and a binary inside.
+      rm -rf gt.txt gsub.txt gnone.txt gpat.txt gpempty.txt gz.txt \
+             gbin.txt gdir
+      printf 'foo bar\nbaz\nfoofoo\n' > gt.txt
+      printf 'foo here\nno match\n' > gsub.txt
+      printf 'nothing\n' > gnone.txt
+      printf 'foo\nbar\n' > gpat.txt
+      : > gpempty.txt
+      printf 'foo\0bar\nfoo\n' > gz.txt
+      printf 'abc\000def\nfoo\n' > gbin.txt
+      mkdir -p gdir/gsub2 gdir/gskip
+      printf 'foo deep\n' > gdir/deep.txt
+      printf 'foo sub2\n' > gdir/gsub2/s2.txt
+      printf 'foo skipped\n' > gdir/gskip/s.txt
+      printf 'bin\000foo\n' > gdir/gbin.bin ;;
+    # wave-W4 (#1488): every node name is w4-prefixed so the fixture reset
+    # is one glob; the pre-existing operands the exists rows need (a
+    # regular file, a directory) are recreated every case.
+    mkfifo)
+      rm -rf w4* nodir
+      rm -f -- '--context=x'
+      printf x > w4reg; mkdir w4dir ;;
+    mknod)
+      rm -rf w4* nodir
+      printf x > w4reg; mkdir w4dir ;;
 
     *) : ;;
   esac
@@ -1178,6 +1297,523 @@ TABLE
 20|||-w
 21|||-w:30:fpara:fpre:fpara
 22|||-d
+TABLE
+      ;;
+    # wave-W2 wire (#1488): cut -> rust2. Row shape id|env|stdin|args
+    # (args ':'-joined). Fixture: cut (cf/cs/czon/cbin). The GNU ledger is
+    # the rc oracle; portable stdout is compared byte-for-byte by gate a.
+    cut)
+      cat <<'TABLE'
+01|||cf
+02||-c:2|cf
+03|||-c:2-4:cf
+04|||-f:2:cf
+05|||-d:,:-f:2:cf
+06|||-d:,:-f:1,3:cf
+07|||-d:,:-f:2-:cf
+08|||-d:,:-f:-2:cf
+09|||-d:,:-f:1-2:--output-delimiter=XY:cf
+10|||-d:,:-f:1,3:--output-delimiter=:cf
+11|||-s:cs
+12|||-d:,:-f:2:-s:cs
+13|||-d:,:-f:1:--complement:cf
+14|||-b:2,5:cbin
+15|||-b:1-2:-n:cbin
+16|||-z:-d:@EMPTY@:-f:2:czon
+17|||-z:-d:@EMPTY@:-s:-f:1:czon
+18|||cf:cs
+19|||missing-cut-file
+20|||-f:0:cf
+21|||-f:3x:cf
+22|||-f:2-1:cf
+23|||-d:ab:-f:1:cf
+24|||-s:-c:1:cf
+25|||-b:1:-c:1:cf
+26|||--help
+27|||--version
+28|||--bogus
+29||a,b,cd|-d:,:-f:2
+30|||
+TABLE
+      ;;
+    # wave-W2 wire (#1488): tr -> rust2. stdin rows carry their payload in
+    # the stdin column (no newlines); args never contain ':' (the matrix
+    # joins args with ':', so the tr class spellings are covered by gate a
+    # instead).
+    tr)
+      cat <<'TABLE'
+01||abc|a-z:A-Z
+02||ABC|A-Z:a-z
+03||hello world|-d:l
+04||aaabbb|-s:a
+05||abcabc|-dc:a
+06||abc|-c:a:x
+07||abc|-cs:a:xy
+08||abc|-t:abc:xy
+09||abc|a:[b*3]
+10||abcde|[a-c]:[x*]
+11||abcdef|a-f:A-F
+12||a1b2|-d:0-9
+13||a..b...c|-s:.
+14||abc|a-c:x-z
+15||ab|[=a=]:X
+16||a\\b|\\\\:-
+17||aAb|\\101:Z
+18||abc|a-c:[x*3]
+19||abc|[a*b]:X
+20||ABC|a-z:0-9
+21||ab|abc:XYZ
+22||abc|-A:a-z:A-Z
+23||abc|-C:a:x
+24||ab|a-z:x
+25||a  b   c|-s:ab
+26||abc|--help
+27||abc|--version
+28||abc|--bogus
+29||a|-ds:a
+30||a:b
+TABLE
+      ;;
+    # wave-W2 wire (#1488): od -> rust2 (dump + strings + old-style
+    # operands; of/os1 fixtures).
+    od)
+      cat <<'TABLE'
+01|||of
+02|||-c:of
+03|||-An:-c:of
+04|||-An:-tx1:of
+05|||-An:-td1:of
+06|||-An:-f:of
+07|||-An:-a:of
+08|||-An:-b:of
+09|||-A:d:-tx1:of
+10|||-A:x:-tx1:of
+11|||-A:n:-tx1:of
+12|||-N:8:-An:-c:of
+13|||-j:8:-c:of
+14|||-j:99:of
+15|||-w4:-An:-c:of
+16|||-v:-An:-c:of
+17|||--endian=big:-An:-td2:of
+18|||-An:-S5:os1
+19|||-S5:os1
+20|||-An:-S3:-N8:os1
+21|||-S5:-tx1:os1
+22|||--traditional:2:of
+23|||--traditional:2:3:of
+24|||-An:--traditional:2:16:of
+25|||of:2
+26|||--traditional:of:os1
+27|||-t:x1zq:of
+28|||missing-od-file
+29|||--help
+30|||--version
+31|||--bogus
+32||abc|-An:-c
+33|||
+TABLE
+      ;;
+    # wave-W2 wire (#1488): sum -> rust2 (BSD/SysV across block boundaries).
+    sum)
+      cat <<'TABLE'
+01|||su6
+02|||-r:su6
+03|||-s:su6
+04|||-rs:su6
+05|||-sr:su6
+06|||-r:-s:su6
+07|||-s:-r:su6
+08|||--sysv:su6
+09|||su0
+10|||-s:su0
+11|||su512
+12|||-s:su512
+13|||su700
+14|||-s:su700
+15|||su1024
+16|||-s:su1024
+17|||su1025
+18|||-s:su1025
+19|||su6:su1024
+20|||missing-sum-file
+21|||su6:missing-sum-file
+22|||--help
+23|||--version
+24|||--bogus
+25||abc|
+26||abc|-s
+27||ab|-
+28|||-s:-
+29|||--sysv:su6
+30|||.
+TABLE
+      ;;
+    grep|egrep|fgrep)
+      # grep wire matrix (#1488 split-engine wire, gate c): the wired
+      # product vs the 1.x exe, rc + stdout + stderr hashes row by row.
+      # Faces: plain BRE, -E/-F/-G, -o/-v/-c/-l/-L/-q/-n/-b/-H/-h,
+      # -i/-w/-x/-z/-m/-T/-Z/-U/-s/-y/--label, context (-A/-B/-C),
+      # recursion (-r/-R/-d with --include/--exclude/--exclude-dir),
+      # binary modes (default report, -a, -I, --binary-files), stdin
+      # shapes, wrapper (egrep/fgrep) shapes, matcher-conflict exits.
+      # NOT here: `grep -P` (keeps the C++ PCRE2 face on BOTH sides — the
+      # wire report carries its smoke rows), the help/version texts and
+      # the five shapes the gate ledger already pins as r=c:no (gp40
+      # -x-empty, gp98 --color-bogus, gp99 -d-bogus, gp131 -o with -A1,
+      # gp134 -c -Z multifile): the 1.x exe deviated from GNU there and
+      # the rust2 face aligns with the oracle, so old-vs-new bytes differ
+      # by the documented GNU alignment, not by a wire regression.
+      cat <<'TABLE'
+01|||gt.txt
+02|||-c:foo:gt.txt
+03|||-v:foo:gt.txt
+04|||-o:fo+:gt.txt
+05|||-n:foo:gt.txt
+06|||-i:FOO:gt.txt
+07|||-l:foo:gt.txt:gsub.txt:gnone.txt
+08|||-L:foo:gt.txt:gsub.txt:gnone.txt
+09|||-q:foo:gt.txt
+10|||-q:zzz:gt.txt
+11|||-H:foo:gt.txt
+12|||-h:foo:gt.txt:gsub.txt
+13|||-r:foo:gdir
+14|||-R:foo:gdir
+15|||-r:--include=*.txt:foo:gdir
+16|||-r:--exclude=*.bin:foo:gdir
+17|||-r:--exclude-dir=gskip:foo:gdir
+18|||-d:recurse:foo:gdir
+19|||-d:skip:foo:gdir
+20|||-e:foo:-e:bar:gt.txt
+21|||-f:gpat.txt:gt.txt
+22|||-E:f(o)+|baz:gt.txt
+23|||-F:fo+:gt.txt
+24|||-G:fo\+:gt.txt
+25|||-w:foo:gt.txt
+26|||-x:foo bar:gt.txt
+27|||-A:1:foo:gt.txt
+28|||-B:1:baz:gt.txt
+29|||-C:1:baz:gt.txt
+30|||-m:2:oo:gt.txt
+31|||-b:foo:gt.txt
+32|||-T:-n:foo:gt.txt
+33|||-Z:-H:foo:gt.txt
+34|||-o:-v:oo:gt.txt
+35|||--color=always:foo:gt.txt
+36|||-c:-E:o+:gt.txt
+37||The quick brown fox\njumps over the lazy dog\n|foo
+38||The quick brown fox\njumps over the lazy dog\n|-c:fox
+39||The quick brown fox\njumps over the lazy dog\n|-o:o.
+40|||gt.txt
+41|||foo:gmissing.txt
+42|||--bogus
+43|||-c:-v:foo:gt.txt
+44|||gt.txt:@EMPTY@
+45|||-f:gpempty.txt:gt.txt
+46|||-z:foo:gz.txt
+47|||-a:foo:gbin.txt
+48|||-I:foo:gbin.txt
+49|||--binary-files=without-match:foo:gbin.txt
+50|||--binary-files=text:foo:gbin.txt
+51|||foo:gbin.txt
+52|||-c:foo:gbin.txt
+53|||-r:foo:gdir/gbin.bin
+54|||-U:foo:gt.txt
+55|||-s:foo:gmissing.txt
+56|||-E:-F:foo:gt.txt
+57|||-P:-F:foo:gt.txt
+58|||-y:-i:FOO:gt.txt
+59|||-l:-c:foo:gt.txt:gsub.txt
+60|||-r:-l:foo:gdir
+TABLE
+      ;;
+    # wave-W4 (#1488): mkfifo/mknod old-exe byte matrix. The GNU side
+    # creates REAL fifos/device nodes; the exe sides create the #1038
+    # marker (or report EPERM for device types), so the matrix is the
+    # old-vs-new comparison (recipe gate c), GNU rc recorded alongside.
+    mkfifo)
+      cat <<'TABLE'
+01|||w4p1
+02|||-m:600:w4p2
+03|||-m600:w4p3
+04|||-m:000:w4p4
+05|||-m:ug=r:w4p5
+06|||-m:bogus:w4p6
+07|||-m:1777:w4p7
+08|||-m:4755:w4p8
+09|||-m
+10|||nodir/w4p
+11|||
+12|||-Z:w4p10
+13|||-Z:w4ctx:w4p11
+14|||--context=cval:w4p12
+15|||--context:w4p13
+16|||--context=:w4p14
+17|||-Zctx2:w4p15
+18|||--:--context=x
+19|||-m:600:--:w4p16
+20|||-m:@EMPTY@:w4p17
+21|||-m:600:-m:640:w4p18
+22|||--mode=644:w4p19
+23|||--con=cval:w4p20
+24|||--bogus
+25|||-q
+26|||-m:600
+27|||-m:bogus
+28|||w4ok:nodir/bad:w4ok2
+29|||@EMPTY@
+30|||w4reg
+31|||w4dir
+32|||--help
+33|||--version
+TABLE
+      ;;
+    mknod)
+      cat <<'TABLE'
+01|||w4a:p
+02|||-m:600:w4b:p
+03|||w4reg:p
+04|||w4dir:p
+05|||-m:bogus:w4c:p
+06|||-m
+07|||nodir/x:p
+08|||
+09|||onlyname
+10|||w4n:c
+11|||w4n:c:1
+12|||w4f:p:1:3
+13|||w4x:x:1:3
+14|||w4e:c:1:3:extra
+15|||w4c1:c:1:3
+16|||w4b1:b:7:0
+17|||w4u1:u:1:5
+18|||w4h:c:0x1:0x3
+19|||w4o:c:01:03
+20|||w4j:c:1x:3
+21|||w4j2:c:1:zz
+22|||w4j3:c:1:99999999999999999999
+23|||--context=c:w4pf:p
+24|||-Z:w4pz:p
+25|||--help
+26|||--version
+27|||--bogus
+28|||-m:@EMPTY@:w4n2:p
+29|||w4m4:c:@EMPTY@:3
+30|||w4m5:c:1:@EMPTY@
+31|||--con=c:w4pf2:p
+32|||w4dir:p
+33|||@EMPTY@:p
+34|||w4tz:pz
+35|||w4tb:bz:1:2
+36|||w4t2:x
+    du)
+      cat <<'TABLE'
+01|||duf
+02|||duempty
+03|||-b:duf
+04|||--apparent-size:duf
+05|||-B1:duf
+06|||-h:duf
+07|||--si:duf
+08|||-k:duf
+09|||-B1M:duf
+10|||duf:duempty
+11|||-c:duf:duempty
+12|||nosuch
+13|||nosuch:duf
+14|||--inodes:duf
+15|||-b:du4k
+16|||-h:du4k
+17|||--inodes:dud
+18|||--inodes:dud/d2
+19|||-b:dud
+20|||dud
+21|||-b:-a:--exclude=x:dud
+22|||-b:-a:-t:20:dud
+23|||-b:-d0:dud
+24|||-b:-s:dud
+25|TZ=UTC||--time:-b:duf
+26|||-b:-0:duf
+27|||--files0-from=dulist.nul:-b
+28|||--files0-from=nosuch.nul:-b
+29|||--files0-from=due.nul:-b
+30|||--files0-from=dulist.nul:-b:dud
+32|||-b:dud:dud
+33|||-lb:dud:dud
+34|||-b:duf:duf
+35|||-b:-d:0:duf
+36|||--block-size=bogus:duf
+37|||-L:dujunc
+38|||-H:dujunc
+39|||-L:-s:dujunc
+40|||-L:dudangle
+41|||-H:dudangle
+42|||-a:-L:dujunc
+43|||-a:-H:dujunc
+44|||-b:dujunc
+45|||-L:-b:dujunc
+46|||--dereference:--summarize:dujunc
+47|||--help
+48|||--version
+49|||-L:-s:dujunc:dud
+50|||-L:-s:dud:dujunc
+51|||-L:-l:-s:dujunc:dud
+52|||-P:-s:dujunc:dud
+53|||-H:-s:dujunc:dud
+TABLE
+      ;;
+    mktemp)
+      cat <<'TABLE'
+01|||tmp.XXXXXX
+02|||-d:tmp.XXXXXX
+03|||-u:tmp.XXXXXX
+04|||-d:-u:tmp.XXXXXX
+05|||-p:md:x.XXXXXX
+06|||--tmpdir=md:y.XXXXXX
+07|TMPDIR=md||-t:z.XXXXXX
+08|||--suffix=.txt:t.XXXXXX
+09|||a.XXXXXX:b.XXXXXX
+10|||abc.XX
+11|||--suffix=.txt:tmp.XXX
+12|||--suffix=a/b:t.XXXXXX
+13|||/tmp/abs.XXXXXX
+14|||--tmpdir=md:/tmp/abs.XXXXXX
+15|||-p:nosuchdir:x.XXXXXX
+16|||-q:-p:nosuchdir:x.XXXXXX
+17|||--bogus
+18|||--help
+19|||--version
+20|||-u:x.XXXXXX
+21|||@EMPTY@
+22|TMPDIR=md||-t:a/b.XXXXXX
+23|||--tmpdir:q.XXXXXX
+24|TMPDIR=md||tmp.XXXXXX
+25|||-d:-p:md:dir.XXXXXX
+26|||--tmpdir=
+27|||XXXXXX
+28|||x.XXXXXXXXXX
+TABLE
+      ;;
+    cp)
+      cat <<'TABLE'
+01|||cpa:out
+02|||cpa:cpb
+03|||cpa:cpd
+04|||cpa:cpb:cpd
+05|||-v:cpa:out
+06||n|-i:cpa:dst
+07||y|-i:cpa:dst
+08|||-i:cpa:dst
+09|||-n:cpa:dst
+10|||-n:cpa:new
+11|||-u:cpa:dst
+12|||-u:cpb:dst
+13|||-r:cps:outdir
+14|||-a:cps:outdir
+15|||-rv:cps:outdir
+16|||-L:cpjunc:out
+17|||-rvL:cpjunc:out
+18|||-rH:cpjunc:out
+19|||-r:cpjunc:out
+20|||-P:cpjunc:out
+21|||-b:cpa:dst
+22|||-vb:cpa:dst
+23|||-S:.bak:cpa:cpb
+24|||--backup=numbered:cpa:dst
+25|||-l:cpa:cphard
+26|||-t:cpd:cpa:cpb
+27|||--parents:cps/f:cpd
+28|||-v:--parents:cps/f:cpd
+29|||cpa/:out
+30|||--strip-trailing-slashes:cpa/:out
+31|||nosuch:out
+32|||cpa:cpa
+33|||-r:cps:cps
+34|||cpa:cpjunc
+35|||cpdangle:out
+36|||-d:cpdangle:out
+37|||cplx:out
+38|||-L:cplx:out
+39|||-rH:cplxdir:out
+40|||cplxdang:out
+41|||-rL:cplxdir:out
+42|||--force:--backup:cpa:cpa
+43|||--reflink=auto:cpa:out
+44|||--reflink=always:cpa:out
+45|||--sparse=always:cpa:out
+46|||--attributes-only:cpa:out
+47|||-v:--attributes-only:cpa:out
+48|||--copy-contents:/dev/null:out
+49|||cpa:NUL
+50|||aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/f.txt:out
+51|||-T:cpa:outdir
+52|||-t:cpd:-T:cpa
+53|||--update=none:cpa:dst
+54|||-x:-r:cps:outdir
+55|||cpb:cpa:cpc
+56||n|-i:-n:cpa:dst
+57||y|-n:-i:cpa:dst
+58|||-p:cpa:out
+59|||--preserve=timestamps:cpa:out
+60|||-r:cps:cpd/cps
+TABLE
+      ;;
+    nice)
+      cat <<'TABLE'
+01|||
+02|||-n:5:true
+03|||-n:-5:true
+04|||-5:true
+05|||--adjustment=5:true
+06|||--adjustment:5:true
+07|||-n5:true
+08|||-n:999:true
+09|||-n:-999:true
+10|||nosuchcmd123
+11|||--bogus
+12|||-n
+13|||-n:abc:true
+14|||-n:@EMPTY@:true
+15|||-n:5
+16|||--help
+17|||--version
+18|||--:true
+19|||true:extra:args
+20|||cmd:/c:exit:3
+21|||-n:+3:true
+22|POSIXLY_CORRECT=1||--bogus
+23|||-n:5:--:true
+24|||true:a:b
+25|||cmd:/c:exit:7
+26|||-n:10:cmd:/c:exit:5
+TABLE
+      ;;
+    # nohup wire lane (#1488): the child-spawn family, GNU "+" optstring
+    # shapes, POSIXLY_CORRECT usage exits, and the pipe-mode terminal
+    # faces (the harness redirects all three streams, so both builds
+    # take GNU's no-redirect path — the ConPTY probe covers the real
+    # console faces).
+    nohup)
+      cat <<'TABLE'
+01|||
+02|||cmd:/c:exit:0
+03|||cmd:/c:exit:7
+04|||cmd:/d:/s:/c:echo hi
+05|||nosuchcmd123
+06|POSIXLY_CORRECT=1||
+07|POSIXLY_CORRECT=||
+08|||-h
+09|||--help
+10|||--version
+11|||--bogus:true
+12|||-5:true
+13|||--:cmd:/c:exit:3
+14|||--
+15|||--version:extra
+16|||cmd:/c:exit:0:--bogus
+17|||--version:--help
+18|||@EMPTY@
+19|||cmd:/d:/s:/c:echo out&echo err>&2
+20||zz|cmd:/d:/s:/c:echo hi
 TABLE
       ;;
     *)

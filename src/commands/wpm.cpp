@@ -183,18 +183,31 @@ auto current_exe_path() -> fs::path {
   return fs::path(buffer);
 }
 
+/// Fold a directory that names a bin directory to the install root above it.
+///
+/// Callers hand us whatever directory they happen to sit in, not a root:
+/// `create_links.ps1` used to pass `usr\bin` (its PathInfo test never fired),
+/// and wpm then created a second `usr\bin` inside it, so every entry link
+/// landed one level too deep and a zip install had no command on PATH. The
+/// shapes accepted here are the ones `default_root()` already infers from the
+/// running image's own path: `<root>\usr\bin`, `<root>\usr\local\bin`,
+/// `<root>\bin`. A directory that is not named `bin` is returned unchanged, so
+/// a genuine root is never rewritten.
+auto fold_bin_dir(fs::path dir) -> fs::path {
+  if (dir.filename() != L"bin") return dir;
+  auto parent = dir.parent_path();
+  if (parent.filename() == L"usr") return parent.parent_path();
+  if (parent.filename() == L"local" &&
+      parent.parent_path().filename() == L"usr") {
+    return parent.parent_path().parent_path();
+  }
+  return parent;
+}
+
 auto default_root() -> fs::path {
   auto exe_dir = current_exe_path().parent_path();
-  if (exe_dir.filename() == L"bin") {
-    auto parent = exe_dir.parent_path();
-    if (parent.filename() == L"usr") return parent.parent_path();
-    if (parent.filename() == L"local" &&
-        parent.parent_path().filename() == L"usr") {
-      return parent.parent_path().parent_path();
-    }
-    return parent;
-  }
-  return exe_dir.empty() ? fs::current_path() : exe_dir;
+  if (exe_dir.empty()) return fs::current_path();
+  return fold_bin_dir(std::move(exe_dir));
 }
 
 auto canonical_bin_dir(const fs::path& root) -> fs::path {
@@ -6133,7 +6146,10 @@ auto build_options(const CommandContext<WPM_OPTIONS.size()>& ctx) -> Options {
   Options opts;
   std::string root = ctx.get<std::string>("--root", "");
   if (root.empty()) root = ctx.get<std::string>("-r", "");
-  opts.root = root.empty() ? default_root() : fs::path(root);
+  // `--root` is folded through the same bin-directory rule as the exe-path
+  // inference: a caller that passes `usr\bin` gets the owning root instead of
+  // a nested `usr\bin\usr\bin` link farm (see fold_bin_dir).
+  opts.root = root.empty() ? default_root() : fold_bin_dir(fs::path(root));
   opts.source = ctx.get<std::string>("--source", "");
   if (opts.source.empty()) opts.source = ctx.get<std::string>("-s", "");
   opts.all = ctx.get<bool>("--all", false) || ctx.get<bool>("-a", false);

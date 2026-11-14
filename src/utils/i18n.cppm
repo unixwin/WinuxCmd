@@ -270,7 +270,19 @@ export std::string translate_error(std::string_view error) {
                error.substr(0, error.size() - kOverflowSuffix.size())) +
            translate("common.error.value_too_large", kOverflowSuffix);
   }
+  // Same for strerror(ERANGE), appended by the strtoint_die deaths in
+  // split (quoted_number_error) after an overflowed scan (#1711).
+  constexpr std::string_view kRangeSuffix = ": Numerical result out of range";
+  if (error.size() > kRangeSuffix.size() && error.ends_with(kRangeSuffix)) {
+    return translate_error(
+               error.substr(0, error.size() - kRangeSuffix.size())) +
+           translate("common.error.result_out_of_range", kRangeSuffix);
+  }
   // "invalid repeat count '<digits>' in [c*n] construct" (tr).
+  // [#1488 wave-W2 wire] The keys are now produced by the rust2 tr body
+  // (rust2/crates/winux-cmds/src/tr.rs), whose fallback uses GNU 9.4's
+  // curly quotes; the matcher below keeps the 1.x straight-quote shape
+  // only so an old caller would still translate.
   constexpr std::string_view kRepeatCountPrefix = "invalid repeat count '";
   constexpr std::string_view kRepeatCountSuffix = "' in [c*n] construct";
   if (error.size() > kRepeatCountPrefix.size() + kRepeatCountSuffix.size() &&
@@ -280,7 +292,7 @@ export std::string translate_error(std::string_view error) {
         kRepeatCountPrefix.size(),
         error.size() - kRepeatCountPrefix.size() - kRepeatCountSuffix.size());
     return ::winux::i18n::format("command.tr.error.invalid_repeat_count",
-                                 "invalid repeat count '{}' in [c*n] construct",
+                                 "invalid repeat count \u2018{}\u2019 in [c*n] construct",
                                  value);
   }
   // Static tr [c*] repeat-construct diagnostics.
@@ -487,7 +499,7 @@ export std::string translate_error(std::string_view error) {
     }
     return ::winux::i18n::format(key, "error reading '{}'", value);
   }
-  constexpr std::array<std::pair<std::string_view, std::string_view>, 42>
+  constexpr std::array<std::pair<std::string_view, std::string_view>, 43>
       quoted{
           {{"cannot open '", "common.error.cannot_open"},
            {"cannot access '", "common.error.cannot_access"},
@@ -502,6 +514,7 @@ export std::string translate_error(std::string_view error) {
            {"invalid type '", "common.error.invalid_type"},
            {"invalid device type '", "common.error.invalid_device_type"},
            {"invalid suffix '", "common.error.invalid_suffix"},
+           {"invalid suffix length: '", "common.error.invalid_suffix_length"},
            {"invalid time interval '", "common.error.invalid_time_interval"},
            {"invalid character class '", "common.error.invalid_char_class"},
            {"unknown registry root '", "common.error.unknown_registry_root"},
@@ -551,7 +564,7 @@ export std::string translate_error(std::string_view error) {
       return ::winux::i18n::format(key, "error writing '{}'", value);
     if (key == "common.error.invalid_mode")
       return ::winux::i18n::format(key, "invalid mode: '{}'", value);
-    constexpr std::array<std::pair<std::string_view, std::string_view>, 36>
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 37>
         fallbacks{
             {{"common.error.invalid_group", "invalid group: '{}'"},
              {"common.error.invalid_user", "invalid user: '{}'"},
@@ -560,6 +573,8 @@ export std::string translate_error(std::string_view error) {
              {"common.error.invalid_type", "invalid type '{}'"},
              {"common.error.invalid_device_type", "invalid device type '{}'"},
              {"common.error.invalid_suffix", "invalid suffix '{}'"},
+             {"common.error.invalid_suffix_length",
+              "invalid suffix length: '{}'"},
              {"common.error.invalid_time_interval",
               "invalid time interval '{}'"},
              {"common.error.invalid_char_class",

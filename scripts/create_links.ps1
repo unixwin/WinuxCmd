@@ -51,9 +51,16 @@ if ($UseSymbolicLinks) {
 }
 
 $winuxCmdPath = Get-WinuxCmdPath
-$binDir = Get-Location
-$root = if ($binDir.Name -eq "bin" -and $binDir.Parent.Name -eq "usr") {
-    $binDir.Parent.Parent
+# `Get-Location` returns a PathInfo, which has no `.Name`/`.Parent` members -
+# reading them yields $null, so the old test was always false and $root stayed
+# the bin directory itself. wpm then created usr\bin *inside* usr\bin and the
+# 172 entry links landed one level too deep (the archive's documented first-run
+# step was broken from 3e1090e1 on; the installer was unaffected because ISS
+# passes {app} explicitly). Work on real path strings.
+$binDir = (Get-Location).ProviderPath
+$root = if ((Split-Path -Leaf $binDir) -eq "bin" -and
+            (Split-Path -Leaf (Split-Path -Parent $binDir)) -eq "usr") {
+    Split-Path -Parent (Split-Path -Parent $binDir)
 } else {
     $binDir
 }

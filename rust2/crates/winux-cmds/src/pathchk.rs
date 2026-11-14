@@ -239,7 +239,7 @@ pub fn pathchk_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if let Some(status) = argopt::rejected_short_h(io, "pathchk", &p, 1) {
+    if let Some(status) = argopt::rejected_short_h(ctx, io, "pathchk", &p, 1) {
         return Ok(status);
     }
     if let Some(which) = p
@@ -276,7 +276,7 @@ pub fn pathchk_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     if p.positionals.is_empty() {
         let _ = writeln!(io.stderr, "pathchk: missing operand");
-        let _ = writeln!(io.stderr, "Try 'pathchk --help' for more information.");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "pathchk"));
         return Ok(1);
     }
 

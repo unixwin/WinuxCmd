@@ -1,5 +1,7 @@
 //! `mkfifo` — GNU coreutils mkfifo.c (9.4) semantics, probed byte-for-byte
-//! against WSL coreutils 9.4 (rust2/target/probe/w5-mkfifo-mknod.sh).
+//! against WSL coreutils 9.4 (rust2/target/probe/w5-mkfifo-mknod.sh; the
+//! wave-W4 wire re-probed the context/mode/empty-name shapes in
+//! rust2/target/probe/w4-*.sh).
 //!
 //! Windows has no filesystem FIFO node type, so the fifo is the 1.x C++
 //! on-disk marker (#1038, `src/utils/native_path.cppm:1084`): a regular
@@ -10,19 +12,28 @@
 //! WinuxCmd processes get blocking POSIX open() semantics between
 //! themselves; the marker is byte/attr-compatible with that bridge.
 //!
-//! Honest boundary (documented, not hidden): this wave5 module only
-//! CREATES markers. The Rust head/cat do not bridge markers to named
-//! pipes yet (#1442 covers the C++ side), so a marker read by the Rust
-//! side sees the 7-byte marker text where C++ sees a pipe rendezvous.
-//! Gate rows therefore never read a fifo operand; GNU's blocking-open
-//! behavior is the oracle's, not ours.
+//! Honest boundary (documented, not hidden): this module only CREATES
+//! markers. Reading/writing them is the separate bridge in
+//! `fs_win::open_fifo_read`/`open_fifo_write` (#1038 port), which the
+//! wired commands that touch operand files route markers through
+//! (digestsum, paste, tee, stat, find). A Rust command that opens an
+//! operand with a plain `std::fs` call would see the 7-byte marker text
+//! instead of a pipe rendezvous — there is no transparent interception
+//! below the command layer, so any NEW wired command that opens operand
+//! files must call the bridge helpers. The marker is byte/attr-compatible
+//! with the C++ `file_io` bridge, so C++ and Rust commands rendezvous on
+//! the same `\\.\pipe\winuxcmd-fifo-<hash>` endpoint. Gate rows therefore
+//! never read a fifo operand; GNU's blocking-open behavior is the
+//! oracle's, not ours.
 //!
 //! `-m MODE` is mkfifo.c:151-165's mode_compile on a 0666 base: octal
 //! (values above 0777 fatal) or symbolic clauses; any resulting bit
 //! outside S_IRWXUGO is fatal ("mode must specify only file permission
-//! bits", probed with 1777/4755). `-Z` bare is silently ignored,
-//! `-Z CTX` warns to stderr and still creates (mkfifo.c:118-122,
-//! non-SELinux kernel; probed rc 0).
+//! bits", probed with 1777/4755). `-Z` is a bare flag (optstring "m:Z")
+//! and is silently ignored; only `--context=CTX` (a present optional
+//! argument, including the empty `--context=`) warns to stderr and still
+//! creates (mkfifo.c:118-122, non-SELinux kernel; probed rc 0). Bare
+//! `--context` carries no optarg and is silent.
 //!
 //! Errors, probed: existing name -> `mkfifo: cannot create fifo 'X':
 //! File exists` rc 1 (also for a regular file); missing parent ->
@@ -34,7 +45,7 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::resolve;
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -90,9 +101,33 @@ const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFF_FFFF;
 /// mkfifo.c:151-165 mode_compile: apply the mode to a 0666 base; reject
 /// any resulting bit outside S_IRWXUGO. Octal and symbolic forms.
 /// Probed: `-m ug=r` on the 0666 base -> 446; `-m 1777`/`-m 4755` fatal.
-pub fn evaluate_mode(mode: &str) -> Result<u32, &'static str> {
+///
+/// The two GNU diagnostics are returned as an enum (not text) so each
+/// applet renders them under its own `command.<cmd>.error.*` catalog key —
+/// mkfifo and mknod share this evaluator but not their message namespace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeError {
+    /// mode_compile had no parse (e.g. "bogus", "8", "u").
+    Invalid,
+    /// a bit outside S_IRWXUGO survived compilation (1777/4755).
+    NotPermissionBits,
+}
+
+/// The GNU diagnostic for a [`ModeError`] under mkfifo's keys.
+pub fn mode_error_text(ctx: &Ctx, err: ModeError) -> String {
+    match err {
+        ModeError::Invalid => tr!(ctx, "command.mkfifo.error.invalid_mode", "invalid mode"),
+        ModeError::NotPermissionBits => tr!(
+            ctx,
+            "command.mkfifo.error.mode_not_permission_bits",
+            "mode must specify only file permission bits"
+        ),
+    }
+}
+
+pub fn evaluate_mode(mode: &str) -> Result<u32, ModeError> {
     if mode.is_empty() {
-        return Err("invalid mode");
+        return Err(ModeError::Invalid);
     }
     if mode.bytes().all(|c| (b'0'..=b'7').contains(&c)) {
         let mut value: u64 = 0;
@@ -100,14 +135,14 @@ pub fn evaluate_mode(mode: &str) -> Result<u32, &'static str> {
             value = value * 8 + u64::from(c - b'0');
         }
         if value > 0o777 {
-            return Err("mode must specify only file permission bits");
+            return Err(ModeError::NotPermissionBits);
         }
         return Ok(value as u32);
     }
     let mut cur: u32 = 0o666;
     for clause in mode.split(',') {
         if clause.is_empty() {
-            return Err("invalid mode");
+            return Err(ModeError::Invalid);
         }
         let b = clause.as_bytes();
         let mut j = 0usize;
@@ -131,7 +166,7 @@ pub fn evaluate_mode(mode: &str) -> Result<u32, &'static str> {
         while j < b.len() {
             let op = b[j];
             if op != b'+' && op != b'-' && op != b'=' {
-                return Err("invalid mode");
+                return Err(ModeError::Invalid);
             }
             j += 1;
             let perm_begin = j;
@@ -190,11 +225,11 @@ pub fn evaluate_mode(mode: &str) -> Result<u32, &'static str> {
             };
         }
         if !any_op {
-            return Err("invalid mode");
+            return Err(ModeError::Invalid);
         }
     }
     if cur & !0o777 != 0 {
-        return Err("mode must specify only file permission bits");
+        return Err(ModeError::NotPermissionBits);
     }
     Ok(cur)
 }
@@ -338,14 +373,43 @@ pub(crate) fn create_error_text(err: u32) -> &'static str {
 }
 
 /// GNU getopt optional_argument pre-scan: pull `--context[=X]` tokens out
-/// of argv before the shared parse, returning (context value, remainder).
+/// of argv before the shared parse. Three states matter: the option was
+/// absent, given bare (`--context`, optarg NULL — silent), or given WITH a
+/// value (`--context=x`, including the empty `--context=`, optarg non-NULL
+/// — mkfifo.c:118-122 warns on a non-SELinux kernel). Probed GNU 9.4:
+/// `--context=` warns, bare `--context` does not; conflating the two was
+/// the wave5 pre-scan's bug, fixed in the wave-W4 wire.
+///
 /// The scan stops at `--` (a post-`--` `--context=x` is a fifo NAME, not
 /// the option — probed GNU getopt shape). `-Z` stays in the token stream
 /// for argopt so the bundled-invalid form `-Zctx2` keeps its GNU
-/// diagnostic ("invalid option -- 'c'", rc 1, nothing created). Shared
-/// with mknod, whose --context[=CTX] option has the same getopt shape.
-pub fn split_context_tokens(args: &[OsString]) -> (Option<String>, Vec<OsString>) {
-    let mut value = None;
+/// diagnostic ("invalid option -- 'c'", rc 1, nothing created).
+///
+/// Unambiguous long-option abbreviations are accepted like getopt_long
+/// (`--con=cval`, `--c`): the product dispatcher expands them before the
+/// handler, and the gate driver invokes the library directly, so the
+/// library-level scan accepts the same prefixes GNU does. `--contextual`
+/// is NOT a prefix of "context" and stays an unknown-option diagnostic.
+/// Shared with mknod, whose --context[=CTX] option has the same shape.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ContextOpt {
+    /// No `--context` token was present.
+    Absent,
+    /// `--context` with no `=value` (getopt optarg NULL): silent.
+    Bare,
+    /// `--context=value` (getopt optarg non-NULL, possibly empty): warn.
+    Value(String),
+}
+
+fn is_context_spelling(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("--") else {
+        return false;
+    };
+    !rest.is_empty() && "context".starts_with(rest)
+}
+
+pub fn split_context_tokens(args: &[OsString]) -> (ContextOpt, Vec<OsString>) {
+    let mut context = ContextOpt::Absent;
     let mut rest = Vec::new();
     let mut no_more_options = false;
     for a in args {
@@ -356,18 +420,21 @@ pub fn split_context_tokens(args: &[OsString]) -> (Option<String>, Vec<OsString>
                 rest.push(a.clone());
                 continue;
             }
-            if let Some(v) = text.strip_prefix("--context=") {
-                value = Some(v.to_string());
-                continue;
-            }
-            if text == "--context" {
-                value = Some(String::new());
+            let (name, suffix) = match text.find('=') {
+                Some(eq) => (&text[..eq], Some(&text[eq + 1..])),
+                None => (&text[..], None),
+            };
+            if is_context_spelling(name) {
+                context = match suffix {
+                    Some(value) => ContextOpt::Value(value.to_string()),
+                    None => ContextOpt::Bare,
+                };
                 continue;
             }
         }
         rest.push(a.clone());
     }
-    (value, rest)
+    (context, rest)
 }
 
 pub fn mkfifo_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
@@ -404,7 +471,7 @@ pub fn mkfifo_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // mkfifo.c:133: the missing-operand check precedes mode compilation.
     if p.positionals.is_empty() {
-        let _ = winux_core::usage_error(io, "mkfifo", "missing operand");
+        let _ = winux_core::usage_error(ctx, io, "mkfifo", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
 
@@ -413,36 +480,54 @@ pub fn mkfifo_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if has_mode {
         match evaluate_mode(p.value_of("mode").unwrap_or("")) {
             Ok(v) => mode_value = v,
-            Err(msg) => {
-                let _ = writeln!(io.stderr, "mkfifo: {msg}");
+            Err(err) => {
+                let _ = writeln!(io.stderr, "mkfifo: {}", mode_error_text(ctx, err));
                 return Ok(1);
             }
         }
     }
 
     // mkfifo.c:118-122: --context=CTX warns on a non-SELinux kernel and
-    // the fifo is still created (probed rc 0); a bare -Z / bare --context
-    // is silent (probed rc 0).
-    if let Some(v) = &context_value {
-        if !v.is_empty() {
-            let _ = writeln!(
-                io.stderr,
-                "mkfifo: warning: ignoring --context; it requires an SELinux/SMACK-enabled kernel"
-            );
-        }
+    // the fifo is still created (probed rc 0). getopt optional_argument:
+    // only a PRESENT value (including `--context=`) warns; bare -Z and
+    // bare --context carry no optarg and are silent (probed GNU 9.4).
+    if let ContextOpt::Value(_) = &context_value {
+        let _ = writeln!(
+            io.stderr,
+            "mkfifo: {}",
+            tr!(
+                ctx,
+                "command.mkfifo.warning.ignoring_context",
+                "warning: ignoring --context; it requires an SELinux/SMACK-enabled kernel"
+            )
+        );
     }
 
     let readonly = has_mode && (mode_value & 0o222) == 0;
     let mut failed = false;
     for arg in &p.positionals {
         let fifo = arg.to_string_lossy().into_owned();
-        let native = resolve(ctx, &fifo).to_string_lossy().into_owned();
+        // An EMPTY operand is not "the cwd": GNU mkfifo("") fails ENOENT
+        // (probed). resolve() would join "" onto ctx.cwd and make the
+        // existence probe answer for the directory.
+        let native = if fifo.is_empty() {
+            String::new()
+        } else {
+            resolve(ctx, &fifo).to_string_lossy().into_owned()
+        };
         if imp::attributes(&native).is_some() {
             // probed GNU wording: the name is ALWAYS quoted here, even a
             // plain "p" ("mkfifo: cannot create fifo 'p': File exists")
             let _ = writeln!(
                 io.stderr,
-                "mkfifo: cannot create fifo '{fifo}': File exists"
+                "mkfifo: {}",
+                tr!(
+                    ctx,
+                    "command.mkfifo.error.cannot_create_fifo",
+                    "cannot create fifo '{name}': {reason}",
+                    name = fifo,
+                    reason = "File exists"
+                )
             );
             failed = true;
             continue;
@@ -451,8 +536,14 @@ pub fn mkfifo_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         if created != 0 {
             let _ = writeln!(
                 io.stderr,
-                "mkfifo: cannot create fifo '{fifo}': {}",
-                create_error_text(created)
+                "mkfifo: {}",
+                tr!(
+                    ctx,
+                    "command.mkfifo.error.cannot_create_fifo",
+                    "cannot create fifo '{name}': {reason}",
+                    name = fifo,
+                    reason = create_error_text(created)
+                )
             );
             failed = true;
         }
@@ -482,21 +573,15 @@ mod tests {
         assert_eq!(evaluate_mode("777"), Ok(0o777));
         assert_eq!(evaluate_mode("0"), Ok(0));
         // special bits are fatal for mkfifo (probed 1777 / 4755)
-        assert_eq!(
-            evaluate_mode("1777"),
-            Err("mode must specify only file permission bits")
-        );
-        assert_eq!(
-            evaluate_mode("4755"),
-            Err("mode must specify only file permission bits")
-        );
+        assert_eq!(evaluate_mode("1777"), Err(ModeError::NotPermissionBits));
+        assert_eq!(evaluate_mode("4755"), Err(ModeError::NotPermissionBits));
         assert_eq!(evaluate_mode("a=rwx"), Ok(0o777));
         assert_eq!(evaluate_mode("+x"), Ok(0o777)); // 0666 | x on all classes
         assert_eq!(evaluate_mode("u+x"), Ok(0o766));
-        assert_eq!(evaluate_mode("bogus"), Err("invalid mode"));
-        assert_eq!(evaluate_mode(""), Err("invalid mode"));
-        assert_eq!(evaluate_mode("8"), Err("invalid mode")); // not octal, not symbolic
-        assert_eq!(evaluate_mode("u"), Err("invalid mode")); // who without op
+        assert_eq!(evaluate_mode("bogus"), Err(ModeError::Invalid));
+        assert_eq!(evaluate_mode(""), Err(ModeError::Invalid));
+        assert_eq!(evaluate_mode("8"), Err(ModeError::Invalid)); // not octal, not symbolic
+        assert_eq!(evaluate_mode("u"), Err(ModeError::Invalid)); // who without op
         assert_eq!(evaluate_mode("u+"), Ok(0o666)); // empty perms, op present
                                                     // g=u copy
         assert_eq!(evaluate_mode("g=u"), Ok(0o666));
@@ -555,6 +640,19 @@ mod tests {
     }
 
     #[test]
+    fn empty_operand_is_enoent_not_cwd() {
+        // probed GNU 9.4: mkfifo '' -> "cannot create fifo '': No such
+        // file or directory"; resolving "" to ctx.cwd would wrongly say
+        // "File exists" for the directory.
+        let (r, _, err, _) = run(&[""]);
+        assert_eq!(r, 1);
+        assert!(
+            err.contains("cannot create fifo '': No such file or directory"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn no_operand_is_usage_rc1() {
         let (r, out, err, _) = run(&[]);
         assert_eq!(r, 1);
@@ -576,9 +674,33 @@ mod tests {
         let (r, _, _, sc) = run(&["-Z", "pz5"]);
         assert_eq!(r, 0);
         assert!(sc.path("pz5").exists());
-        let (r, _, _, sc) = run(&["--context", "pz4"]);
+        let (r, _, err, sc) = run(&["--context", "pz4"]);
         assert_eq!(r, 0);
+        assert!(err.is_empty(), "bare --context carries no optarg");
         assert!(sc.path("pz4").exists());
+        // probed GNU 9.4: --context= (empty present value) DOES warn.
+        let (r, _, err, sc) = run(&["--context=", "pz6"]);
+        assert_eq!(r, 0);
+        assert!(err.contains("mkfifo: warning: ignoring --context"));
+        assert!(sc.path("pz6").exists());
+        // getopt_long abbreviation: --con= is the unique prefix of
+        // --context, and the library-level scan accepts it (the product
+        // dispatcher expands it first).
+        let (r, _, err, sc) = run(&["--con=cval", "pz7"]);
+        assert_eq!(r, 0);
+        assert!(err.contains("mkfifo: warning: ignoring --context"));
+        assert!(sc.path("pz7").exists());
+        // `--c` (unique abbreviation, no value) is silent like bare
+        // --context.
+        let (r, _, err, sc) = run(&["--c", "pz8"]);
+        assert_eq!(r, 0);
+        assert!(err.is_empty());
+        assert!(sc.path("pz8").exists());
+        // --contextual is not a prefix of --context: unknown option.
+        let (r, _, err, sc) = run(&["--contextual=x", "pz9"]);
+        assert_eq!(r, 1);
+        assert!(err.contains("unrecognized option"));
+        assert!(!sc.path("pz9").exists());
         // probed `-Z ctx pz`: TWO fifos, no warning
         let (r, _, err, sc) = run(&["-Z", "ctx", "pz"]);
         assert_eq!(r, 0);

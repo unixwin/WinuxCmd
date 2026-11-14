@@ -352,7 +352,7 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if let Some(status) = argopt::rejected_short_h(io, "ptx", &p, 1) {
+    if let Some(status) = argopt::rejected_short_h(ctx, io, "ptx", &p, 1) {
         return Ok(status);
     }
     if let Some(which) = p
@@ -417,7 +417,8 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         } else {
             let _ = writeln!(
                 io.stderr,
-                "ptx: invalid argument '{value}' for '--format'\nValid arguments are:\n  - 'roff'\n  - 'tex'\nTry 'ptx --help' for more information."
+                "ptx: invalid argument '{value}' for '--format'\nValid arguments are:\n  - 'roff'\n  - 'tex'\n{}",
+                winux_core::try_help(ctx, "ptx")
             );
             return Ok(1);
         }

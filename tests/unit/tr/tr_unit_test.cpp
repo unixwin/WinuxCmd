@@ -193,8 +193,11 @@ TEST(tr, tr_translate_requires_second_set) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ(r.stdout_text, "");
+  // [#1488 wave-W2 wire] re-pinned to the GNU 9.4 contract (probed): the
+  // operand is quoted with the locale's curly quotes and the program
+  // keeps GNU's plural wording. The 1.x body printed straight quotes.
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "tr: missing operand after 'a-z'\n"
+                 "tr: missing operand after \u2018a-z\u2019\n"
                  "Two strings must be given when translating.\n"
                  "Try 'tr --help' for more information.\n");
 }
@@ -212,9 +215,12 @@ TEST(tr, tr_delete_and_squeeze_require_second_set) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ(r.stdout_text, "");
+  // [#1488 wave-W2 wire] GNU 9.4 (probed): curly-quoted operand and the
+  // full "both deleting and squeezing repeats" wording.
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "tr: missing operand after '0-9'\n"
-                 "Two strings must be given when deleting and squeezing.\n"
+                 "tr: missing operand after \u20180-9\u2019\n"
+                 "Two strings must be given when both deleting and squeezing "
+                 "repeats.\n"
                  "Try 'tr --help' for more information.\n");
 }
 
@@ -231,8 +237,9 @@ TEST(tr, tr_delete_without_squeeze_rejects_extra_operand) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ(r.stdout_text, "");
+  // [#1488 wave-W2 wire] GNU 9.4 (probed): curly-quoted operand.
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "tr: extra operand 'X'\n"
+                 "tr: extra operand \u2018X\u2019\n"
                  "Only one string may be given when deleting without "
                  "squeezing repeats.\n"
                  "Try 'tr --help' for more information.\n");

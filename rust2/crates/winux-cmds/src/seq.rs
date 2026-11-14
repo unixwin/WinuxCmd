@@ -51,6 +51,7 @@
 
 use std::ffi::OsString;
 
+use crate::argopt;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
 
 const SEQ_FAST_STEP_LIMIT: u64 = 200;
@@ -1102,7 +1103,7 @@ struct ScanErr<'a> {
     nan: bool,
 }
 
-pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
+pub fn seq_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let strs: Vec<String> = args
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
@@ -1135,8 +1136,12 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
                     let v = match take_arg(inline, &strs, &mut idx) {
                         Some(v) => v,
                         None => {
-                            let _ =
-                                usage_error(io, "seq", "option '--format' requires an argument");
+                            let _ = usage_error(
+                                ctx,
+                                io,
+                                "seq",
+                                &argopt::option_requires_argument(ctx, "--format"),
+                            );
                             return Ok(1);
                         }
                     };
@@ -1146,8 +1151,12 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
                     let v = match take_arg(inline, &strs, &mut idx) {
                         Some(v) => v,
                         None => {
-                            let _ =
-                                usage_error(io, "seq", "option '--separator' requires an argument");
+                            let _ = usage_error(
+                                ctx,
+                                io,
+                                "seq",
+                                &argopt::option_requires_argument(ctx, "--separator"),
+                            );
                             return Ok(1);
                         }
                     };
@@ -1156,7 +1165,7 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
                 "equal-width" => equal_width = true,
                 "help" | "version" => return Ok(0),
                 _ => {
-                    let _ = usage_error(io, "seq", &format!("unrecognized option '{arg}'"));
+                    let _ = usage_error(ctx, io, "seq", &argopt::unrecognized_option(ctx, arg));
                     return Ok(1);
                 }
             }
@@ -1185,9 +1194,10 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
                     };
                     if !ok {
                         let _ = usage_error(
+                            ctx,
                             io,
                             "seq",
-                            &format!("option requires an argument -- '{c}'"),
+                            &argopt::short_option_requires_argument(ctx, &c.to_string()),
                         );
                         return Ok(1);
                     }
@@ -1203,7 +1213,8 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
                     ci += 1;
                 }
                 _ => {
-                    let _ = usage_error(io, "seq", &format!("invalid option -- '{c}'"));
+                    let _ =
+                        usage_error(ctx, io, "seq", &argopt::invalid_option(ctx, &c.to_string()));
                     return Ok(1);
                 }
             }
@@ -1212,11 +1223,16 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
     }
     let operands = &strs[idx..];
     if operands.is_empty() {
-        let _ = usage_error(io, "seq", "missing operand");
+        let _ = usage_error(ctx, io, "seq", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     if operands.len() > 3 {
-        let _ = usage_error(io, "seq", &format!("extra operand '{}'", operands[3]));
+        let _ = usage_error(
+            ctx,
+            io,
+            "seq",
+            &crate::messages::extra_operand(ctx, &operands[3]),
+        );
         return Ok(1);
     }
     // ---- format validation (seq.c long_double_format call) ----
@@ -1229,6 +1245,7 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
     // ---- -w/-f conflict ----
     if format.is_some() && equal_width {
         let _ = usage_error(
+            ctx,
             io,
             "seq",
             "format string may not be specified when printing equal width strings",
@@ -1279,20 +1296,21 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
     let scan = scan_operand(&strs[oidx]);
     let mut last = match scan {
         Ok(o) => o,
-        Err(e) => return scan_error(io, &e),
+        Err(e) => return scan_error(ctx, io, &e),
     };
     oidx += 1;
     if oidx < strs.len() {
         first = last;
         last = match scan_operand(&strs[oidx]) {
             Ok(o) => o,
-            Err(e) => return scan_error(io, &e),
+            Err(e) => return scan_error(ctx, io, &e),
         };
         oidx += 1;
         if oidx < strs.len() {
             step = last;
             if step.value == 0.0 {
                 let _ = usage_error(
+                    ctx,
                     io,
                     "seq",
                     &format!("invalid Zero increment value: '{}'", strs[oidx - 1]),
@@ -1301,7 +1319,7 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, _ctx: &Ctx) -> CmdResult {
             }
             last = match scan_operand(&strs[oidx]) {
                 Ok(o) => o,
-                Err(e) => return scan_error(io, &e),
+                Err(e) => return scan_error(ctx, io, &e),
             };
         }
     }
@@ -1410,13 +1428,13 @@ fn scan_operand(s: &str) -> Result<Operand, ScanErr<'_>> {
     }
 }
 
-fn scan_error(io: &mut Io, e: &ScanErr<'_>) -> CmdResult {
+fn scan_error(ctx: &Ctx, io: &mut Io, e: &ScanErr<'_>) -> CmdResult {
     let msg = if e.nan {
         format!("invalid 'not-a-number' argument: '{}'", e.text)
     } else {
         format!("invalid floating point argument: '{}'", e.text)
     };
-    let _ = usage_error(io, "seq", &msg);
+    let _ = usage_error(ctx, io, "seq", &msg);
     Ok(1)
 }
 

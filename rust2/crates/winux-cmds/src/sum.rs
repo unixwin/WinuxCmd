@@ -21,7 +21,7 @@ use std::io::Read;
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::{gnu_open_reason, quotef, resolve};
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -102,7 +102,17 @@ pub fn sum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         });
     }
 
-    let sysv = p.has("sysv");
+    // [GNU] sum.c: the LAST of -r/-s wins, in any spelling — separate,
+    // clustered (`-rs` = SysV, `-sr` = BSD), or long. `p.flags` records
+    // the consumed flags in argv order, so the scan order is getopt's.
+    let mut sysv = false;
+    for f in &p.flags {
+        match f.as_str() {
+            "sysv" => sysv = true,
+            "r" => sysv = false,
+            _ => {}
+        }
+    }
 
     let files: Vec<String> = if p.positionals.is_empty() {
         vec!["-".to_string()]
@@ -121,13 +131,18 @@ pub fn sum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let bytes = if file == "-" {
             let mut buf = Vec::new();
             if io.stdin.read_to_end(&mut buf).is_err() {
-                let _ = writeln!(io.stderr, "sum: {file}: read error");
+                let _ = writeln!(
+                    io.stderr,
+                    "sum: {}: {}",
+                    file,
+                    tr!(ctx, "command.sum.error.read_error", "read error")
+                );
                 failed = true;
                 continue;
             }
             buf
         } else {
-            match std::fs::File::open(resolve(ctx, file)) {
+            match crate::fsutil::open_read_operand(ctx, file) {
                 Ok(mut f) => {
                     let mut buf = Vec::new();
                     if f.read_to_end(&mut buf).is_err() {
@@ -139,7 +154,17 @@ pub fn sum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         } else {
                             "read error".to_string()
                         };
-                        let _ = writeln!(io.stderr, "sum: {file}: {reason}");
+                        let _ = writeln!(
+                            io.stderr,
+                            "sum: {}",
+                            tr!(
+                                ctx,
+                                "command.sum.error.operand_reason",
+                                "{file}: {reason}",
+                                file = file,
+                                reason = reason
+                            )
+                        );
                         failed = true;
                         continue;
                     }
@@ -147,7 +172,17 @@ pub fn sum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 Err(e) => {
                     let reason = gnu_open_reason(ctx, file, &e, false);
-                    let _ = writeln!(io.stderr, "sum: {}: {reason}", quotef(file));
+                    let _ = writeln!(
+                        io.stderr,
+                        "sum: {}",
+                        tr!(
+                            ctx,
+                            "command.sum.error.operand_reason",
+                            "{file}: {reason}",
+                            file = quotef(file),
+                            reason = reason
+                        )
+                    );
                     failed = true;
                     continue;
                 }

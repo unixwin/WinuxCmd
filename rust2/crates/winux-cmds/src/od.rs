@@ -20,10 +20,20 @@
 //! Partials: a trailing multi-byte unit is zero-filled and printed at
 //! full width (probed `od -An -tx4` on `abc` -> `00636261`).
 //!
-//! Documented subsets: `--traditional` operands and `-S/--strings` are
-//! not implemented (a use is a usage error); `fL` (80-bit long double)
-//! cannot be represented with std floats and is rejected. `-A n` with
-//! empty input prints nothing at all, matching GNU.
+//! Old-style operands (od.c main()/parse_old_offset): `[FILE] [[+]OFFSET
+//! [.][b] [[+]LABEL[.][b]]]` is interpreted when no modern option was given
+//! or under `--traditional`; OFFSET sets the skip, LABEL adds the
+//! parenthesised pseudo-address column (with -A n the address column
+//! becomes a bare parenthesised octal address). Probed 9.4: the offset
+//! radix is octal unless 0x/0X (hex), the only multiplier is b/B (x512) —
+//! the help text's stale '.' suffix makes the operand a FILE name.
+//!
+//! `-S/--strings` prints NUL-terminated runs of at least N printable
+//! characters (bare --strings = 3), one line per run, `-N` bounding the
+//! scan; `-S` with a type is "no type may be specified when dumping
+//! strings". `fL` (80-bit long double) cannot be represented with std
+//! floats and is rejected. `-A n` with empty input prints nothing at all,
+//! matching GNU.
 
 use std::ffi::OsString;
 use std::io::{Read, Write};
@@ -31,7 +41,7 @@ use std::io::{Read, Write};
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::{gnu_open_reason, quotef, resolve};
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -157,7 +167,7 @@ fn type_size(t: OdType) -> usize {
 }
 
 /// Parse a -t TYPE string (possibly comma-separated, 'z' ascii suffix).
-fn parse_type_spec(spec: &str) -> Result<(Vec<OdType>, bool), String> {
+fn parse_type_spec(spec: &str, ctx: &Ctx) -> Result<(Vec<(OdType, bool)>, bool), String> {
     let mut types = Vec::new();
     let mut z = false;
     for part in spec.split(',') {
@@ -172,11 +182,11 @@ fn parse_type_spec(spec: &str) -> Result<(Vec<OdType>, bool), String> {
                     chars.next();
                 }
                 'a' => {
-                    types.push(OdType::Named);
+                    types.push((OdType::Named, false));
                     chars.next();
                 }
                 'c' => {
-                    types.push(OdType::Char);
+                    types.push((OdType::Char, false));
                     chars.next();
                 }
                 'd' | 'u' | 'o' | 'x' | 'f' => {
@@ -199,8 +209,11 @@ fn parse_type_spec(spec: &str) -> Result<(Vec<OdType>, bool), String> {
                                 'L' => {
                                     if c == 'f' {
                                         // 80-bit long double: no std repr
-                                        return Err(format!(
-                                            "od: unsupported float size in type '{part}'"
+                                        return Err(tr!(
+                                            ctx,
+                                            "command.od.error.unsupported_float_size",
+                                            "od: unsupported float size in type '{part}'",
+                                            part = part
                                         ));
                                     }
                                     size_str.push('8');
@@ -208,8 +221,12 @@ fn parse_type_spec(spec: &str) -> Result<(Vec<OdType>, bool), String> {
                                 'F' if c == 'f' => size_str.push('4'),
                                 'D' if c == 'f' => size_str.push('8'),
                                 _ => {
-                                    return Err(format!(
-                                        "od: invalid character '{nxt}' in type string '{part}'"
+                                    return Err(tr!(
+                                        ctx,
+                                        "command.od.error.invalid_type_char",
+                                        "od: invalid character '{ch}' in type string '{part}'",
+                                        ch = nxt,
+                                        part = part
                                     ));
                                 }
                             }
@@ -228,36 +245,61 @@ fn parse_type_spec(spec: &str) -> Result<(Vec<OdType>, bool), String> {
                             4
                         }
                     } else {
-                        size_str
-                            .parse()
-                            .map_err(|_| format!("od: invalid character in type string '{part}'"))?
+                        size_str.parse().map_err(|_| {
+                            tr!(
+                                ctx,
+                                "command.od.error.invalid_type_char_unnamed",
+                                "od: invalid character in type string '{part}'",
+                                part = part
+                            )
+                        })?
                     };
                     if c == 'f' && size != 4 && size != 8 {
-                        return Err(format!("od: unsupported float size in type '{part}'"));
-                    }
-                    if c != 'f' && size != 1 && size != 2 && size != 4 && size != 8 {
-                        return Err(format!(
-                            "od: invalid character '{size_str}' in type string '{part}'"
+                        return Err(tr!(
+                            ctx,
+                            "command.od.error.unsupported_float_size",
+                            "od: unsupported float size in type '{part}'",
+                            part = part
                         ));
                     }
-                    types.push(match c {
-                        'd' => OdType::Signed(size),
-                        'u' => OdType::Unsigned(size),
-                        'o' => OdType::Octal(size),
-                        'x' => OdType::Hex(size),
-                        _ => OdType::Float(size),
-                    });
+                    if c != 'f' && size != 1 && size != 2 && size != 4 && size != 8 {
+                        return Err(tr!(
+                            ctx,
+                            "command.od.error.invalid_type_char",
+                            "od: invalid character '{ch}' in type string '{part}'",
+                            ch = size_str,
+                            part = part
+                        ));
+                    }
+                    types.push((
+                        match c {
+                            'd' => OdType::Signed(size),
+                            'u' => OdType::Unsigned(size),
+                            'o' => OdType::Octal(size),
+                            'x' => OdType::Hex(size),
+                            _ => OdType::Float(size),
+                        },
+                        z_here,
+                    ));
                 }
                 other => {
-                    return Err(format!(
-                        "od: invalid character '{other}' in type string '{part}'"
+                    return Err(tr!(
+                        ctx,
+                        "command.od.error.invalid_type_char",
+                        "od: invalid character '{ch}' in type string '{part}'",
+                        ch = other,
+                        part = part
                     ));
                 }
             }
         }
     }
     if types.is_empty() {
-        return Err("od: bad type specification".to_string());
+        return Err(tr!(
+            ctx,
+            "command.od.error.bad_type_specification",
+            "od: bad type specification"
+        ));
     }
     Ok((types, z))
 }
@@ -435,8 +477,11 @@ fn little_endian_value(chunk: &[u8], size: usize, big_endian: bool) -> u64 {
     v
 }
 
-fn format_item(t: OdType, chunk: &[u8], big_endian: bool) -> String {
-    let (width, zero_pad) = field_spec(t);
+/// od.c print_function output: the value alone. Field width/precision are
+/// applied by od_dump's pad loop (od.c PRINT_FIELDS: `adjusted_width =
+/// pad_remaining - next_pad + width`).
+fn render_item(t: OdType, chunk: &[u8], big_endian: bool) -> String {
+    let (width, _zero_pad) = field_spec(t);
     let rendered = match t {
         OdType::Named => named_char(chunk[0]),
         OdType::Char => char_display(chunk[0]),
@@ -463,11 +508,8 @@ fn format_item(t: OdType, chunk: &[u8], big_endian: bool) -> String {
             }
         }
     };
-    if zero_pad {
-        format!(" {rendered:0>width$}")
-    } else {
-        format!(" {rendered:>width$}")
-    }
+    let _ = width;
+    rendered
 }
 
 // `--help` body verbatim from `env od --help` under WSL coreutils 9.4,
@@ -549,12 +591,78 @@ Binary prefixes can be used, too: KiB=K, MiB=M, and so on.
 "#;
 
 struct OdConfig {
-    types: Vec<OdType>,
-    z: bool,
+    /// (type, ascii-trailer) — the `z` suffix belongs to the spec it is
+    /// spelled on (od.c tspec.hexl_mode_trailer), not to the whole dump.
+    types: Vec<(OdType, bool)>,
     radix: Radix,
     width: usize,
     verbose: bool,
     big_endian: bool,
+    /// Absolute input offset of `input[0]` (`-j` or the traditional OFFSET).
+    /// od prints addresses in the combined input's coordinate space
+    /// (od.c dump(): `current_offset = n_bytes_to_skip`), so the first
+    /// printed address is the skip value, not 0.
+    skip: u64,
+    /// `LABEL - skip` (od.c `pseudo_offset`): added to every printed
+    /// address for the parenthesised pseudo-address column.
+    pseudo_offset: i128,
+    /// How an address is printed. od.c picks this from `flag_pseudo_start`
+    /// plus the address radix: `Paren` when `-A n` was also given (od.c
+    /// main(): format_address_paren, base forced to octal), `Label`
+    /// otherwise.
+    address_form: AddressForm,
+    /// `Some(min)` = --strings/-S mode: print NUL-terminated runs of at
+    /// least `min` printable characters instead of a dump.
+    string_min: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddressForm {
+    /// plain address column (format_address_std)
+    Std,
+    /// `(address)` only, used by -A n + LABEL (format_address_paren)
+    Paren,
+    /// address + `(address + pseudo_offset)` (format_address_label)
+    Label,
+}
+
+/// od.c format_address_std: zero-padded address in the selected radix.
+fn address_std(radix: Radix, address: u64) -> String {
+    match radix {
+        Radix::None => String::new(),
+        Radix::Decimal => format!("{address:07}"),
+        Radix::Octal => format!("{address:07o}"),
+        Radix::Hex => format!("{address:06x}"),
+    }
+}
+
+/// od.c format_address dispatch (std / paren / label).
+fn format_address(cfg: &OdConfig, address: u64) -> String {
+    match cfg.address_form {
+        AddressForm::Std => address_std(cfg.radix, address),
+        AddressForm::Paren => format!("({})", address_std(Radix::Octal, address)),
+        AddressForm::Label => {
+            let pseudo = (address as i128 + cfg.pseudo_offset).max(0) as u64;
+            format!(
+                "{} ({})",
+                address_std(cfg.radix, address),
+                address_std(cfg.radix, pseudo)
+            )
+        }
+    }
+}
+
+/// Column width the later types blank-pad to (od.c `address_pad_len`: 7
+/// for d/o, 6 for x, 0 for -A n; a paren address forces 7).
+fn address_pad_len(cfg: &OdConfig) -> usize {
+    match cfg.address_form {
+        AddressForm::Paren => 7,
+        AddressForm::Std | AddressForm::Label => match cfg.radix {
+            Radix::None => 0,
+            Radix::Hex => 6,
+            _ => 7,
+        },
+    }
 }
 
 fn od_dump(input: &[u8], cfg: &OdConfig, out: &mut dyn Write) -> std::io::Result<()> {
@@ -563,14 +671,23 @@ fn od_dump(input: &[u8], cfg: &OdConfig, out: &mut dyn Write) -> std::io::Result
     let mut prev: Option<&[u8]> = None;
     let mut star_active = false;
     let mut first_chunk = true;
-    let label_width = match cfg.radix {
-        Radix::None => 0,
-        Radix::Hex => 6,
-        _ => 7,
-    };
+    let label_width = address_pad_len(cfg);
+    // od.c main(): width_per_block = max over specs of
+    // (field_width+1)*fields_per_block; spec.pad_width = the difference.
+    let width_per_block = cfg
+        .types
+        .iter()
+        .map(|&(t, _)| {
+            let size = type_size(t);
+            let fields = bytes_per_line / size;
+            (field_spec(t).0 + 1) * fields
+        })
+        .max()
+        .unwrap_or(0);
     while offset < input.len() {
         let end = (offset + bytes_per_line).min(input.len());
         let chunk = &input[offset..end];
+        let address = cfg.skip + offset as u64;
         if !cfg.verbose && !first_chunk && prev == Some(chunk) {
             if !star_active {
                 writeln!(out, "*")?;
@@ -582,37 +699,64 @@ fn od_dump(input: &[u8], cfg: &OdConfig, out: &mut dyn Write) -> std::io::Result
         star_active = false;
         prev = Some(chunk);
         first_chunk = false;
-        for (ti, &t) in cfg.types.iter().enumerate() {
+        for (ti, &(t, z_here)) in cfg.types.iter().enumerate() {
             let size = type_size(t);
             let mut line = String::new();
             if ti == 0 {
-                match cfg.radix {
-                    Radix::None => {}
-                    Radix::Decimal => line.push_str(&format!("{:07}", offset)),
-                    Radix::Octal => line.push_str(&format!("{:07o}", offset)),
-                    Radix::Hex => line.push_str(&format!("{:06x}", offset)),
-                }
+                line.push_str(&format_address(cfg, address));
             } else {
                 // later types blank-pad the label column
                 line.push_str(&" ".repeat(label_width));
             }
+            // od.c main(): width_per_block is the widest spec's
+            // (field_width+1)*fields; each spec's pad is the difference to
+            // its own field_width*fields, distributed across the printed
+            // fields by PRINT_FIELDS (so a -t x1 column next to a 3-wide
+            // -t o1 column widens to 4).
+            let (field_width, zero_pad) = field_spec(t);
+            let fields_per_block = bytes_per_line / size;
+            let pad_width = width_per_block - field_width * fields_per_block;
             let mut area = String::new();
+            let mut pad_remaining = pad_width;
+            let blank_fields = (bytes_per_line - chunk.len()) / size;
+            let mut idx = fields_per_block;
             let mut pos = 0usize;
-            while pos < chunk.len() {
+            while pos < chunk.len() && idx > blank_fields {
                 let take = size.min(chunk.len() - pos);
                 let mut unit = chunk[pos..pos + take].to_vec();
                 // trailing partial unit is zero-filled at full width
                 unit.resize(size, 0);
-                area.push_str(&format_item(t, &unit, cfg.big_endian));
+                let rendered = render_item(t, &unit, cfg.big_endian);
+                let next_pad = if fields_per_block > 0 {
+                    pad_width * (idx - 1) / fields_per_block
+                } else {
+                    0
+                };
+                let adjusted = pad_remaining - next_pad + field_width;
+                let text = if zero_pad {
+                    format!("{rendered:0>field_width$}")
+                } else {
+                    rendered
+                };
+                area.push_str(&format!("{text:>adjusted$}"));
+                pad_remaining = next_pad;
                 pos += size;
+                idx -= 1;
             }
-            if cfg.z {
-                // the item area (first separator included, so it starts
-                // at the label width) pads to bytes_per_line*(field+1)+2
-                // before `>ascii<` follows (probed: '>' lands at
-                // 7+50 = 57 labeled, 0+50 = 50 under -A n)
-                let full_width = bytes_per_line / size * (field_spec(t).0 + 1) + 2;
-                while area.len() < full_width {
+            if z_here {
+                // od.c write_block(): the blank fields plus their share of
+                // the pad, then dump_hexl_mode_trailer's "  >ascii<".
+                let blank_pad = if fields_per_block > 0 {
+                    pad_width * blank_fields / fields_per_block
+                } else {
+                    0
+                };
+                // GNU then prints dump_hexl_mode_trailer's "  >ascii<":
+                // the two spaces belong to the trailer, not the padding,
+                // and `printf("%*s")` adds blanks after the printed area
+                // (not an absolute column).
+                let trailer_pad = blank_fields * field_width + blank_pad + 2;
+                for _ in 0..trailer_pad {
                     area.push(' ');
                 }
                 let ascii: String = chunk
@@ -632,32 +776,164 @@ fn od_dump(input: &[u8], cfg: &OdConfig, out: &mut dyn Write) -> std::io::Result
         }
         offset = end;
     }
-    // trailing offset line: suppressed only by -A n
+    // trailing offset line: suppressed only by -A n (od.c dump():
+    // `format_address (current_offset, '\n')`, current_offset starting at
+    // the skip value)
     if cfg.radix != Radix::None {
-        match cfg.radix {
-            Radix::Decimal => writeln!(out, "{:07}", input.len())?,
-            Radix::Octal => writeln!(out, "{:07o}", input.len())?,
-            Radix::Hex => writeln!(out, "{:06x}", input.len())?,
-            Radix::None => unreachable!(),
-        }
+        let mut line = format_address(cfg, cfg.skip + input.len() as u64);
+        line.push('\n');
+        write!(out, "{line}")?;
     }
     Ok(())
+}
+
+/// od.c dump_strings(): NUL-terminated runs of at least `string_min`
+/// printable (C locale) characters. The address printed is the run's
+/// absolute start; `-N` bounds the scan exactly like GNU (the
+/// `end_offset < string_min || end_offset - string_min <= address`
+/// guard plus the `address < end_offset` inner condition), and a run cut
+/// off by the read limit still prints.
+fn od_dump_strings(
+    input: &[u8],
+    cfg: &OdConfig,
+    end_offset: Option<u64>,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    let min = cfg.string_min.unwrap_or(3);
+    let mut pos = 0usize; // index into input (already skip-sliced)
+    let mut address = cfg.skip;
+
+    loop {
+        if let Some(end) = end_offset {
+            if end < min as u64 || end - min as u64 <= address {
+                break;
+            }
+        }
+        let mut buf: Vec<u8> = Vec::new();
+        let mut ok = true;
+        for _ in 0..min {
+            if pos >= input.len() {
+                return Ok(());
+            }
+            let c = input[pos];
+            pos += 1;
+            address += 1;
+            if !(0x20..=0x7e).contains(&c) {
+                ok = false;
+                break;
+            }
+            buf.push(c);
+        }
+        let mut terminated = false;
+        if ok {
+            loop {
+                if let Some(end) = end_offset {
+                    if address >= end {
+                        terminated = true;
+                        break;
+                    }
+                }
+                if pos >= input.len() {
+                    return Ok(());
+                }
+                let c = input[pos];
+                pos += 1;
+                address += 1;
+                if c == 0 {
+                    terminated = true;
+                    break;
+                }
+                if !(0x20..=0x7e).contains(&c) {
+                    ok = false;
+                    break;
+                }
+                buf.push(c);
+            }
+        }
+        if !ok || !terminated {
+            if !ok {
+                continue; // tryline: restart from the next character
+            }
+            return Ok(());
+        }
+        // od.c: `format_address (address - i - 1, ' ')` with uintmax_t
+        // arithmetic; a run cut by -N can sit at address 0 with a
+        // non-empty buffer, which wraps exactly like GNU (probed:
+        // `printf 'hello\0world\0' | od -S3 -N5` prints the all-ones
+        // address).
+        let start = address.wrapping_sub(buf.len() as u64).wrapping_sub(1);
+        let mut line = format_address(cfg, start);
+        // format_address_std emits the trailing separator itself; the
+        // none form (`-A n`) emits nothing at all, so no stray space
+        // (probed: `od -An -S3` output starts with the string).
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        for &c in &buf {
+            line.push(c as char);
+        }
+        line.push('\n');
+        write!(out, "{line}")?;
+    }
+    Ok(())
+}
+
+/// od.c parse_old_offset(): `[+]OFFSET` with the traditional radix rule
+/// (0x/0X -> hex, else octal) and one optional b/B multiplier (xstrtoumax
+/// valid suffixes "Bb"). A malformed value (including the help text's stale
+/// '.' suffix) is not an offset at all — od then treats the operand as a
+/// file name.
+fn parse_old_offset(text: &str) -> Option<u64> {
+    let t = text.strip_prefix('+').unwrap_or(text);
+    if t.is_empty() {
+        return None;
+    }
+    let (radix, body) = if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        (16u32, hex)
+    } else {
+        (8u32, t)
+    };
+    let num_end = body
+        .find(|c: char| !c.is_digit(radix))
+        .unwrap_or(body.len());
+    if num_end == 0 {
+        return None;
+    }
+    let value = u64::from_str_radix(&body[..num_end], radix).ok()?;
+    match &body[num_end..] {
+        "" => Some(value),
+        "b" | "B" => value.checked_mul(512),
+        _ => None,
+    }
 }
 
 pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut norm: Vec<OsString> = Vec::new();
     // classic single-letter type options accumulate -t specs
+    // od.c CASE_OLD_ARG table, including the obsolescent/undocumented
+    // letters (D u4, e fD, F fF, H x4, I/L dL, O o4, B o2, h x2, X x4).
+    // The differential corpus (regressions/79-od-legacy-letters) pins them.
     let classic: &[(&str, OdType)] = &[
         ("a", OdType::Named),
         ("b", OdType::Octal(1)),
         ("c", OdType::Char),
         ("d", OdType::Unsigned(2)),
+        ("e", OdType::Float(8)),
         ("f", OdType::Float(4)),
+        ("h", OdType::Hex(2)),
         ("i", OdType::Signed(4)),
         ("l", OdType::Signed(8)),
         ("o", OdType::Octal(2)),
         ("s", OdType::Signed(2)),
         ("x", OdType::Hex(2)),
+        ("B", OdType::Octal(2)),
+        ("D", OdType::Unsigned(4)),
+        ("F", OdType::Float(4)),
+        ("H", OdType::Hex(4)),
+        ("I", OdType::Signed(8)),
+        ("L", OdType::Signed(8)),
+        ("O", OdType::Octal(4)),
+        ("X", OdType::Hex(4)),
     ];
     let spec_of = |t: OdType| -> &'static str {
         match t {
@@ -696,8 +972,58 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
         }
     };
+    // od.c main(): "modern" means one of the modern options was used; the
+    // old-style `[FILE] [[+]OFFSET[.][b]]` operand form is interpreted only
+    // when no modern option was given (`if (!modern || traditional)`).
+    // Classic single-letter format options do NOT set modern in od.c, so
+    // only the modern spellings count here.
+    let mut modern = false;
+    for a in args {
+        let s = a.to_string_lossy();
+        if let Some(long) = s.strip_prefix("--") {
+            let name = long.split('=').next().unwrap_or("");
+            if matches!(
+                name,
+                "address-radix"
+                    | "skip-bytes"
+                    | "read-bytes"
+                    | "strings"
+                    | "format"
+                    | "output-duplicates"
+                    | "width"
+                    | "endian"
+            ) {
+                modern = true;
+            }
+        } else if s.len() > 1 && s.starts_with('-') {
+            for ch in s[1..].chars() {
+                if matches!(ch, 'A' | 'j' | 'N' | 'S' | 't' | 'v' | 'w') {
+                    modern = true;
+                }
+            }
+        }
+    }
+    // Which spelling carried --strings/-S (diagnostics only: GNU's
+    // xstrtol_fatal prints the spelling the user typed).
+    let mut strings_spelling = "--strings";
+    for a in args {
+        let s = a.to_string_lossy();
+        if s == "-S" || (s.starts_with("-S") && !s.starts_with("--")) {
+            strings_spelling = "-S";
+        } else if s.starts_with("--strings") {
+            strings_spelling = "--strings";
+        }
+    }
     for a in args {
         let s = a.to_string_lossy().into_owned();
+        // --strings takes an OPTIONAL argument (getopt "S::"): a bare
+        // --strings means 3 (od.c main() case 'S': optarg == NULL ->
+        // string_min = 3). The short -S requires its argument, which the
+        // OptSpec models, so only the long spelling needs normalizing.
+        if s == "--strings" {
+            norm.push(OsString::from("--strings=3"));
+            continue;
+        }
         // -w takes an OPTIONAL argument (getopt "w::"): bare -w means 32,
         // so route it to the long form instead of stealing the next word
         if s == "-w" || s == "--width" {
@@ -710,9 +1036,24 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 continue;
             }
         }
-        if s.len() == 2 && s.starts_with('-') {
-            if let Some((_, t)) = classic.iter().find(|(c, _)| **c == s[1..]) {
-                norm.push(OsString::from(format!("--format={}", spec_of(*t))));
+        // A cluster of classic format letters ("-bc", "-D -e -H -O") is
+        // getopt's accumulate form: each letter becomes one -t spec, in
+        // argv order.
+        if s.len() >= 2 && s.starts_with('-') && !s.starts_with("--") {
+            let letters: Vec<char> = s[1..].chars().collect();
+            if letters.iter().all(|ch| {
+                classic
+                    .iter()
+                    .any(|(c, _)| c.starts_with(*ch) && c.len() == 1)
+            }) {
+                for ch in letters {
+                    let t = classic
+                        .iter()
+                        .find(|(c, _)| *c == ch.to_string())
+                        .map(|(_, t)| *t)
+                        .unwrap();
+                    norm.push(OsString::from(format!("--format={}", spec_of(t))));
+                }
                 continue;
             }
         }
@@ -748,13 +1089,11 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         });
     }
 
-    let mut types: Vec<OdType> = Vec::new();
-    let mut z = false;
+    let mut types: Vec<(OdType, bool)> = Vec::new();
     for v in p.values.iter().filter(|(k, _)| k == "format") {
-        match parse_type_spec(&v.1) {
-            Ok((mut ts, has_z)) => {
+        match parse_type_spec(&v.1, ctx) {
+            Ok((mut ts, _has_z)) => {
                 types.append(&mut ts);
-                z |= has_z;
             }
             Err(msg) => {
                 let _ = writeln!(io.stderr, "{msg}");
@@ -762,8 +1101,80 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
         }
     }
+    // --strings/-S: od.c main() case 'S' (xstrtoumax base 0 + multipliers,
+    // `string_min` may be 0) and the "no type may be specified when
+    // dumping strings" fatal (od.c main() after the option loop; error()
+    // + EXIT_FAILURE, no Try-help line).
+    let string_min: Option<usize> = match p.value_of("strings") {
+        None => None,
+        Some(v) => {
+            let q = if v.is_empty() {
+                "''".to_string()
+            } else {
+                format!("'{}'", quotef(v))
+            };
+            match parse_bytes_arg(v) {
+                Some(n) if n <= usize::MAX as u64 => Some(n as usize),
+                Some(_) => {
+                    let _ = writeln!(
+                        io.stderr,
+                        "od: {}",
+                        tr!(
+                            ctx,
+                            "command.od.error.strings_too_large",
+                            "{option} argument {value} too large",
+                            option = strings_spelling,
+                            value = q
+                        )
+                    );
+                    return Ok(1);
+                }
+                None if !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) => {
+                    // syntactically a number, but beyond uintmax
+                    let _ = writeln!(
+                        io.stderr,
+                        "od: {}",
+                        tr!(
+                            ctx,
+                            "command.od.error.strings_too_large",
+                            "{option} argument {value} too large",
+                            option = strings_spelling,
+                            value = q
+                        )
+                    );
+                    return Ok(1);
+                }
+                None => {
+                    let _ = writeln!(
+                        io.stderr,
+                        "od: {}",
+                        tr!(
+                            ctx,
+                            "command.od.error.strings_invalid",
+                            "invalid {option} argument {value}",
+                            option = strings_spelling,
+                            value = q
+                        )
+                    );
+                    return Ok(1);
+                }
+            }
+        }
+    };
+    if string_min.is_some() && !types.is_empty() {
+        let _ = writeln!(
+            io.stderr,
+            "od: {}",
+            tr!(
+                ctx,
+                "command.od.error.no_type_with_strings",
+                "no type may be specified when dumping strings"
+            )
+        );
+        return Ok(1);
+    }
     if types.is_empty() {
-        types.push(OdType::Octal(2)); // default: octal 2-byte units
+        types.push((OdType::Octal(2), false)); // default: octal 2-byte units
     }
 
     let radix = match p.value_of("address-radix") {
@@ -774,8 +1185,17 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             "x" => Radix::Hex,
             "n" => Radix::None,
             other => {
-                let _ = writeln!(io.stderr, "od: invalid address radix '{other}'");
-                let _ = writeln!(io.stderr, "Try 'od --help' for more information.");
+                let _ = writeln!(
+                    io.stderr,
+                    "od: {}",
+                    tr!(
+                        ctx,
+                        "command.od.error.invalid_address_radix",
+                        "invalid address radix '{radix}'",
+                        radix = other
+                    )
+                );
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "od"));
                 return Ok(1);
             }
         },
@@ -786,7 +1206,16 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         match parse_bytes_arg(v) {
             Some(n) => skip = n,
             None => {
-                let _ = writeln!(io.stderr, "od: invalid skip bytes {v}");
+                let _ = writeln!(
+                    io.stderr,
+                    "od: {}",
+                    tr!(
+                        ctx,
+                        "command.od.error.invalid_skip_bytes",
+                        "invalid skip bytes {value}",
+                        value = v
+                    )
+                );
                 return Ok(1);
             }
         }
@@ -796,7 +1225,16 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Some(v) => match parse_bytes_arg(v) {
             Some(n) => Some(n),
             None => {
-                let _ = writeln!(io.stderr, "od: invalid read bytes {v}");
+                let _ = writeln!(
+                    io.stderr,
+                    "od: {}",
+                    tr!(
+                        ctx,
+                        "command.od.error.invalid_read_bytes",
+                        "invalid read bytes {value}",
+                        value = v
+                    )
+                );
                 return Ok(1);
             }
         },
@@ -807,7 +1245,16 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Some(v) => match parse_bytes_arg(v) {
             Some(n) if n > 0 && n <= usize::MAX as u64 => n as usize,
             _ => {
-                let _ = writeln!(io.stderr, "od: invalid width {v}");
+                let _ = writeln!(
+                    io.stderr,
+                    "od: {}",
+                    tr!(
+                        ctx,
+                        "command.od.error.invalid_width",
+                        "invalid width {value}",
+                        value = v
+                    )
+                );
                 return Ok(1);
             }
         },
@@ -817,68 +1264,246 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Some("little") => false,
         Some("big") => true,
         Some(other) => {
-            let _ = writeln!(io.stderr, "od: invalid bytes to swap '{other}'");
-            let _ = writeln!(io.stderr, "Try 'od --help' for more information.");
+            let _ = writeln!(
+                io.stderr,
+                "od: {}",
+                tr!(
+                    ctx,
+                    "command.od.error.invalid_endian",
+                    "invalid bytes to swap '{endian}'",
+                    endian = other
+                )
+            );
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "od"));
             return Ok(1);
         }
     };
-    if p.has("strings") {
-        let _ = writeln!(io.stderr, "od: --strings is not supported in this build");
-        return Ok(1);
-    }
-    if p.has("traditional") {
-        let _ = writeln!(
-            io.stderr,
-            "od: --traditional is not supported in this build"
-        );
-        return Ok(1);
+    // od.c main(): the old-style operand form.
+    //   od [FILE] [[+]OFFSET[.][b] [[+]LABEL[.][b]]]
+    // Interpreted when no modern option was given, always under
+    // --traditional. The traditional form also takes a LABEL and rejects a
+    // second file. OFFSET/LABEL parse like od.c parse_old_offset: optional
+    // '+', radix by prefix (0x/0X hex, else octal), optional b multiply-512
+    // suffix (probed 9.4: `2.` is a FILE, not an offset — xstrtoumax only
+    // accepts the b/B multiplier, the help text's '.' spelling is stale).
+    let traditional = p.has("traditional");
+    let mut operands: Vec<String> = p
+        .positionals
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let mut pseudo_start: Option<u64> = None;
+    if !modern || traditional {
+        match operands.len() {
+            1 => {
+                if traditional || operands[0].starts_with('+') {
+                    if let Some(o1) = parse_old_offset(&operands[0]) {
+                        skip = o1;
+                        operands.clear();
+                    }
+                }
+            }
+            2 => {
+                let second_ok = traditional
+                    || operands[1].starts_with('+')
+                    || operands[1]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_digit());
+                if second_ok {
+                    if let Some(o2) = parse_old_offset(&operands[1]) {
+                        let label = if traditional {
+                            parse_old_offset(&operands[0])
+                        } else {
+                            None
+                        };
+                        match label {
+                            Some(o1) => {
+                                skip = o1;
+                                pseudo_start = Some(o2);
+                                operands.clear();
+                            }
+                            None => {
+                                skip = o2;
+                                operands.truncate(1);
+                            }
+                        }
+                    }
+                }
+            }
+            3 => {
+                if traditional {
+                    if let (Some(o1), Some(o2)) = (
+                        parse_old_offset(&operands[1]),
+                        parse_old_offset(&operands[2]),
+                    ) {
+                        skip = o1;
+                        pseudo_start = Some(o2);
+                        operands.truncate(1);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if traditional && operands.len() > 1 {
+            let _ = writeln!(
+                io.stderr,
+                "od: {}",
+                tr!(
+                    ctx,
+                    "command.od.error.extra_operand",
+                    "extra operand \u{2018}{operand}\u{2019}",
+                    operand = operands[1]
+                )
+            );
+            let _ = writeln!(
+                io.stderr,
+                "od: {}",
+                tr!(
+                    ctx,
+                    "command.od.error.compatibility_one_file",
+                    "compatibility mode supports at most one file"
+                )
+            );
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "od"));
+            return Ok(1);
+        }
     }
 
+    // od.c main(): a LABEL switches the address printer; with -A n the
+    // address column is a bare parenthesised octal address, otherwise the
+    // normal address followed by the pseudo-address.
+    let (radix, address_form) = match (pseudo_start, radix) {
+        (None, r) => (r, AddressForm::Std),
+        (Some(_), Radix::None) => (Radix::Octal, AddressForm::Paren),
+        (Some(_), r) => (r, AddressForm::Label),
+    };
+    let pseudo_offset = match pseudo_start {
+        None => 0i128,
+        Some(p) => p as i128 - skip as i128,
+    };
+
     // read the combined input
-    let files: Vec<String> = if p.positionals.is_empty() {
+    let files: Vec<String> = if operands.is_empty() {
         vec!["-".to_string()]
     } else {
-        p.positionals
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
+        operands.clone()
     };
     let mut input: Vec<u8> = Vec::new();
     let mut failed = false;
+    // od.c main(): when NO operand could be opened at all, main jumps to
+    // cleanup before dump() — no block lines and no trailing offset line
+    // (probed: `od nosuch` prints only the diagnostic; `od /dev/null`
+    // still prints 0000000 because the stream opened).
+    let mut opened_any = false;
     for file in &files {
         if file == "-" {
+            opened_any = true;
             if io.stdin.read_to_end(&mut input).is_err() {
-                let _ = writeln!(io.stderr, "od: error reading 'standard input'");
+                let _ = writeln!(
+                    io.stderr,
+                    "od: {}",
+                    tr!(
+                        ctx,
+                        "command.od.error.reading_standard_input",
+                        "error reading 'standard input'"
+                    )
+                );
                 failed = true;
             }
         } else {
-            match std::fs::File::open(resolve(ctx, file)) {
+            match crate::fsutil::open_read_operand(ctx, file) {
                 Ok(mut f) => {
+                    opened_any = true;
                     if f.read_to_end(&mut input).is_err() {
                         if std::fs::metadata(resolve(ctx, file))
                             .map(|m| m.is_dir())
                             .unwrap_or(false)
                         {
-                            let _ = writeln!(io.stderr, "od: {file}: read error: Is a directory");
+                            let _ = writeln!(
+                                io.stderr,
+                                "od: {}",
+                                tr!(
+                                    ctx,
+                                    "command.od.error.operand_reason",
+                                    "{file}: {reason}",
+                                    file = file,
+                                    reason = tr!(
+                                        ctx,
+                                        "command.od.error.is_a_directory",
+                                        "read error: Is a directory"
+                                    )
+                                )
+                            );
                         } else {
-                            let _ = writeln!(io.stderr, "od: {file}: read error");
+                            let _ = writeln!(
+                                io.stderr,
+                                "od: {}",
+                                tr!(
+                                    ctx,
+                                    "command.od.error.operand_reason",
+                                    "{file}: {reason}",
+                                    file = file,
+                                    reason = tr!(ctx, "command.od.error.read_error", "read error")
+                                )
+                            );
                         }
                         failed = true;
                     }
                 }
                 Err(e) => {
                     let reason = gnu_open_reason(ctx, file, &e, false);
-                    let _ = writeln!(io.stderr, "od: {}: {reason}", quotef(file));
+                    let _ = writeln!(
+                        io.stderr,
+                        "od: {}",
+                        tr!(
+                            ctx,
+                            "command.od.error.operand_reason",
+                            "{file}: {reason}",
+                            file = quotef(file),
+                            reason = reason
+                        )
+                    );
                     failed = true;
                 }
             }
         }
     }
-    // -j skip / -N limit over the combined stream
-    if skip as usize > input.len() {
-        let _ = writeln!(io.stderr, "od: cannot skip past end of combined input");
+    if !opened_any {
         return Ok(1);
     }
+    // -j skip / -N limit over the combined stream (od.c end_offset =
+    // n_bytes_to_skip + max_bytes_to_format, with the overflow fatal).
+    if skip as usize > input.len() {
+        let _ = writeln!(
+            io.stderr,
+            "od: {}",
+            tr!(
+                ctx,
+                "command.od.error.skip_past_end",
+                "cannot skip past end of combined input"
+            )
+        );
+        return Ok(1);
+    }
+    let end_offset = match limit {
+        None => None,
+        Some(n) => match skip.checked_add(n) {
+            Some(end) => Some(end),
+            None => {
+                let _ = writeln!(
+                    io.stderr,
+                    "od: {}",
+                    tr!(
+                        ctx,
+                        "command.od.error.skip_read_too_large",
+                        "skip-bytes + read-bytes is too large"
+                    )
+                );
+                return Ok(1);
+            }
+        },
+    };
     let window = &input[skip as usize..];
     let window = match limit {
         Some(n) => &window[..n.min(window.len() as u64) as usize],
@@ -887,14 +1512,26 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     let cfg = OdConfig {
         types,
-        z,
         radix,
         width,
         verbose: p.has("output-duplicates"),
         big_endian,
+        skip,
+        pseudo_offset,
+        address_form,
+        string_min,
     };
-    if od_dump(window, &cfg, io.stdout).is_err() {
-        let _ = writeln!(io.stderr, "od: write error");
+    let dumped = if cfg.string_min.is_some() {
+        od_dump_strings(window, &cfg, end_offset, io.stdout)
+    } else {
+        od_dump(window, &cfg, io.stdout)
+    };
+    if dumped.is_err() {
+        let _ = writeln!(
+            io.stderr,
+            "od: {}",
+            tr!(ctx, "command.od.error.write_error", "write error")
+        );
         return Ok(1);
     }
     Ok(if failed { 1 } else { 0 })
@@ -1093,23 +1730,135 @@ mod tests {
 
     #[test]
     fn type_spec_parse() {
+        let sc = ScratchCtx::new("od-types");
+        let ctx = sc.ctx();
         assert_eq!(
-            parse_type_spec("x1z").unwrap(),
-            (vec![OdType::Hex(1)], true)
+            parse_type_spec("x1z", &ctx).unwrap(),
+            (vec![(OdType::Hex(1), true)], true)
         );
         assert_eq!(
-            parse_type_spec("d4,u1").unwrap(),
-            (vec![OdType::Signed(4), OdType::Unsigned(1)], false)
+            parse_type_spec("d4,u1", &ctx).unwrap(),
+            (
+                vec![(OdType::Signed(4), false), (OdType::Unsigned(1), false)],
+                false
+            )
         );
-        assert!(parse_type_spec("x1zq").is_err());
+        assert!(parse_type_spec("x1zq", &ctx).is_err());
         // probed: -t o / -t x / -t d / -t u default to 4-byte units
-        assert_eq!(parse_type_spec("o").unwrap().0, vec![OdType::Octal(4)]);
-        assert_eq!(parse_type_spec("x").unwrap().0, vec![OdType::Hex(4)]);
-        assert_eq!(parse_type_spec("d").unwrap().0, vec![OdType::Signed(4)]);
-        assert_eq!(parse_type_spec("f").unwrap().0, vec![OdType::Float(8)]);
+        assert_eq!(
+            parse_type_spec("o", &ctx).unwrap().0,
+            vec![(OdType::Octal(4), false)]
+        );
+        assert_eq!(
+            parse_type_spec("x", &ctx).unwrap().0,
+            vec![(OdType::Hex(4), false)]
+        );
+        assert_eq!(
+            parse_type_spec("d", &ctx).unwrap().0,
+            vec![(OdType::Signed(4), false)]
+        );
+        assert_eq!(
+            parse_type_spec("f", &ctx).unwrap().0,
+            vec![(OdType::Float(8), false)]
+        );
         assert_eq!(parse_bytes_arg("16"), Some(16));
         assert_eq!(parse_bytes_arg("0x10"), Some(16));
         assert_eq!(parse_bytes_arg("1b"), Some(512));
         assert_eq!(parse_bytes_arg("2K"), Some(2048));
+    }
+
+    // --strings / -S and the old-style operand form were ported for the
+    // wire; every assertion below is a WSL coreutils 9.4 probe.
+    #[test]
+    fn strings_mode() {
+        assert_eq!(run(&["-An", "-S5"], "xxhello\0world\n").1, "xxhello\n");
+        assert_eq!(
+            run(&["-An", "-S5", "-v"], "xxhello\0hello\0").1,
+            "xxhello\nhello\n"
+        );
+        // bare --strings defaults to 3
+        assert_eq!(run(&["-An", "--strings"], "xxhello\0").1, "xxhello\n");
+        // the printed address is the run start; -A d follows the radix
+        assert_eq!(run(&["-A", "d", "-S5"], "xxhello\0").1, "0000000 xxhello\n");
+        // -j moves the address base
+        assert_eq!(run(&["-An", "-S3", "-j1"], "zzhello\0").1, "zhello\n");
+        // -N bounds the scan; the run cut at the limit still prints
+        // probed: the -N4 limit cuts the run after "hell" and it prints
+        assert_eq!(run(&["-An", "-S3", "-N4"], "hello\0").1, "hell\n");
+        assert_eq!(run(&["-An", "-S3", "-N8"], "hello\0wo").1, "hello\n");
+        // a type is incompatible with strings mode
+        let (r, _, err) = run(&["-S5", "-tx1"], "abc");
+        assert_eq!(r, 1);
+        assert_eq!(err, "od: no type may be specified when dumping strings\n");
+        // diagnostics carry the spelling the user typed
+        assert_eq!(run(&["-Sabc"], "x").2, "od: invalid -S argument 'abc'\n");
+        assert_eq!(
+            run(&["--strings="], "x").2,
+            "od: invalid --strings argument ''\n"
+        );
+        assert_eq!(
+            run(&["-S999999999999999999999"], "x").2,
+            "od: -S argument '999999999999999999999' too large\n"
+        );
+    }
+
+    #[test]
+    fn traditional_operands() {
+        // OFFSET: octal by default, 0x hex, b = 512, leading + accepted
+        assert_eq!(parse_old_offset("2"), Some(2));
+        assert_eq!(parse_old_offset("+2"), Some(2));
+        assert_eq!(parse_old_offset("010"), Some(8));
+        assert_eq!(parse_old_offset("0x10"), Some(16));
+        assert_eq!(parse_old_offset("2b"), Some(1024));
+        assert_eq!(parse_old_offset("2B"), Some(1024));
+        // probed 9.4: '.' is NOT a suffix (the operand stays a file name)
+        assert_eq!(parse_old_offset("2."), None);
+        assert_eq!(parse_old_offset("abc"), None);
+        assert_eq!(parse_old_offset(""), None);
+        // offset-only form prints addresses from the skip value
+        assert_eq!(
+            run(&["--traditional", "2"], "abcdef").1,
+            "0000002 062143 063145\n0000006\n"
+        );
+        // LABEL adds the pseudo-address column; -A n makes it a bare
+        // parenthesised octal address
+        assert_eq!(
+            run(&["--traditional", "2", "3"], "abcdef").1,
+            "0000002 (0000003) 062143 063145\n0000006 (0000007)\n"
+        );
+        assert_eq!(
+            run(&["-An", "--traditional", "2", "16"], "abcdef").1,
+            "(0000002) 062143 063145\n(0000006)\n"
+        );
+        // the old form also applies without --traditional when no modern
+        // option was used (`od file 2`); a second file is the traditional
+        // extra-operand fatal
+        let sc = ScratchCtx::new("od-trad");
+        std::fs::write(sc.path("f1"), "abcdefghij").unwrap();
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = ["f1", "2"].iter().map(Into::into).collect();
+        let r = od_cmd(&owned, &mut io.split(), &sc.ctx()).unwrap();
+        assert_eq!(r, 0);
+        assert!(io.out().starts_with("0000002 062143"));
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = ["--traditional", "f1", "2", "3", "4"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        let r = od_cmd(&owned, &mut io.split(), &sc.ctx()).unwrap();
+        assert_eq!(r, 1);
+        assert_eq!(
+            io.err(),
+            "od: extra operand \u{2018}2\u{2019}\n\
+             od: compatibility mode supports at most one file\n\
+             Try 'od --help' for more information.\n"
+        );
+    }
+
+    #[test]
+    fn skip_addresses_are_absolute() {
+        // od.c dump(): current_offset starts at n_bytes_to_skip
+        assert_eq!(run(&["-j2", "-c"], "abcd").1, "0000002   c   d\n0000004\n");
+        assert_eq!(run(&["-N2", "-c"], "abcd").1, "0000000   a   b\n0000002\n");
     }
 }

@@ -522,6 +522,7 @@ pub fn pinky_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // pinky.c main(): error(0, 0, ...) + usage(EXIT_FAILURE) — the
         // try-help tail goes to stderr and the status is 1 (probed).
         let _ = usage_error(
+            ctx,
             io,
             "pinky",
             "no username specified; at least one must be specified when using -l",

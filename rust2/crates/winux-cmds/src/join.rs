@@ -170,30 +170,27 @@ fn split_fields(line: &str, cfg: &Config) -> Vec<String> {
     }
     if !cfg.explicit_separator {
         // blank-delimited fields collapse runs of blanks (also a '\n' when
-        // the NUL delimiter made newline an ordinary byte)
+        // the NUL delimiter made newline an ordinary byte); GNU xfields
+        // emits a trailing empty field when the record ends in a separator
         let mut fields = Vec::new();
         let mut pos = 0usize;
         let bytes = line.as_bytes();
+        let is_sep = |b: u8| b == b' ' || b == b'\t' || (cfg.zero_terminated && b == b'\n');
         while pos < bytes.len() {
-            while pos < bytes.len()
-                && (bytes[pos] == b' '
-                    || bytes[pos] == b'\t'
-                    || (cfg.zero_terminated && bytes[pos] == b'\n'))
-            {
+            while pos < bytes.len() && is_sep(bytes[pos]) {
                 pos += 1;
             }
             if pos >= bytes.len() {
                 break;
             }
             let start = pos;
-            while pos < bytes.len()
-                && bytes[pos] != b' '
-                && bytes[pos] != b'\t'
-                && !(cfg.zero_terminated && bytes[pos] == b'\n')
-            {
+            while pos < bytes.len() && !is_sep(bytes[pos]) {
                 pos += 1;
             }
             fields.push(line[start..pos].to_string());
+        }
+        if !fields.is_empty() && is_sep(bytes[bytes.len() - 1]) {
+            fields.push(String::new());
         }
         return fields;
     }
@@ -465,6 +462,7 @@ fn apply_field(
 #[allow(clippy::type_complexity)]
 fn scan_order_sensitive(
     args: &[OsString],
+    ctx: &Ctx,
     io: &mut Io,
     cfg: &mut Config,
     field1_seen: &mut bool,
@@ -609,7 +607,8 @@ fn scan_order_sensitive(
             let arg = names[idx].clone();
             match status[idx] {
                 OpStatus::Operand => {
-                    let _ = usage_error(io, "join", &format!("extra operand '{arg}'"));
+                    let _ =
+                        usage_error(ctx, io, "join", &crate::messages::extra_operand(ctx, &arg));
                     return Err(());
                 }
                 OpStatus::J1Arg | OpStatus::J2Arg => {
@@ -704,7 +703,7 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut field1_seen = false;
     let mut field2_seen = false;
     let (real_lists, saw_auto, file_names, _jcount) =
-        match scan_order_sensitive(args, io, &mut cfg, &mut field1_seen, &mut field2_seen) {
+        match scan_order_sensitive(args, ctx, io, &mut cfg, &mut field1_seen, &mut field2_seen) {
             Ok(x) => x,
             Err(()) => return Ok(1),
         };
@@ -807,17 +806,17 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // resolved); GNU reports a missing second operand against g_names[0].
     cfg.files = file_names;
     if cfg.files.is_empty() {
-        let _ = usage_error(io, "join", "missing operand");
+        let _ = usage_error(ctx, io, "join", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     if cfg.files.len() < 2 {
-        let msg = format!("missing operand after '{}'", cfg.files[0]);
-        let _ = usage_error(io, "join", &msg);
+        let msg = crate::messages::missing_after(ctx, &cfg.files[0]);
+        let _ = usage_error(ctx, io, "join", &msg);
         return Ok(1);
     }
     if cfg.files.len() > 2 {
-        let msg = format!("extra operand '{}'", cfg.files[2]);
-        let _ = usage_error(io, "join", &msg);
+        let msg = crate::messages::extra_operand(ctx, &cfg.files[2]);
+        let _ = usage_error(ctx, io, "join", &msg);
         return Ok(1);
     }
 
@@ -1398,6 +1397,21 @@ mod tests {
             "",
         );
         assert_eq!((r, out.as_str()), (0, "h1 h h\0a 1 X\0"));
+    }
+
+    // #1713: -z sets eolchar=NUL (GNU join.c:1106-1107), so a
+    // newline-terminated file reads as ONE record; '\n' is still a
+    // field boundary (GNU system.h:163-166 field_sep) and a record
+    // ending in a separator yields a trailing empty field
+    // (join.c:302-303 final extract_field).
+    #[test]
+    fn zero_terminated_newline_input_is_one_record() {
+        let (r, out, _) = run_files(
+            &[(F1, "a 1\nb 2\n"), (F2, "a X\nb Y\n")],
+            &["-z", F1, F2],
+            "",
+        );
+        assert_eq!((r, out.as_str()), (0, "a 1 b 2  X b Y \0"));
     }
 
     #[test]

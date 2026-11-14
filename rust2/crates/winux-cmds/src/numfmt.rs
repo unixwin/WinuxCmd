@@ -621,7 +621,7 @@ fn parse_field_spec(spec: &str) -> Result<Vec<(u64, u64)>, String> {
     Ok(ranges)
 }
 
-fn argmatch_error(io: &mut Io, option: &str, value: &str, valid: &[&str]) {
+fn argmatch_error(ctx: &Ctx, io: &mut Io, option: &str, value: &str, valid: &[&str]) {
     let _ = write!(
         io.stderr,
         "numfmt: invalid argument '{value}' for '{option}'\n"
@@ -630,7 +630,7 @@ fn argmatch_error(io: &mut Io, option: &str, value: &str, valid: &[&str]) {
     for v in valid {
         let _ = write!(io.stderr, "  - '{v}'\n");
     }
-    let _ = writeln!(io.stderr, "Try 'numfmt --help' for more information.");
+    let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "numfmt"));
 }
 
 /// Grouping only inserts separators when the locale environment suggests a
@@ -668,13 +668,14 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut to_unit = p.value_of("to").unwrap_or("").to_string();
     let from_unit = p.value_of("from").unwrap_or("").to_string();
     if !to_unit.is_empty() && !["none", "si", "iec", "iec-i"].contains(&to_unit.as_str()) {
-        argmatch_error(io, "--to", &to_unit, &["none", "si", "iec", "iec-i"]);
+        argmatch_error(ctx, io, "--to", &to_unit, &["none", "si", "iec", "iec-i"]);
         return Ok(1);
     }
     if !from_unit.is_empty()
         && !["none", "auto", "si", "iec", "iec-i"].contains(&from_unit.as_str())
     {
         argmatch_error(
+            ctx,
             io,
             "--from",
             &from_unit,
@@ -691,6 +692,7 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         && !["up", "down", "from-zero", "towards-zero", "nearest"].contains(&round_mode.as_str())
     {
         argmatch_error(
+            ctx,
             io,
             "--round",
             &round_mode,
@@ -701,6 +703,7 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let invalid_policy = p.value_of("invalid").unwrap_or("abort").to_string();
     if !["abort", "fail", "warn", "ignore"].contains(&invalid_policy.as_str()) {
         argmatch_error(
+            ctx,
             io,
             "--invalid",
             &invalid_policy,
@@ -774,7 +777,7 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Ok(r) => field_ranges = r,
             Err(e) => {
                 let _ = writeln!(io.stderr, "numfmt: {e}");
-                let _ = writeln!(io.stderr, "Try 'numfmt --help' for more information.");
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "numfmt"));
                 return Ok(1);
             }
         }

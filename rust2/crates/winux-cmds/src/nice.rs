@@ -33,7 +33,7 @@ use std::ffi::OsString;
 use crate::argopt::{self, OptSpec};
 use crate::childproc::{build_child_command, resolve_child, ChildResolve};
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[OptSpec {
     short: Some('n'),
@@ -242,7 +242,16 @@ pub fn nice_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             Some(v) => adjustment = v,
             None => {
                 // probed: one stderr line, no try tail, rc 125
-                let _ = writeln!(io.stderr, "nice: invalid adjustment '{raw}'");
+                let _ = writeln!(
+                    io.stderr,
+                    "nice: {}",
+                    tr!(
+                        ctx,
+                        "command.nice.error.invalid_adjustment",
+                        "invalid adjustment '{adjustment}'",
+                        adjustment = raw
+                    )
+                );
                 return Ok(125);
             }
         }
@@ -257,9 +266,14 @@ pub fn nice_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         if has_adjustment {
             let _ = writeln!(
                 io.stderr,
-                "nice: a command must be given with an adjustment"
+                "nice: {}",
+                tr!(
+                    ctx,
+                    "command.nice.error.command_required",
+                    "a command must be given with an adjustment"
+                )
             );
-            let _ = writeln!(io.stderr, "Try 'nice --help' for more information.");
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "nice"));
             return Ok(125);
         }
         writeln!(io.stdout, "{}", current_niceness())?;
@@ -277,15 +291,42 @@ pub fn nice_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut cmd = match resolve_child(&command, ctx) {
         ChildResolve::Found(launch) => build_child_command(&launch, &cmd_args, ctx),
         ChildResolve::NotFound => {
-            let _ = writeln!(io.stderr, "nice: '{command}': No such file or directory");
+            let _ = writeln!(
+                io.stderr,
+                "nice: {}",
+                tr!(
+                    ctx,
+                    "command.nice.error.no_such_file",
+                    "'{command}': No such file or directory",
+                    command = command
+                )
+            );
             return Ok(127);
         }
         ChildResolve::BadFormat => {
-            let _ = writeln!(io.stderr, "nice: '{command}': Exec format error");
+            let _ = writeln!(
+                io.stderr,
+                "nice: {}",
+                tr!(
+                    ctx,
+                    "command.nice.error.exec_format",
+                    "'{command}': Exec format error",
+                    command = command
+                )
+            );
             return Ok(126);
         }
         ChildResolve::NotExecutable | ChildResolve::NotADirectory => {
-            let _ = writeln!(io.stderr, "nice: '{command}': Permission denied");
+            let _ = writeln!(
+                io.stderr,
+                "nice: {}",
+                tr!(
+                    ctx,
+                    "command.nice.error.permission_denied",
+                    "'{command}': Permission denied",
+                    command = command
+                )
+            );
             return Ok(126);
         }
     };
@@ -298,7 +339,16 @@ pub fn nice_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(_) => {
-            let _ = writeln!(io.stderr, "nice: '{command}': Permission denied");
+            let _ = writeln!(
+                io.stderr,
+                "nice: {}",
+                tr!(
+                    ctx,
+                    "command.nice.error.permission_denied",
+                    "'{command}': Permission denied",
+                    command = command
+                )
+            );
             return Ok(126);
         }
     };
@@ -314,7 +364,15 @@ pub fn nice_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             applied = false;
         }
         if !applied {
-            let _ = writeln!(io.stderr, "nice: cannot set niceness: Permission denied");
+            let _ = writeln!(
+                io.stderr,
+                "nice: {}",
+                tr!(
+                    ctx,
+                    "command.nice.error.cannot_set_niceness",
+                    "cannot set niceness: Permission denied"
+                )
+            );
         }
         // resume the suspended main thread
         let resumed = resume_child_main_thread(child.id());
@@ -322,7 +380,16 @@ pub fn nice_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             // the C++ body terminates the stuck child and reports 125
             let _ = child.kill();
             let _ = child.wait();
-            let _ = writeln!(io.stderr, "nice: '{command}': Permission denied");
+            let _ = writeln!(
+                io.stderr,
+                "nice: {}",
+                tr!(
+                    ctx,
+                    "command.nice.error.permission_denied",
+                    "'{command}': Permission denied",
+                    command = command
+                )
+            );
             return Ok(125);
         }
         let mut code: u32 = 259; // STILL_ACTIVE

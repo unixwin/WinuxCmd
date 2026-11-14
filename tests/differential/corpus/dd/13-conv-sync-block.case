@@ -1,0 +1,8 @@
+cmd: dd
+args: if=f.txt of=out conv=sync,block bs=4 cbs=8
+timeout: 10
+setup: |
+  printf 'ab\nc' > f.txt
+files: out
+source: github.com/unixwin/WinuxCmd
+tags: corpus-expansion issue-1708

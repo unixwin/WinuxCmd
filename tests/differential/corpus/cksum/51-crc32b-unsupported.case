@@ -1,0 +1,7 @@
+cmd: cksum
+args: -a crc32b f.txt
+timeout: 10
+setup: |
+  printf 'x\n' > f.txt
+source: github.com/unixwin/WinuxCmd/issues/1710
+tags: issue-1710 algorithm

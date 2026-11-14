@@ -40,7 +40,8 @@ auto constexpr DD_OPTIONS = std::array{
     // [GNU] oseek=N: alias for seek=N (coreutils >= 9.1, uutils#5903)
     OPTION("oseek", "", "same as seek=N", STRING_TYPE),
     // [DIFFERS]
-    OPTION("conv", "", "convert the file as per the comma separated symbol "
+    OPTION("conv", "",
+           "convert the file as per the comma separated symbol "
            "list",
            STRING_TYPE),
     // [DIFFERS]
@@ -76,6 +77,27 @@ struct Config {
   bool sync_blocks = false;
   bool status_none = false;
   bool status_noxfer = false;
+  // [GNU] dd.c conversions[] (9.4 src/dd.c:270-285): the eight data
+  // conversions each imply the two-buffer output path; ascii/ebcdic/ibm
+  // also imply unblock/block. cbs=0 later clears block/unblock silently
+  // (dd.c:1609-1610), so the parsed form is kept separate.
+  bool conv_ascii = false;
+  bool conv_ebcdic = false;
+  bool conv_ibm = false;
+  bool conv_block = false;
+  bool conv_unblock = false;
+  bool conv_lcase = false;
+  bool conv_ucase = false;
+  bool conv_swab = false;
+  // [GNU] C_TWOBUFS stays set even when cbs=0 clears block/unblock; it only
+  // gates the partial-read warning here.
+  bool conv_twobufs = false;
+  bool bs_given = false;
+  bool iflag_fullblock = false;
+  bool iflag_direct = false;
+  bool oflag_direct = false;
+  bool iflag_nocache = false;
+  bool oflag_nocache = false;
   // [GNU] byte-count modes: an 'NB' operand value or the obsolescent
   // count_bytes/skip_bytes/seek_bytes flags make the number a byte count
   // instead of a block count (flags since 8.32, 'B' suffix since 9.1).
@@ -92,30 +114,44 @@ struct Config {
   std::optional<std::uintmax_t> bs_override;
 };
 
+// [GNU] dd.c:183-193: the summary counts full and partial input/output
+// blocks separately; truncated conv=block records get their own line.
 struct CopyStats {
-  std::uintmax_t in_records = 0;
-  std::uintmax_t out_records = 0;
+  std::uintmax_t in_full = 0;
+  std::uintmax_t in_partial = 0;
+  std::uintmax_t out_full = 0;
+  std::uintmax_t out_partial = 0;
   std::uintmax_t bytes_copied = 0;
+  std::uintmax_t truncated_records = 0;
 };
 
-enum class ReadBlockAction { success, recovered, stop };
+enum class ReadBlockAction { success, pad, skip, stop };
 
+// On a read error with conv=noerror, GNU seeks past the failed block
+// (dd.c:2220-2230) and continues; with conv=sync the block is replaced by
+// the pad byte (' ' under block/unblock, NUL otherwise - dd.c:2191-2193,
+// 2242-2248) and flows through the conversion pipeline like a normal
+// partial read. A failed seek still continues the copy but marks the run
+// failed, like GNU's advance_input_after_read_error error path.
 auto recover_read_block(
     std::function<bool(char*, std::size_t, std::size_t&)> read,
     std::function<bool(std::size_t)> seek, bool noerror, bool sync_blocks,
-    std::size_t request, std::vector<char>& output_buffer,
-    std::size_t& input_records, std::vector<char>& input_buffer,
-    std::size_t& bytes_read) -> ReadBlockAction {
+    char pad_byte, std::size_t request, std::vector<char>& input_buffer,
+    std::size_t& bytes_read, bool& recovery_seek_failed) -> ReadBlockAction {
   bytes_read = 0;
+  recovery_seek_failed = false;
   if (read(input_buffer.data(), request, bytes_read)) {
     return ReadBlockAction::success;
   }
   if (!noerror) return ReadBlockAction::stop;
 
   const bool can_continue = seek(request);
-  if (sync_blocks) output_buffer.insert(output_buffer.end(), request, '\0');
-  ++input_records;
-  return can_continue ? ReadBlockAction::recovered : ReadBlockAction::stop;
+  recovery_seek_failed = !can_continue;
+  if (!sync_blocks) return ReadBlockAction::skip;
+  // [GNU] the recovered block is a full ibs-sized pad block (dd.c:2191-2193
+  // pre-fills ibuf; 2242-2248 pads to input_blocksize).
+  std::fill(input_buffer.begin(), input_buffer.end(), pad_byte);
+  return ReadBlockAction::pad;
 }
 
 // [GNU] dd.c parse_integer: a non-negative decimal integer, one optional
@@ -321,8 +357,10 @@ auto print_try_help() -> void {
       "common.try_help", "Try '{} --help' for more information.", "dd"));
 }
 
-// [GNU] conv= symbols actually implemented here; other valid-but-unimplemented
-// GNU conversions are still diagnosed as unsupported.
+// [GNU] conv= symbol table (dd.c:270-285): ascii/ebcdic/ibm imply the
+// record conversions unblock/block respectively; all of the eight data
+// conversions also imply the two-buffer output path. Mutually exclusive
+// combinations are diagnosed after parsing, not here (dd.c:1665-1676).
 auto parse_conv_list(std::string_view value, Config& cfg) -> bool {
   std::stringstream ss{std::string(value)};
   std::string token;
@@ -341,13 +379,25 @@ auto parse_conv_list(std::string_view value, Config& cfg) -> bool {
       cfg.conv_sparse = true;
     } else if (token == "fsync" || token == "fdatasync") {
       cfg.conv_fsync = true;
-    } else if (token == "ascii" || token == "ebcdic" || token == "ibm" ||
-               token == "block" || token == "unblock" || token == "lcase" ||
-               token == "ucase" || token == "swab") {
-      safeErrorPrint("dd: unsupported conv flag '");
-      safeErrorPrint(token);
-      safeErrorPrint("' [DIFFERS: not supported on Windows]\n");
-      return false;
+    } else if (token == "ascii") {
+      cfg.conv_ascii = true;
+      cfg.conv_unblock = cfg.conv_twobufs = true;
+    } else if (token == "ebcdic") {
+      cfg.conv_ebcdic = true;
+      cfg.conv_block = cfg.conv_twobufs = true;
+    } else if (token == "ibm") {
+      cfg.conv_ibm = true;
+      cfg.conv_block = cfg.conv_twobufs = true;
+    } else if (token == "block") {
+      cfg.conv_block = cfg.conv_twobufs = true;
+    } else if (token == "unblock") {
+      cfg.conv_unblock = cfg.conv_twobufs = true;
+    } else if (token == "lcase") {
+      cfg.conv_lcase = cfg.conv_twobufs = true;
+    } else if (token == "ucase") {
+      cfg.conv_ucase = cfg.conv_twobufs = true;
+    } else if (token == "swab") {
+      cfg.conv_swab = cfg.conv_twobufs = true;
     } else if (token.empty()) {
       continue;
     } else {
@@ -357,13 +407,6 @@ auto parse_conv_list(std::string_view value, Config& cfg) -> bool {
       print_try_help();
       return false;
     }
-  }
-  if (cfg.conv_excl && cfg.conv_nocreat) {
-    // [GNU] die(), not usage(): no "Try 'dd --help'" suffix.
-    safeErrorPrintLn(
-        winux::i18n::translate("command.dd.error.cannot_combine_excl_nocreat",
-                               "dd: cannot combine excl and nocreat"));
-    return false;
   }
   return true;
 }
@@ -394,15 +437,31 @@ auto parse_io_flags(std::string_view value, bool input, Config& cfg) -> bool {
       continue;
     }
     if (input && token == "fullblock") {
-      // fullblock: accumulate full input blocks - honored conceptually; the
-      // obs aggregation below already produces identical output bytes.
+      // [GNU] iread_fullblock (dd.c:1155-1173): accumulate short reads
+      // into full input blocks.
+      cfg.iflag_fullblock = true;
+      continue;
+    }
+    if (token == "direct") {
+      // [DIFFERS] no Windows equivalent of O_DIRECT; tracked only for the
+      // GNU direct+nocache exclusivity check and the partial-read warning.
+      if (input)
+        cfg.iflag_direct = true;
+      else
+        cfg.oflag_direct = true;
+      continue;
+    }
+    if (token == "nocache") {
+      if (input)
+        cfg.iflag_nocache = true;
+      else
+        cfg.oflag_nocache = true;
       continue;
     }
     if (token == "append" || token == "binary" || token == "cio" ||
-        token == "direct" || token == "directory" || token == "dsync" ||
-        token == "noatime" || token == "nocache" || token == "noctty" ||
-        token == "nofollow" || token == "nolinks" || token == "sync" ||
-        token == "text") {
+        token == "directory" || token == "dsync" || token == "noatime" ||
+        token == "noctty" || token == "nofollow" || token == "nolinks" ||
+        token == "sync" || token == "text") {
       // [DIFFERS] no direct Windows console/file equivalent; accepted.
       continue;
     }
@@ -454,6 +513,7 @@ auto set_operand(Config& cfg, std::string_view name, std::string_view value,
     std::uintmax_t bs = 0;
     if (!parse_numeric_operand(value, 1, kIntMax - 1, bs)) return false;
     cfg.bs_override = bs;
+    cfg.bs_given = true;
   } else if (name == "cbs") {
     return parse_numeric_operand(value, 1, kIntMax, cfg.cbs);
   } else if (name == "count") {
@@ -530,6 +590,50 @@ auto parse_config(const CommandContext<DD_OPTIONS.size()>& ctx, Config& cfg)
   if (cfg.bs_override) {
     cfg.ibs = *cfg.bs_override;
     cfg.obs = *cfg.bs_override;
+  }
+
+  // [GNU] dd.c:1609-1610: without cbs= the record conversions block/unblock
+  // (including the ones implied by ascii/ebcdic/ibm) are dropped silently.
+  if (cfg.cbs == 0) {
+    cfg.conv_block = false;
+    cfg.conv_unblock = false;
+  }
+
+  // [GNU] dd.c:1665-1676: exclusivity is diagnosed only after every operand
+  // has been parsed; error(), not usage(), so there is no Try-help line.
+  const int charset_count = static_cast<int>(cfg.conv_ascii) +
+                            static_cast<int>(cfg.conv_ebcdic) +
+                            static_cast<int>(cfg.conv_ibm);
+  if (charset_count > 1) {
+    safeErrorPrintLn(winux::i18n::translate(
+        "command.dd.error.cannot_combine_charset",
+        "dd: cannot combine any two of {ascii,ebcdic,ibm}"));
+    return false;
+  }
+  if (cfg.conv_block && cfg.conv_unblock) {
+    safeErrorPrintLn(
+        winux::i18n::translate("command.dd.error.cannot_combine_block_unblock",
+                               "dd: cannot combine block and unblock"));
+    return false;
+  }
+  if (cfg.conv_lcase && cfg.conv_ucase) {
+    safeErrorPrintLn(
+        winux::i18n::translate("command.dd.error.cannot_combine_lcase_ucase",
+                               "dd: cannot combine lcase and ucase"));
+    return false;
+  }
+  if (cfg.conv_excl && cfg.conv_nocreat) {
+    safeErrorPrintLn(
+        winux::i18n::translate("command.dd.error.cannot_combine_excl_nocreat",
+                               "dd: cannot combine excl and nocreat"));
+    return false;
+  }
+  if ((cfg.iflag_direct && cfg.iflag_nocache) ||
+      (cfg.oflag_direct && cfg.oflag_nocache)) {
+    safeErrorPrintLn(
+        winux::i18n::translate("command.dd.error.cannot_combine_direct_nocache",
+                               "dd: cannot combine direct and nocache"));
+    return false;
   }
 
   return true;
@@ -697,8 +801,8 @@ auto flush_output_buffer(HANDLE output, std::vector<char>& pending,
     if (allowed < static_cast<std::uintmax_t>(chunk_size)) {
       // RLIMIT_FSIZE crossing: deliver the partial prefix (kernel
       // behavior), then die by SIGXFSZ - silently, like GNU dd.
-      if (allowed > 0 && !write_all(output, pending.data(),
-                                    static_cast<size_t>(allowed))) {
+      if (allowed > 0 &&
+          !write_all(output, pending.data(), static_cast<size_t>(allowed))) {
         return FlushResult::error;
       }
       return FlushResult::sigxfsz;
@@ -706,19 +810,362 @@ auto flush_output_buffer(HANDLE output, std::vector<char>& pending,
     if (!write_all(output, pending.data(), chunk_size)) {
       return FlushResult::error;
     }
-    ++stats.out_records;
+    // [GNU] write_output (dd.c:1258-1274): full obs blocks count as full
+    // output records; a shorter final flush is the partial record.
+    if (chunk_size == obs)
+      ++stats.out_full;
+    else
+      ++stats.out_partial;
     stats.bytes_copied += chunk_size;
     pending.erase(pending.begin(), pending.begin() + chunk_size);
   }
   return FlushResult::ok;
 }
 
-auto report_stats(const Config& cfg, const CopyStats& stats) -> void {
+// ---- GNU human_readable() port for the transfer summary ---------------
+// dd.c:739-815 print_xfer_stats renders "<n> <unit>" sizes and rates with
+// gnulib human.c (autoscale | round_to_nearest | space_before_unit | SI |
+// B). The byte counts go through the exact-integer path (human.c:269-345),
+// the rate through the floating-point autoscale path (human.c:227-263).
+
+inline constexpr std::array<char, 11> kSiPowerLetters = {
+    '\0', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y', 'R', 'Q'};
+
+auto human_suffix(std::uintmax_t base, int exponent) -> std::string {
+  if (exponent == 0) return " B";
+  const char letter =
+      (base == 1000 && exponent == 1) ? 'k' : kSiPowerLetters[exponent];
+  if (base == 1024) {
+    return std::string(" ") + letter + "iB";
+  }
+  return std::string(" ") + letter + 'B';
+}
+
+// Exact-integer autoscale (human.c use_integer_arithmetic branch): scale by
+// repeated division, keep one decimal digit below 10 units, round to
+// nearest.
+auto human_int(std::uintmax_t n, std::uintmax_t base) -> std::string {
+  constexpr int kExponentMax = 10;
+  std::uintmax_t amt = n;
+  unsigned tenths = 0;
+  unsigned rounding = 0;
+  int exponent = 0;
+  while (base <= amt && exponent < kExponentMax) {
+    const unsigned r10 = static_cast<unsigned>(amt % base) * 10 + tenths;
+    const unsigned r2 = (r10 % base) * 2 + (rounding >> 1);
+    amt /= base;
+    tenths = r10 / base;
+    rounding = (r2 < base ? static_cast<unsigned>((r2 + rounding) != 0)
+                          : 2 + static_cast<unsigned>(base < r2 + rounding));
+    ++exponent;
+  }
+
+  std::string number;
+  bool decimal_emitted = false;
+  if (amt < 10) {
+    if (2u < rounding + (tenths & 1)) {
+      ++tenths;
+      rounding = 0;
+      if (tenths == 10) {
+        ++amt;
+        tenths = 0;
+      }
+    }
+    // human_suppress_point_zero is not in human_opts: "1.0 kB" keeps the
+    // zero fraction.
+    if (amt < 10) {
+      number = std::to_string(amt) + "." + std::to_string(tenths);
+      decimal_emitted = true;
+      tenths = rounding = 0;
+    }
+  }
+  if (!decimal_emitted) {
+    if (5u < tenths + static_cast<unsigned>((rounding + (amt & 1)) > 0)) {
+      ++amt;
+      if (amt == base && exponent < kExponentMax) {
+        ++exponent;
+        return "1.0" + human_suffix(base, exponent);
+      }
+    }
+    number = std::to_string(amt);
+  }
+  return number + human_suffix(base, exponent);
+}
+
+// Floating-point autoscale for the transfer rate (human.c:227-263): the
+// exponent always advances at least once, so sub-kB/s rates still print
+// "x.y kB/s"; the single decimal survives only below 100 units ("88.3 kB",
+// but "885 kB").
+auto human_rate(std::uintmax_t bytes, std::uint64_t delta_ns) -> std::string {
+  if (delta_ns == 0) return "Infinity B/s";
+  constexpr int kExponentMax = 10;
+  const long double rate = static_cast<long double>(bytes) * 1.0e9L / delta_ns;
+  long double scale = 1;
+  int exponent = 0;
+  do {
+    scale *= 1000;
+    ++exponent;
+  } while (scale * 1000 <= rate && exponent < kExponentMax);
+  const long double damt = rate / scale;
+
+  char buf[64];
+  std::snprintf(buf, sizeof buf, "%.1Lf", damt);
+  std::string number = buf;
+  if (number.size() > 4) {
+    std::snprintf(buf, sizeof buf, "%.0Lf", damt);
+    number = buf;
+  }
+  const char letter = exponent == 1 ? 'k' : kSiPowerLetters[exponent];
+  return number + ' ' + letter + "B/s";
+}
+
+// [GNU] print_stats + print_xfer_stats (dd.c:739-847): "F+P records in",
+// "F+P records out", optional truncated-record line, then
+// "<n> bytes[(...)] copied, <secs> s, <rate>". Rates are masked by the
+// differential harness, but the shape must match GNU byte for byte.
+auto report_stats(const Config& cfg, const CopyStats& stats,
+                  std::chrono::steady_clock::time_point copy_started) -> void {
   if (cfg.status_none) return;
-  safeErrorPrintLn(std::to_string(stats.in_records) + " records in");
-  safeErrorPrintLn(std::to_string(stats.out_records) + " records out");
-  if (!cfg.status_noxfer) {
-    safeErrorPrintLn(std::to_string(stats.bytes_copied) + " bytes copied");
+  safeErrorPrintLn(
+      std::format("{}+{} records in", stats.in_full, stats.in_partial));
+  safeErrorPrintLn(
+      std::format("{}+{} records out", stats.out_full, stats.out_partial));
+  if (stats.truncated_records != 0) {
+    // [GNU] ngettext singular/plural (dd.c:832-836).
+    safeErrorPrintLn(
+        stats.truncated_records == 1
+            ? std::string("1 truncated record")
+            : std::format("{} truncated records", stats.truncated_records));
+  }
+  if (cfg.status_noxfer) return;
+
+  const auto now = std::chrono::steady_clock::now();
+  const auto delta_ns = static_cast<std::uint64_t>(std::max<std::int64_t>(
+      0,
+      std::chrono::duration_cast<std::chrono::nanoseconds>(now - copy_started)
+          .count()));
+  const double delta_s = static_cast<double>(delta_ns) / 1.0e9;
+  char delta_buf[40];
+  std::snprintf(delta_buf, sizeof delta_buf, "%g s", delta_s);
+
+  const std::uintmax_t n = stats.bytes_copied;
+  std::string line;
+  if (n < 1000) {
+    // The SI abbreviation has no prefix ("8 B"), so the plain pluralized
+    // form is used (dd.c:780-787).
+    line = std::format("{} {} copied", n, n == 1 ? "byte" : "bytes");
+  } else if (n < 1024) {
+    // SI has a prefix but IEC does not (dd.c:788-791).
+    line = std::format("{} bytes ({}) copied", n, human_int(n, 1000));
+  } else {
+    line = std::format("{} bytes ({}, {}) copied", n, human_int(n, 1000),
+                       human_int(n, 1024));
+  }
+  std::format_to(std::back_inserter(line), ", {}, {}", delta_buf,
+                 human_rate(n, delta_ns));
+  safeErrorPrintLn(line);
+}
+
+// ---- conv= data conversions (dd.c:1692-1772, 1960-2050) -----------------
+
+// The three POSIX 1003.1 charset tables, transcribed from dd.c:385-498.
+static constexpr std::array<unsigned char, 256> kAsciiToEbcdic = {
+    0x00, 0x01, 0x02, 0x03, 0x37, 0x2D, 0x2E, 0x2F, 0x16, 0x05, 0x25, 0x0B,
+    0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x3C, 0x3D, 0x32, 0x26,
+    0x18, 0x19, 0x3F, 0x27, 0x1C, 0x1D, 0x1E, 0x1F, 0x40, 0x5A, 0x7F, 0x7B,
+    0x5B, 0x6C, 0x50, 0x7D, 0x4D, 0x5D, 0x5C, 0x4E, 0x6B, 0x60, 0x4B, 0x61,
+    0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0x7A, 0x5E,
+    0x4C, 0x7E, 0x6E, 0x6F, 0x7C, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7,
+    0xC8, 0xC9, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xE2,
+    0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xAD, 0xE0, 0xBD, 0x9A, 0x6D,
+    0x79, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x91, 0x92,
+    0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6,
+    0xA7, 0xA8, 0xA9, 0xC0, 0x4F, 0xD0, 0x5F, 0x07, 0x20, 0x21, 0x22, 0x23,
+    0x24, 0x15, 0x06, 0x17, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x09, 0x0A, 0x1B,
+    0x30, 0x31, 0x1A, 0x33, 0x34, 0x35, 0x36, 0x08, 0x38, 0x39, 0x3A, 0x3B,
+    0x04, 0x14, 0x3E, 0xE1, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+    0x49, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x62, 0x63,
+    0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75,
+    0x76, 0x77, 0x78, 0x80, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F, 0x90, 0x6A,
+    0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA0, 0xAA, 0xAB, 0xAC, 0x4A, 0xAE, 0xAF,
+    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB,
+    0xBC, 0xA1, 0xBE, 0xBF, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xDA, 0xDB,
+    0xDC, 0xDD, 0xDE, 0xDF, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xFA, 0xFB,
+    0xFC, 0xFD, 0xFE, 0xFF};
+
+static constexpr std::array<unsigned char, 256> kAsciiToIbm = {
+    0x00, 0x01, 0x02, 0x03, 0x37, 0x2D, 0x2E, 0x2F, 0x16, 0x05, 0x25, 0x0B,
+    0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x3C, 0x3D, 0x32, 0x26,
+    0x18, 0x19, 0x3F, 0x27, 0x1C, 0x1D, 0x1E, 0x1F, 0x40, 0x5A, 0x7F, 0x7B,
+    0x5B, 0x6C, 0x50, 0x7D, 0x4D, 0x5D, 0x5C, 0x4E, 0x6B, 0x60, 0x4B, 0x61,
+    0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0x7A, 0x5E,
+    0x4C, 0x7E, 0x6E, 0x6F, 0x7C, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7,
+    0xC8, 0xC9, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xE2,
+    0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xAD, 0xE0, 0xBD, 0x5F, 0x6D,
+    0x79, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x91, 0x92,
+    0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6,
+    0xA7, 0xA8, 0xA9, 0xC0, 0x4F, 0xD0, 0xA1, 0x07, 0x20, 0x21, 0x22, 0x23,
+    0x24, 0x15, 0x06, 0x17, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x09, 0x0A, 0x1B,
+    0x30, 0x31, 0x1A, 0x33, 0x34, 0x35, 0x36, 0x08, 0x38, 0x39, 0x3A, 0x3B,
+    0x04, 0x14, 0x3E, 0xE1, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+    0x49, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x62, 0x63,
+    0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75,
+    0x76, 0x77, 0x78, 0x80, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F, 0x90, 0x9A,
+    0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA0, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
+    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB,
+    0xBC, 0xBD, 0xBE, 0xBF, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xDA, 0xDB,
+    0xDC, 0xDD, 0xDE, 0xDF, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xFA, 0xFB,
+    0xFC, 0xFD, 0xFE, 0xFF};
+
+static constexpr std::array<unsigned char, 256> kEbcdicToAscii = {
+    0x00, 0x01, 0x02, 0x03, 0x9C, 0x09, 0x86, 0x7F, 0x97, 0x8D, 0x8E, 0x0B,
+    0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x9D, 0x85, 0x08, 0x87,
+    0x18, 0x19, 0x92, 0x8F, 0x1C, 0x1D, 0x1E, 0x1F, 0x80, 0x81, 0x82, 0x83,
+    0x84, 0x0A, 0x17, 0x1B, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x05, 0x06, 0x07,
+    0x90, 0x91, 0x16, 0x93, 0x94, 0x95, 0x96, 0x04, 0x98, 0x99, 0x9A, 0x9B,
+    0x14, 0x15, 0x9E, 0x1A, 0x20, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6,
+    0xA7, 0xA8, 0xD5, 0x2E, 0x3C, 0x28, 0x2B, 0x7C, 0x26, 0xA9, 0xAA, 0xAB,
+    0xAC, 0xAD, 0xAE, 0xAF, 0xB0, 0xB1, 0x21, 0x24, 0x2A, 0x29, 0x3B, 0x7E,
+    0x2D, 0x2F, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xCB, 0x2C,
+    0x25, 0x5F, 0x3E, 0x3F, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xC1,
+    0xC2, 0x60, 0x3A, 0x23, 0x40, 0x27, 0x3D, 0x22, 0xC3, 0x61, 0x62, 0x63,
+    0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9,
+    0xCA, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x5E, 0xCC,
+    0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xE5, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78,
+    0x79, 0x7A, 0xD2, 0xD3, 0xD4, 0x5B, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xDB,
+    0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0x5D, 0xE6, 0xE7,
+    0x7B, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0xE8, 0xE9,
+    0xEA, 0xEB, 0xEC, 0xED, 0x7D, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50,
+    0x51, 0x52, 0xEE, 0xEF, 0xF0, 0xF1, 0xF2, 0xF3, 0x5C, 0x9F, 0x53, 0x54,
+    0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9,
+    0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0xFA, 0xFB,
+    0xFC, 0xFD, 0xFE, 0xFF};
+
+// Stream state for the conversion pipeline; mirrors the file-scope state
+// GNU keeps in trans_table/newline_character/saved_byte/col/pending_spaces.
+struct ConvPlan {
+  std::array<unsigned char, 256> trans_table{};
+  bool translation_needed = false;
+  char newline_character = '\n';
+  char space_character = ' ';
+  int saved_byte = -1;
+  std::uintmax_t col = 0;
+  std::uintmax_t pending_spaces = 0;
+  std::vector<char> swab_buffer;
+};
+
+// [GNU] apply_translations (dd.c:1692-1727): ascii is applied first, then
+// case folding, then ebcdic/ibm - the composition order matters when the
+// flags are combined (e.g. conv=ascii,ucase).
+auto build_conv_plan(const Config& cfg) -> ConvPlan {
+  ConvPlan plan;
+  for (int i = 0; i < 256; ++i) {
+    plan.trans_table[i] = static_cast<unsigned char>(i);
+  }
+  auto translate_charset = [&](const std::array<unsigned char, 256>& map) {
+    for (int i = 0; i < 256; ++i) {
+      plan.trans_table[i] = map[plan.trans_table[i]];
+    }
+    plan.translation_needed = true;
+  };
+  if (cfg.conv_ascii) translate_charset(kEbcdicToAscii);
+  if (cfg.conv_ucase) {
+    for (auto& cell : plan.trans_table) {
+      if (cell >= 'a' && cell <= 'z') cell = cell - 'a' + 'A';
+    }
+    plan.translation_needed = true;
+  } else if (cfg.conv_lcase) {
+    for (auto& cell : plan.trans_table) {
+      if (cell >= 'A' && cell <= 'Z') cell = cell - 'A' + 'a';
+    }
+    plan.translation_needed = true;
+  }
+  if (cfg.conv_ebcdic) {
+    translate_charset(kAsciiToEbcdic);
+    plan.newline_character = static_cast<char>(kAsciiToEbcdic['\n']);
+    plan.space_character = static_cast<char>(kAsciiToEbcdic[' ']);
+  } else if (cfg.conv_ibm) {
+    translate_charset(kAsciiToIbm);
+    plan.newline_character = static_cast<char>(kAsciiToIbm['\n']);
+    plan.space_character = static_cast<char>(kAsciiToIbm[' ']);
+  }
+  return plan;
+}
+
+// [GNU] swab_buffer (dd.c:1749-1772): swap input bytes pairwise, carrying
+// a leftover byte across block boundaries. The result lives in
+// plan.swab_buffer.
+auto swab_block(const char* in, std::size_t n, ConvPlan& plan)
+    -> std::span<const char> {
+  auto& out = plan.swab_buffer;
+  out.clear();
+  if (n == 0) return out;
+  const int prev = plan.saved_byte;
+  std::size_t m = n;
+  if ((prev < 0) == ((n & 1u) != 0u)) {
+    plan.saved_byte = static_cast<unsigned char>(in[--m]);
+  } else {
+    plan.saved_byte = -1;
+  }
+  out.reserve(m + 1);
+  if (prev < 0) {
+    for (std::size_t i = 0; i < m; i += 2) {
+      out.push_back(in[i + 1]);
+      out.push_back(in[i]);
+    }
+  } else {
+    out.push_back(in[0]);
+    out.push_back(static_cast<char>(prev));
+    for (std::size_t i = 2; i < m; i += 2) {
+      out.push_back(in[i]);
+      out.push_back(in[i - 1]);
+    }
+  }
+  return out;
+}
+
+// [GNU] copy_with_block (dd.c:1984-2011): newline-terminated records are
+// padded to cbs bytes with the space character; bytes beyond cbs count a
+// truncated record once per overlong record.
+auto copy_with_block(std::span<const char> data, ConvPlan& plan,
+                     std::uintmax_t cbs, std::vector<char>& output,
+                     CopyStats& stats) -> void {
+  for (const char c : data) {
+    if (c == plan.newline_character) {
+      while (plan.col < cbs) {
+        output.push_back(plan.space_character);
+        ++plan.col;
+      }
+      plan.col = 0;
+    } else {
+      if (plan.col == cbs)
+        ++stats.truncated_records;
+      else if (plan.col < cbs)
+        output.push_back(c);
+      ++plan.col;
+    }
+  }
+}
+
+// [GNU] copy_with_unblock (dd.c:2014-2048): trailing spaces in each cbs
+// record are replaced by a newline.
+auto copy_with_unblock(std::span<const char> data, ConvPlan& plan,
+                       std::uintmax_t cbs, std::vector<char>& output) -> void {
+  for (std::size_t i = 0; i < data.size(); ++i) {
+    const char c = data[i];
+    if (plan.col++ >= cbs) {
+      plan.col = plan.pending_spaces = 0;
+      --i;  // reprocess the char as the first of the next record
+      output.push_back(plan.newline_character);
+    } else if (c == plan.space_character) {
+      ++plan.pending_spaces;
+    } else {
+      while (plan.pending_spaces != 0) {
+        output.push_back(plan.space_character);
+        --plan.pending_spaces;
+      }
+      output.push_back(c);
+    }
   }
 }
 
@@ -793,9 +1240,22 @@ REGISTER_COMMAND(dd,
                  "\n"
                  "Each CONV symbol may be:\n"
                  "\n"
+                 "  ascii     from EBCDIC to ASCII\n"
+                 "  ebcdic    from ASCII to EBCDIC\n"
+                 "  ibm       from ASCII to alternate EBCDIC\n"
+                 "  block     pad newline-terminated records with spaces to "
+                 "cbs-size\n"
+                 "  unblock   replace trailing spaces in cbs-size records "
+                 "with newline\n"
+                 "  lcase     change upper case to lower case\n"
+                 "  ucase     change lower case to upper case\n"
                  "  sparse    try to seek rather than write all-NUL output "
                  "blocks\n"
-                 "  sync      pad every input block with NULs to ibs-size\n"
+                 "  swab      swap every pair of input bytes\n"
+                 "  sync      pad every input block with NULs to ibs-size; "
+                 "when used\n"
+                 "            with block or unblock, pad with spaces rather "
+                 "than NULs\n"
                  "  excl      fail if the output file already exists\n"
                  "  nocreat   do not create the output file\n"
                  "  notrunc   do not truncate the output file\n"
@@ -960,6 +1420,10 @@ REGISTER_COMMAND(dd,
     if (own_hOut && hOut != INVALID_HANDLE_VALUE) CloseHandle(hOut);
   };
 
+  // [GNU] start_time = gethrxtime() runs right before dd_copy (dd.c:2531),
+  // which covers the skip/seek phase below.
+  const auto copy_started = std::chrono::steady_clock::now();
+
   auto skip_bytes = cfg.skip_is_bytes ? std::optional<std::uintmax_t>(cfg.skip)
                                       : checked_product(cfg.skip, cfg.ibs);
   auto seek_bytes = cfg.seek_is_bytes ? std::optional<std::uintmax_t>(cfg.seek)
@@ -977,7 +1441,7 @@ REGISTER_COMMAND(dd,
           "command.dd.error.cannot_skip",
           "dd: {}: cannot skip: Value too large for defined data type",
           input_name()));
-      report_stats(cfg, CopyStats{});
+      report_stats(cfg, CopyStats{}, copy_started);
       close_handles();
       return 1;
     }
@@ -1015,7 +1479,7 @@ REGISTER_COMMAND(dd,
             safeErrorPrintLn(winux::i18n::format(
                 "command.dd.error.cannot_skip_errno", "dd: {}: cannot skip: {}",
                 input_name(), win32_posix_error_text(GetLastError())));
-            report_stats(cfg, CopyStats{});
+            report_stats(cfg, CopyStats{}, copy_started);
             close_handles();
             return 1;
           }
@@ -1024,7 +1488,7 @@ REGISTER_COMMAND(dd,
           safeErrorPrintLn(winux::i18n::format(
               "command.dd.error.cannot_skip_errno", "dd: {}: cannot skip: {}",
               input_name(), win32_posix_error_text(GetLastError())));
-          report_stats(cfg, CopyStats{});
+          report_stats(cfg, CopyStats{}, copy_started);
           close_handles();
           return 1;
         }
@@ -1038,7 +1502,7 @@ REGISTER_COMMAND(dd,
               "command.dd.error.read_named", "dd: error reading '{}': {}",
               cfg.input_given ? cfg.input_file : std::string("standard input"),
               win32_posix_error_text(GetLastError())));
-          report_stats(cfg, CopyStats{});
+          report_stats(cfg, CopyStats{}, copy_started);
           close_handles();
           return 1;
         }
@@ -1064,7 +1528,7 @@ REGISTER_COMMAND(dd,
             output_name(),
             seek_overflow ? std::string("Value too large for defined data type")
                           : std::string("Illegal seek")));
-        report_stats(cfg, CopyStats{});
+        report_stats(cfg, CopyStats{}, copy_started);
         close_handles();
         return 1;
       }
@@ -1073,7 +1537,7 @@ REGISTER_COMMAND(dd,
         safeErrorPrintLn(winux::i18n::format(
             "command.dd.error.cannot_seek_errno", "dd: {}: cannot seek: {}",
             output_name(), win32_posix_error_text(GetLastError())));
-        report_stats(cfg, CopyStats{});
+        report_stats(cfg, CopyStats{}, copy_started);
         close_handles();
         return 1;
       }
@@ -1085,7 +1549,7 @@ REGISTER_COMMAND(dd,
             "dd: failed to truncate to {} bytes in output file '{}': {}",
             *seek_bytes, cfg.output_file,
             win32_posix_error_text(GetLastError())));
-        report_stats(cfg, CopyStats{});
+        report_stats(cfg, CopyStats{}, copy_started);
         close_handles();
         return 1;
       }
@@ -1109,18 +1573,33 @@ REGISTER_COMMAND(dd,
   // RLIMIT_FSIZE: meter writes against the declared soft limit (issue
   // #1453). Opened after the seek/truncate handling so the frontier starts
   // at the real output position.
-  FsizeGuard fsize =
-      output_sink == OutputSink::handle
-          ? FsizeGuard::open(hOut, declared_fsize_limit())
-          : FsizeGuard{};
+  FsizeGuard fsize = output_sink == OutputSink::handle
+                         ? FsizeGuard::open(hOut, declared_fsize_limit())
+                         : FsizeGuard{};
   std::uintmax_t bytes_remaining =
       cfg.count_is_bytes ? cfg.count
                          : std::numeric_limits<std::uintmax_t>::max();
   std::random_device random_source;
 
+  ConvPlan conv = build_conv_plan(cfg);
+  // [GNU] the conv=sync pad byte is a space under block/unblock, NUL
+  // otherwise (dd.c:2191-2193, 2245-2248); it is applied to the input
+  // buffer BEFORE charset translation.
+  const char pad_byte = (cfg.conv_block || cfg.conv_unblock) ? ' ' : '\0';
+  const bool uses_two_bufs = !cfg.bs_given || cfg.conv_twobufs;
+  // [GNU] warn_partial_read (dd.c:1650-1659): a partial read is diagnosed
+  // once, on the read after it happened (dd.c:1133-1146), and only in the
+  // one-buffer mode when counting/skipping or using direct I/O.
+  bool warn_partial_read =
+      !uses_two_bufs && !cfg.iflag_fullblock &&
+      ((cfg.skip_is_bytes ? cfg.skip / cfg.ibs : cfg.skip) != 0 ||
+       (cfg.count_set && cfg.count != 0) || cfg.iflag_direct ||
+       cfg.oflag_direct);
+  std::uintmax_t prev_read_size = 0;
+
   while (!cfg.count_set ||
          (cfg.count_is_bytes ? bytes_remaining > 0
-                             : stats.in_records < cfg.count)) {
+                             : stats.in_full + stats.in_partial < cfg.count)) {
     std::size_t bytes_read = 0;
     DWORD request = static_cast<DWORD>(std::min<std::uintmax_t>(
         cfg.ibs,
@@ -1130,6 +1609,7 @@ REGISTER_COMMAND(dd,
       request = static_cast<DWORD>(bytes_remaining);
     }
     bool read_error = false;
+    bool recovery_seek_failed = false;
     std::string read_error_text;
     const auto action = recover_read_block(
         [&](char* data, std::size_t amount, std::size_t& got) {
@@ -1162,59 +1642,119 @@ REGISTER_COMMAND(dd,
               return false;
             }
           }
+          std::size_t total = 0;
           DWORD native_bytes = 0;
-          const bool ok = ReadFile(hIn, data, static_cast<DWORD>(amount),
-                                   &native_bytes, nullptr);
-          if (!ok) {
-            const DWORD err = GetLastError();
-            // A pipe whose write end closed (MSYS/Git-Bash pipelines) reports
-            // ERROR_BROKEN_PIPE; that is EOF, not a read failure. Treat it
-            // like ReadFile's normal EOF (TRUE + 0 bytes) so piped stdin
-            // terminates cleanly instead of reporting "dd: read error".
-            if (err == ERROR_BROKEN_PIPE || err == ERROR_HANDLE_EOF) {
-              got = 0;
-              read_error = false;
-              return true;
+          do {
+            const bool ok =
+                ReadFile(hIn, data + total, static_cast<DWORD>(amount - total),
+                         &native_bytes, nullptr);
+            if (!ok) {
+              const DWORD err = GetLastError();
+              // A pipe whose write end closed (MSYS/Git-Bash pipelines)
+              // reports ERROR_BROKEN_PIPE; that is EOF, not a read failure.
+              // Treat it like ReadFile's normal EOF (TRUE + 0 bytes) so
+              // piped stdin terminates cleanly.
+              if (err == ERROR_BROKEN_PIPE || err == ERROR_HANDLE_EOF) {
+                got = total;
+                read_error = false;
+                return true;
+              }
+              read_error_text = win32_posix_error_text(err);
+              read_error = true;
+              return false;
             }
-            read_error_text = win32_posix_error_text(err);
-          }
-          got = native_bytes;
-          read_error = !ok;
-          return ok;
+            total += native_bytes;
+            // [GNU] iread_fullblock (dd.c:1155-1173) loops until the block
+            // is full or EOF; a single read stops at the first result.
+          } while (cfg.iflag_fullblock && native_bytes != 0 && total < amount);
+          got = total;
+          read_error = false;
+          return true;
         },
         [&](std::size_t amount) { return seek_handle(hIn, amount); },
-        cfg.noerror && !cfg.input_file.empty(), cfg.sync_blocks, request,
-        output_buffer, stats.in_records, input_buffer, bytes_read);
+        cfg.noerror && !cfg.input_file.empty(), cfg.sync_blocks, pad_byte,
+        request, input_buffer, bytes_read, recovery_seek_failed);
     if (read_error) {
       safeErrorPrintLn(winux::i18n::format(
           "command.dd.error.read_named", "dd: error reading '{}': {}",
           cfg.input_given ? cfg.input_file : std::string("standard input"),
           read_error_text));
     }
+    if (recovery_seek_failed) read_failed = true;
     if (action == ReadBlockAction::stop) {
       if (read_error && (!cfg.noerror || cfg.input_file.empty())) {
         read_failed = true;
       }
       break;
     }
-    if (action == ReadBlockAction::recovered) continue;
-    if (bytes_read == 0) break;
-    if (cfg.count_is_bytes) {
-      bytes_remaining -= std::min<std::uintmax_t>(bytes_remaining, bytes_read);
-    }
+    if (action == ReadBlockAction::skip) continue;
 
-    ++stats.in_records;
-    output_buffer.insert(output_buffer.end(), input_buffer.begin(),
-                         input_buffer.begin() + bytes_read);
-    if (cfg.sync_blocks && bytes_read < request) {
-      // [GNU] conv=sync pads to cbs (conversion block size), not ibs
-      std::uintmax_t pad_target = cfg.cbs > 0 ? cfg.cbs : cfg.ibs;
-      if (bytes_read < pad_target) {
-        output_buffer.insert(output_buffer.end(),
-                             static_cast<size_t>(pad_target - bytes_read),
-                             '\0');
+    std::size_t n_bytes;
+    if (action == ReadBlockAction::pad) {
+      // [GNU] a noerror+sync recovery counts as a partial input record
+      // padded to ibs.
+      ++stats.in_partial;
+      n_bytes = static_cast<std::size_t>(cfg.ibs);
+    } else {
+      if (warn_partial_read && bytes_read > 0 && prev_read_size > 0 &&
+          prev_read_size < request) {
+        // [GNU] dd.c:1133-1146: diagnosed once, after the fact.
+        if (!cfg.status_none) {
+          safeErrorPrintLn(
+              prev_read_size == 1
+                  ? winux::i18n::translate(
+                        "command.dd.warning.partial_read_one",
+                        "dd: warning: partial read (1 byte); suggest "
+                        "iflag=fullblock")
+                  : winux::i18n::format(
+                        "command.dd.warning.partial_read",
+                        "dd: warning: partial read ({} bytes); suggest "
+                        "iflag=fullblock",
+                        prev_read_size));
+        }
+        warn_partial_read = false;
+      }
+      prev_read_size = read_error ? request : bytes_read;
+
+      if (bytes_read == 0) break;
+      if (cfg.count_is_bytes) {
+        bytes_remaining -=
+            std::min<std::uintmax_t>(bytes_remaining, bytes_read);
+      }
+      n_bytes = bytes_read;
+      if (n_bytes < cfg.ibs) {
+        ++stats.in_partial;
+        if (cfg.sync_blocks) {
+          // [GNU] conv=sync pads the input block to ibs (dd.c:2242-2248).
+          std::fill(input_buffer.begin() + n_bytes, input_buffer.end(),
+                    pad_byte);
+          n_bytes = static_cast<std::size_t>(cfg.ibs);
+        }
+      } else {
+        ++stats.in_full;
       }
     }
+
+    // [GNU] conversions run on the whole input block in this order:
+    // charset/case translation, then swab, then the record conversion
+    // (dd.c:2290-2304).
+    if (conv.translation_needed) {
+      for (std::size_t i = 0; i < n_bytes; ++i) {
+        input_buffer[i] = static_cast<char>(
+            conv.trans_table[static_cast<unsigned char>(input_buffer[i])]);
+      }
+    }
+    const std::span<const char> stage =
+        cfg.conv_swab ? swab_block(input_buffer.data(), n_bytes, conv)
+                      : std::span<const char>(input_buffer.data(), n_bytes);
+    if (cfg.conv_block) {
+      copy_with_block(stage, conv, cfg.cbs, output_buffer, stats);
+    } else if (cfg.conv_unblock) {
+      copy_with_unblock(stage, conv, cfg.cbs, output_buffer);
+    } else {
+      output_buffer.insert(output_buffer.end(), stage.begin(), stage.end());
+    }
+
     if (output_sink == OutputSink::full) {
       // [GNU] writes to /dev/full fail ENOSPC.
       safeErrorPrintLn(winux::i18n::format(
@@ -1223,8 +1763,8 @@ REGISTER_COMMAND(dd,
       write_failed = true;
       break;
     }
-    const FlushResult flushed_chunk = flush_output_buffer(
-        hOut, output_buffer, cfg.obs, stats, false, fsize);
+    const FlushResult flushed_chunk =
+        flush_output_buffer(hOut, output_buffer, cfg.obs, stats, false, fsize);
     if (flushed_chunk == FlushResult::sigxfsz) {
       // GNU dd dies by SIGXFSZ mid-copy: no diagnostic, no summary.
       close_handles();
@@ -1240,6 +1780,33 @@ REGISTER_COMMAND(dd,
     }
   }
 
+  if (!write_failed) {
+    // [GNU] epilogue (dd.c:2309-2334): flush a leftover conv=swab byte,
+    // pad a trailing conv=block record, terminate a trailing conv=unblock
+    // record.
+    if (conv.saved_byte >= 0) {
+      const char saved = static_cast<char>(conv.saved_byte);
+      if (cfg.conv_block) {
+        copy_with_block(std::span<const char>(&saved, 1), conv, cfg.cbs,
+                        output_buffer, stats);
+      } else if (cfg.conv_unblock) {
+        copy_with_unblock(std::span<const char>(&saved, 1), conv, cfg.cbs,
+                          output_buffer);
+      } else {
+        output_buffer.push_back(saved);
+      }
+    }
+    if (cfg.conv_block && conv.col > 0) {
+      while (conv.col < cfg.cbs) {
+        output_buffer.push_back(conv.space_character);
+        ++conv.col;
+      }
+    }
+    if (conv.col != 0 && cfg.conv_unblock) {
+      output_buffer.push_back(conv.newline_character);
+    }
+  }
+
   bool flushed = true;
   if (!write_failed) {
     if (output_sink == OutputSink::full) {
@@ -1251,8 +1818,8 @@ REGISTER_COMMAND(dd,
         write_failed = true;
       }
     } else {
-      const FlushResult tail = flush_output_buffer(hOut, output_buffer,
-                                                   cfg.obs, stats, true, fsize);
+      const FlushResult tail =
+          flush_output_buffer(hOut, output_buffer, cfg.obs, stats, true, fsize);
       flushed = tail == FlushResult::ok;
       if (tail == FlushResult::sigxfsz) {
         // GNU dd dies by SIGXFSZ mid-copy: no diagnostic, no summary.
@@ -1281,7 +1848,7 @@ REGISTER_COMMAND(dd,
   }
 
   close_handles();
-  report_stats(cfg, stats);
+  report_stats(cfg, stats, copy_started);
 
   return flushed && !read_failed && !write_failed ? 0 : 1;
 }

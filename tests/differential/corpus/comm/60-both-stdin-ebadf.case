@@ -1,0 +1,8 @@
+cmd: comm
+args: - -
+timeout: 10
+stdin: |
+  a
+  b
+source: github.com/unixwin/WinuxCmd/issues/1712
+tags: issue-1712 stdin ebadf

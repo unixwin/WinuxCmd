@@ -14,7 +14,7 @@
 import std;
 import core;
 import utils;
-import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -28,182 +28,6 @@ auto constexpr SUM_OPTIONS = std::array{
     OPTION("-s", "--sysv", "use System V sum algorithm (512-byte blocks)",
            BOOL_TYPE)};
 
-namespace sum_pipeline {
-namespace cp = core::pipeline;
-
-struct Config {
-  enum class Algorithm { Bsd, Sysv };
-
-  Algorithm algorithm = Algorithm::Bsd;
-  struct InputFile {
-    std::string path;
-    bool display_name = true;
-  };
-  SmallVector<InputFile, 64> files;
-};
-
-auto choose_algorithm(const CommandContext<SUM_OPTIONS.size()>& ctx)
-    -> Config::Algorithm {
-  // [GNU] sum.c: the LAST of -r/-s wins, in any spelling — separate,
-  // clustered (`-rs` = SysV), or long. Tokens the parser did not consume
-  // as options (operands, anything after `--`) never select an algorithm.
-  // The parser's occurrence list records exactly the consumed options in
-  // argv order, so derive the choice from it instead of rescanning the
-  // raw argument vector (#1370).
-  auto algorithm = Config::Algorithm::Bsd;
-  if (ctx.metas == nullptr) return algorithm;
-  for (const auto& occurrence : ctx.options.occurrences()) {
-    if (occurrence.index >= ctx.metas->size()) continue;
-    const auto& meta = (*ctx.metas)[occurrence.index];
-    if (meta.short_name == "-s" || meta.long_name == "--sysv") {
-      algorithm = Config::Algorithm::Sysv;
-    } else if (meta.short_name == "-r") {
-      algorithm = Config::Algorithm::Bsd;
-    }
-  }
-  return algorithm;
-}
-
-auto build_config(const CommandContext<SUM_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  Config cfg;
-  cfg.algorithm = choose_algorithm(ctx);
-
-  for (auto arg : ctx.positionals) {
-    std::string file_arg(arg);
-    if (contains_wildcard(file_arg)) {
-      auto glob_result = glob_expand(file_arg);
-      if (glob_result.expanded) {
-        for (const auto& file : glob_result.files) {
-          cfg.files.push_back({wstring_to_utf8(file), true});
-        }
-        continue;
-      }
-    }
-    cfg.files.push_back({file_arg, true});
-  }
-
-  if (cfg.files.empty()) {
-    cfg.files.push_back({"-", false});
-  }
-
-  return cfg;
-}
-
-auto calculate_checksum(const std::string& filename, uint32_t& block_count,
-                        Config::Algorithm algorithm) -> cp::Result<uint16_t> {
-  // [GNU] diagnostics use "sum: FILE: <strerror>" wording.
-  auto input_open_error = [](std::string_view path) -> std::string {
-    return std::string(path) + ": " + portable_digest::open_error_reason(path);
-  };
-
-  std::istream* input = &std::cin;
-  std::ifstream file;
-  if (filename == "-" || filename.empty()) {
-    // [GNU] closed stdin (<&-) reports "-: Bad file descriptor".
-    if (file_io::stdin_is_bad()) {
-      return std::unexpected(std::string(filename.empty() ? "-" : filename) +
-                             ": Bad file descriptor");
-    }
-    // [#1200] fd 0 uses the CRT's default text mode, where std::istream
-    // reads silently stop at the first 0x1A (Ctrl-Z) byte; sum counts raw
-    // bytes like GNU, so switch stdin to binary mode before reading
-    // (same idiom as cat/wc/tr).
-    _setmode(_fileno(stdin), _O_BINARY);
-  } else {
-    file.open(native_path::normalize_api_operand(filename), std::ios::binary);
-    if (!file) {
-      return std::unexpected(input_open_error(filename));
-    }
-    input = &file;
-  }
-
-  uint64_t total_bytes = 0;
-  uint32_t sysv_sum = 0;
-  uint32_t bsd_checksum = 0;
-  std::array<char, 32768> buffer{};
-
-  while (*input) {
-    input->read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    const std::streamsize read = input->gcount();
-    if (read <= 0) {
-      continue;
-    }
-
-    const auto bytes =
-        std::span<const char>(buffer.data(), static_cast<size_t>(read));
-    total_bytes += bytes.size();
-    if (algorithm == Config::Algorithm::Sysv) {
-      for (unsigned char byte : bytes) {
-        sysv_sum += byte;
-      }
-    } else {
-      for (unsigned char byte : bytes) {
-        bsd_checksum = (bsd_checksum >> 1) + ((bsd_checksum & 1U) << 15);
-        bsd_checksum += byte;
-        bsd_checksum &= 0xffffU;
-      }
-    }
-  }
-
-  if (input->bad()) {
-    // [GNU] digest.c reports a read failure per file as
-    // "sum: '<file>': <strerror>"; the old fixed string named neither
-    // the file nor the reason (audit #1462).
-    if (filename == "-" || filename.empty()) {
-      return std::unexpected(std::string("-: Bad file descriptor"));
-    }
-    return std::unexpected(input_open_error(filename));
-  }
-
-  const uint32_t block_size =
-      algorithm == Config::Algorithm::Sysv ? 512U : 1024U;
-  block_count =
-      static_cast<uint32_t>((total_bytes + block_size - 1U) / block_size);
-
-  if (algorithm == Config::Algorithm::Sysv) {
-    uint32_t folded = (sysv_sum & 0xffffU) + (sysv_sum >> 16U);
-    folded = (folded & 0xffffU) + (folded >> 16U);
-    return static_cast<uint16_t>(folded);
-  }
-
-  return static_cast<uint16_t>(bsd_checksum);
-}
-
-auto run(const Config& cfg) -> int {
-  bool all_ok = true;
-
-  for (const auto& file : cfg.files) {
-    uint32_t block_count = 0;
-    auto checksum_result =
-        calculate_checksum(file.path, block_count, cfg.algorithm);
-
-    if (!checksum_result) {
-      cp::report_error(checksum_result, L"sum");
-      all_ok = false;
-      continue;
-    }
-
-    char buf[64];
-    if (cfg.algorithm == Config::Algorithm::Bsd) {
-      snprintf(buf, sizeof(buf), "%05u %5u", *checksum_result, block_count);
-    } else {
-      snprintf(buf, sizeof(buf), "%u %u", *checksum_result, block_count);
-    }
-    safePrint(buf);
-
-    if (file.display_name) {
-      safePrint(" ");
-      safePrint(file.path);
-    }
-    safePrintLn("");
-  }
-
-  return all_ok ? 0 : 1;
-}
-
-}  // namespace sum_pipeline
-
 REGISTER_COMMAND(sum, "sum", "sum [OPTION]... [FILE]...",
                  "Checksum and count the blocks in a file.\n"
                  "\n"
@@ -215,13 +39,17 @@ REGISTER_COMMAND(sum, "sum", "sum [OPTION]... [FILE]...",
                  "  sum -r file.txt",
                  "cksum(1), md5sum(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
                  SUM_OPTIONS) {
-  using namespace sum_pipeline;
-
-  auto cfg_result = build_config(ctx);
-  if (!cfg_result) {
-    cp::report_error(cfg_result, L"sum");
-    return 1;
-  }
-
-  return run(*cfg_result);
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/sum.rs, sum_cmd — sum.c's BSD
+  // rotate/add and SysV 16-bit fold, block counts, and the last-of-(-r|-s)
+  // rule). The C++ pipeline, glob expansion and stream loop are deleted;
+  // REGISTER_COMMAND keeps the help/man metadata. ctx.raw_args reaches the
+  // library verbatim because sum.c parses its own getopt run.
+  //
+  // stdin shape: sum reads fd 0 when there is no FILE operand or an
+  // operand is "-", so the handler routes through ABI v2 STREAMING stdin —
+  // the host pull callback stays lazy, so file operands never touch fd 0
+  // (REPLACEMENT-RECIPE §5). The library owns the binary-mode read and the
+  // GNU diagnostics for an unreadable operand.
+  return winux::rust2::run_command_with_stdin_streaming("sum", ctx.raw_args);
 }

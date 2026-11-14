@@ -183,15 +183,23 @@ TEST(chown, chown_reference_verbose_reports_retained_ownership) {
   tmp.write("reference.txt", "ref");
   tmp.write("target.txt", "target");
 
+  const std::string owner = get_owner_name_for_path(tmp.path / "target.txt");
+  const std::string group = get_group_name_for_path(tmp.path / "target.txt");
+
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"chown.exe", {L"-v", L"--reference=reference.txt", L"target.txt"});
 
   auto r = p.run();
 
+  // GNU describe_change reports on stdout (src/chown-core.c:204), without
+  // a program-name prefix; --reference sets both fields so the retained
+  // line shows "owner:group" (probe: ownership of 'g' retained as
+  // root:root).
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_NE(r.stderr_text.find("chown: ownership of 'target.txt' retained as "),
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_NE(r.stdout_text.find("ownership of 'target.txt' retained as " +
+                               owner + ":" + group),
             std::string::npos);
 }
 
@@ -372,9 +380,9 @@ TEST(chown, chown_from_mismatching_group_skips_reference_processing) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_NE(r.stderr_text.find("retained as "), std::string::npos);
-  EXPECT_EQ(r.stderr_text.find("changing ownership of "), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_NE(r.stdout_text.find("retained as "), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("changed ownership of "), std::string::npos);
 }
 
 TEST(chown, chown_from_mismatching_group_skips_direct_processing) {
@@ -403,9 +411,9 @@ TEST(chown, chown_from_mismatching_group_skips_direct_processing) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_NE(r.stderr_text.find("retained as "), std::string::npos);
-  EXPECT_EQ(r.stderr_text.find("changing ownership of "), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_NE(r.stdout_text.find("retained as "), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("changed ownership of "), std::string::npos);
 }
 
 TEST(chown, chown_from_matching_group_reference_avoids_placeholder_warning) {
@@ -428,9 +436,9 @@ TEST(chown, chown_from_matching_group_reference_avoids_placeholder_warning) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_NE(r.stderr_text.find("retained as "), std::string::npos);
-  EXPECT_EQ(r.stderr_text.find("not supported on Windows"), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_NE(r.stdout_text.find("retained as "), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("not supported on Windows"), std::string::npos);
 }
 
 TEST(chown, chown_from_matching_group_direct_avoids_placeholder_warning) {
@@ -470,11 +478,13 @@ TEST(chown, chown_colon_only_verbose_reports_retained_ownership) {
 
   auto r = p.run();
 
+  // A bare ':' names no owner and no group, so GNU prints the bare
+  // "retained" form (no "as <spec>") on stdout.
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_NE(r.stderr_text.find("chown: ownership of 'target.txt' retained as "),
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_NE(r.stdout_text.find("ownership of 'target.txt' retained\n"),
             std::string::npos);
-  EXPECT_EQ(r.stderr_text.find("changing ownership of "), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("retained as "), std::string::npos);
 }
 
 TEST(chown, chown_current_owner_only_verbose_reports_retained_ownership) {
@@ -495,11 +505,235 @@ TEST(chown, chown_current_owner_only_verbose_reports_retained_ownership) {
 
   auto r = p.run();
 
+  // "owner:" fills the owner's login group, so GNU's retained line shows
+  // "owner:group" (probe: ownership of 'f' retained as root:root).
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_NE(r.stdout_text.find("ownership of 'target.txt' retained as "),
+            std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("changed ownership of "), std::string::npos);
+}
+
+// ===== #1701/#1702/#1703 pins (GNU coreutils 9.4 oracle, WSL probes) =====
+// GNU calls chown() unconditionally and lets the kernel decide: the file
+// owner may always "change" to the current uid/gid, so a no-op chown is a
+// success (chown_ok/chgrp_ok).  describe_change reports ride stdout,
+// -c prints only real changes, and ''/':' are no-op specs.
+
+TEST(chown, chown_noop_current_owner_succeeds_silently) {
+  TempDir tmp;
+  tmp.write("file.txt", "hello");
+
+  const std::string owner = get_owner_name_for_path(tmp.path / "file.txt");
+  EXPECT_FALSE(owner.empty());
+  if (owner.empty()) return;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {utf8_to_wstring(owner), L"file.txt"});
+
+  auto r = p.run();
+
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_NE(r.stderr_text.find("chown: ownership of 'target.txt' retained as "),
-            std::string::npos);
-  EXPECT_EQ(r.stderr_text.find("changing ownership of "), std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(chown, chown_noop_verbose_reports_retained_on_stdout) {
+  TempDir tmp;
+  tmp.write("file.txt", "hello");
+
+  const std::string owner = get_owner_name_for_path(tmp.path / "file.txt");
+  EXPECT_FALSE(owner.empty());
+  if (owner.empty()) return;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {L"-v", utf8_to_wstring(owner), L"file.txt"});
+
+  auto r = p.run();
+
+  // GNU: "ownership of 'f' retained as root" on stdout, no chown: prefix
+  // (src/chown-core.c:196 + :204).
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text,
+            "ownership of 'file.txt' retained as " + owner + "\n");
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(chown, chown_changes_is_silent_on_noop) {
+  TempDir tmp;
+  tmp.write("file.txt", "hello");
+
+  const std::string owner = get_owner_name_for_path(tmp.path / "file.txt");
+  EXPECT_FALSE(owner.empty());
+  if (owner.empty()) return;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {L"-c", utf8_to_wstring(owner), L"file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(chown, chown_owner_colon_noop_succeeds) {
+  TempDir tmp;
+  tmp.write("file.txt", "hello");
+
+  const std::string owner = get_owner_name_for_path(tmp.path / "file.txt");
+  EXPECT_FALSE(owner.empty());
+  if (owner.empty()) return;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {utf8_to_wstring(owner + ":"), L"file.txt"});
+
+  auto r = p.run();
+
+  // "owner:" also requests the login group; on this host a temp file's
+  // group is the caller's primary group, so the whole request is a no-op
+  // like GNU's "chown root: f" (rc 0).
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(chown, chown_from_self_noop_succeeds) {
+  TempDir tmp;
+  tmp.write("file.txt", "hello");
+
+  const std::string owner = get_owner_name_for_path(tmp.path / "file.txt");
+  EXPECT_FALSE(owner.empty());
+  if (owner.empty()) return;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {utf8_to_wstring("--from=" + owner),
+                       utf8_to_wstring(owner), L"file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(chown, chown_recursive_self_noop_succeeds) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir" / "sub");
+  tmp.write("dir/a.txt", "a");
+  tmp.write("dir/sub/b.txt", "b");
+
+  const std::string owner = get_owner_name_for_path(tmp.path / "dir/a.txt");
+  EXPECT_FALSE(owner.empty());
+  if (owner.empty()) return;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {L"-R", utf8_to_wstring(owner), L"dir"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(chown, chown_empty_spec_is_noop) {
+  TempDir tmp;
+  tmp.write("file.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {L"", L"file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(chown, chown_colon_spec_is_noop) {
+  TempDir tmp;
+  tmp.write("file.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {L":", L"file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(chown, chown_verbose_empty_spec_reports_bare_retained) {
+  TempDir tmp;
+  tmp.write("file.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {L"-v", L"", L"file.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text, "ownership of 'file.txt' retained\n");
+  EXPECT_TRUE(r.stderr_text.empty());
+}
+
+TEST(chown, chown_failed_change_reports_change_verb) {
+  TempDir tmp;
+  tmp.write("file.txt", "hello");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {L"Users", L"file.txt"});
+
+  auto r = p.run();
+
+  if (r.exit_code == 0) {
+    // Elevated host: the change really happened.
+    EXPECT_EQ(get_owner_name_for_path(tmp.path / "file.txt"), "Users");
+  } else {
+    // GNU reports the chown() failure as "changing ownership of", not the
+    // earlier access probe's "cannot access" (chown-core.c:481-486).
+    EXPECT_NE(r.stderr_text.find("changing ownership of 'file.txt'"),
+              std::string::npos);
+    EXPECT_EQ(r.stderr_text.find("cannot access"), std::string::npos);
+  }
+}
+
+TEST(chown, chown_verbose_failed_change_reports_failed_line_on_stdout) {
+  TempDir tmp;
+  tmp.write("file.txt", "hello");
+
+  const std::string owner = get_owner_name_for_path(tmp.path / "file.txt");
+  EXPECT_FALSE(owner.empty());
+  if (owner.empty()) return;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"chown.exe", {L"-v", L"Users", L"file.txt"});
+
+  auto r = p.run();
+
+  if (r.exit_code == 0) {
+    EXPECT_NE(r.stdout_text.find("changed ownership of 'file.txt'"),
+              std::string::npos);
+  } else {
+    // GNU prints "failed to change ownership of 'f' from <owner> to
+    // <spec>" on stdout next to the stderr diagnosis.
+    EXPECT_NE(r.stderr_text.find("changing ownership of 'file.txt'"),
+              std::string::npos);
+    EXPECT_NE(
+        r.stdout_text.find("failed to change ownership of 'file.txt' from " +
+                           owner + " to Users"),
+        std::string::npos);
+  }
 }
 
 TEST(chown, chown_recursive_dereference_requires_H_or_L) {
@@ -720,11 +954,11 @@ TEST(chown, chown_reference_drive_dialect_resolves_operand_file) {
   TEST_LOG("chown stderr", r.stderr_text);
 
   // Parse-layer verdict: the reference and the target resolve, so the
-  // no-op --reference form reports "retained" and succeeds (no security
-  // state is modified).
+  // no-op --reference form reports "retained" on stdout and succeeds (no
+  // security state is modified).
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(
-      r.stderr_text.find("ownership of '" +
+      r.stdout_text.find("ownership of '" +
                          chown_dialect_detail::utf8(operand) + "' retained as"),
       std::string::npos);
 }
@@ -753,7 +987,7 @@ TEST(chown, chown_reference_drive_dialect_cwd_on_other_drive_resolves_operand) {
   // The audit's exact misparse: from another drive the raw spelling probed
   // "<cwd>:\e\..." and reported the existing file as missing.
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_NE(r.stderr_text.find("retained as"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("retained as"), std::string::npos);
   EXPECT_EQ(r.stderr_text.find("failed to get attributes"), std::string::npos);
 }
 
@@ -801,7 +1035,7 @@ TEST(chown, chown_recursive_reference_drive_dialect_walks_operand_drive) {
   TEST_LOG("chown stderr", r.stderr_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_NE(r.stderr_text.find("retained as"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("retained as"), std::string::npos);
   EXPECT_FALSE(std::filesystem::exists(
       std::filesystem::path(std::wstring(1, tmp_drive) + L":\\e")));
 }

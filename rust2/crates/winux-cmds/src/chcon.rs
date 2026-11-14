@@ -205,24 +205,27 @@ pub fn chcon_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         };
 
     if p.positionals.is_empty() {
-        let _ = winux_core::usage_error(io, "chcon", "missing operand");
+        let _ = winux_core::usage_error(ctx, io, "chcon", &crate::messages::missing_operand(ctx));
         return Ok(1);
     }
     if !using_reference && !using_components && files.is_empty() {
         // probed J: `chcon plain.txt` -> missing operand after 'plain.txt'
         let _ = winux_core::usage_error(
+            ctx,
             io,
             "chcon",
-            &format!(
-                "missing operand after '{}'",
-                full_context.as_deref().unwrap_or("")
-            ),
+            &crate::messages::missing_after(ctx, full_context.as_deref().unwrap_or("")),
         );
         return Ok(1);
     }
     if files.is_empty() {
         // probed (reference/components with no file operand)
-        let _ = winux_core::usage_error(io, "chcon", "missing file operand");
+        let _ = winux_core::usage_error(
+            ctx,
+            io,
+            "chcon",
+            &crate::messages::missing_file_operand(ctx),
+        );
         return Ok(1);
     }
 
