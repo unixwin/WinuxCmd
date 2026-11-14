@@ -79,7 +79,7 @@ fn utf8_continuation(b: u8) -> bool {
     b & 0xC0 == 0x80
 }
 
-fn utf8_char_width_at(text: &[u8], pos: usize) -> usize {
+pub(crate) fn utf8_char_width_at(text: &[u8], pos: usize) -> usize {
     let lead = match text.get(pos) {
         Some(b) => *b,
         None => return 0,
@@ -130,7 +130,7 @@ fn is_word_char(b: u8) -> bool {
 
 /// Word character at a boundary: multi-byte codepoints count as word
 /// characters (regex.cppm:109-118).
-fn is_word_cp_at(text: &[u8], pos: usize) -> bool {
+pub(crate) fn is_word_cp_at(text: &[u8], pos: usize) -> bool {
     if pos >= text.len() {
         return false;
     }
@@ -146,7 +146,7 @@ fn is_word_cp_at(text: &[u8], pos: usize) -> bool {
     }
 }
 
-fn is_word_cp_before(text: &[u8], pos: usize) -> bool {
+pub(crate) fn is_word_cp_before(text: &[u8], pos: usize) -> bool {
     if pos == 0 {
         return false;
     }
@@ -630,6 +630,47 @@ impl Regex {
                 } else {
                     Vec::new()
                 }
+            }
+            Node::LineStart(delim) => {
+                if state.pos == 0 || text[state.pos - 1] == *delim {
+                    vec![state]
+                } else {
+                    Vec::new()
+                }
+            }
+            Node::LineEnd(delim) => {
+                if state.pos == text.len() || text[state.pos] == *delim {
+                    vec![state]
+                } else {
+                    Vec::new()
+                }
+            }
+            Node::BufferStart => {
+                if state.pos == 0 {
+                    vec![state]
+                } else {
+                    Vec::new()
+                }
+            }
+            Node::BufferEnd => {
+                if state.pos == text.len() {
+                    vec![state]
+                } else {
+                    Vec::new()
+                }
+            }
+            Node::DotRestricted {
+                exclude_newline,
+                reject_invalid_utf8,
+            } => {
+                if state.pos >= text.len() || (*exclude_newline && text[state.pos] == b'\n') {
+                    return Vec::new();
+                }
+                let w = utf8_char_width_at(text, state.pos);
+                if *reject_invalid_utf8 && w == 1 && text[state.pos] >= 0x80 {
+                    return Vec::new();
+                }
+                vec![advance(state, w)]
             }
             Node::CharClass { negated, atoms } => {
                 if state.pos < text.len()

@@ -70,6 +70,7 @@ pub mod realpath;
 pub mod rev;
 pub mod rmdir;
 pub mod runcon;
+pub mod sed;
 pub mod seq;
 pub mod shuf;
 pub mod sleep;
@@ -203,6 +204,8 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("date", date::date_cmd),
         ("du", du::du_cmd),
         ("pinky", pinky::pinky_cmd),
+        // sed lane (#1488): GNU sed 4.9 on winux-regex
+        ("sed", sed::sed_cmd),
         // #1488: GNU findutils 4.9 xargs (shared childproc spawner family)
         ("xargs", xargs::xargs_cmd),
         // #1488 grep wave: BRE/ERE via winux-regex; -P stays on the C++

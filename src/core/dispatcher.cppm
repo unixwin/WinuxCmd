@@ -1016,6 +1016,10 @@ auto classify_args_for_dispatch(
     std::span<const cmd::meta::OptionMeta> options) -> std::vector<ArgRole> {
   const auto policy = option_policy_for_command(cmd_name);
   std::vector<ArgRole> roles(args.size(), ArgRole::Data);
+  // A command that parses its own argv (sed) has no option token the
+  // pre-passes may act on: no abbreviation expansion, no --help/--version
+  // interception -- the handler owns them.
+  if (policy.all_args_are_positionals) return roles;
 
   bool end_of_options = false;
   size_t positionals = 0;

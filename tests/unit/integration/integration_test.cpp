@@ -286,7 +286,9 @@ TEST(integration, sed_wildcard_pipe_grep) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"sed.exe", {L"s/old/new/", L"*.txt"});
+  // [GNU] sed does not glob its file operands (the shell owns that, see
+  // sed.wildcard_files); the pipeline itself is what this test covers.
+  p.add(L"sed.exe", {L"s/old/new/", L"a.txt", L"b.txt"});
   p.add(L"grep.exe", {L"new"});
 
   auto r = p.run();

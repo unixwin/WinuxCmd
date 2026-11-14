@@ -112,26 +112,17 @@ pub fn resolve(ctx: &Ctx, operand: impl AsRef<Path>) -> PathBuf {
             && (Path::new(&mapped).is_absolute()
                 || winux_core::path::resolve_pseudo_device(s).is_some())
         {
-            return PathBuf::from(mapped);
+            return literal_operand_path(&mapped);
         }
     }
     if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        let joined = ctx.cwd.join(p);
-        // the NUL.txt trap (#1333): a leaf whose stem is a DOS device name
-        // ("NUL.txt") resolves onto the DEVICE namespace through the plain
-        // Win32 open ("NUL.txt" answers a stat!), while GNU and the 1.x
-        // applets (native_path.cppm to_extended_path_preserving, the
-        // has_device_stem_with_extension_w branch) treat it as a literal
-        // on-disk name. Probes and opens go through the \\?\ extended
-        // spelling, which disables the device-stem resolution.
-        let text = joined.to_string_lossy().into_owned();
-        if winux_core::path::has_device_stem_with_extension(&text) {
-            return extended_literal(&text);
-        }
-        joined
+        return literal_operand_path(&p.to_string_lossy());
     }
+    let joined = ctx.cwd.join(p);
+    // the NUL.txt trap (#1333) and the literal trailing-dot/space names
+    // (#1283/#1332) resolve through the \\?\ namespace; every other
+    // operand keeps the plain cwd join.
+    literal_operand_path(&joined.to_string_lossy())
 }
 
 /// The \\?\ literal spelling of a native absolute path (UNC through the
@@ -144,6 +135,80 @@ fn extended_literal(native_abs: &str) -> PathBuf {
         return PathBuf::from(format!(r"\\?\UNC\{rest}"));
     }
     PathBuf::from(format!(r"\\?\{native_abs}"))
+}
+
+/// native_path.cppm has_literal_dot_space_component (#1283/#1332): a
+/// component whose last character is '.' or ' ' (other than "." / "..")
+/// names a literal on-disk entry under the NT namespace, but every plain
+/// Win32 path call strips the suffix and reaches a DIFFERENT object — so
+/// such operands must open through the \\?\ spelling.
+fn has_literal_dot_space_component(native: &str) -> bool {
+    native.split(['\\', '/']).any(|component| {
+        !component.is_empty()
+            && component != "."
+            && component != ".."
+            && (component.ends_with('.') || component.ends_with(' '))
+    })
+}
+
+/// Absolute \\?\ (or \\?\UNC\) spelling of `native` with `.`/`..` folded
+/// lexically — the extended namespace itself does not normalize them, so the
+/// fold is ours (native_path.cppm to_extended_path does the same split).
+fn extended_preserving(native: &str) -> PathBuf {
+    if native.starts_with(r"\\?\") || native.starts_with(r"\\.\") {
+        return PathBuf::from(native);
+    }
+    use std::path::Component;
+    let mut prefix: Option<String> = None;
+    let mut parts: Vec<String> = Vec::new();
+    for component in Path::new(native).components() {
+        match component {
+            Component::Prefix(p) => {
+                prefix = Some(p.as_os_str().to_string_lossy().into_owned())
+            }
+            Component::RootDir => {}
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(name) => {
+                parts.push(name.to_string_lossy().into_owned())
+            }
+        }
+    }
+    let body = parts.join("\\");
+    let Some(prefix) = prefix else {
+        // Rooted but prefix-less ("\x"): the caller joined the cwd, so this
+        // only happens for a malformed absolute spelling; keep it verbatim.
+        return PathBuf::from(native);
+    };
+    if let Some(unc) = prefix.strip_prefix(r"\\") {
+        let rest = if body.is_empty() {
+            unc.to_string()
+        } else {
+            format!("{unc}\\{body}")
+        };
+        return PathBuf::from(format!(r"\\?\UNC\{rest}"));
+    }
+    let rest = if body.is_empty() {
+        format!("{prefix}\\")
+    } else {
+        format!("{prefix}\\{body}")
+    };
+    PathBuf::from(format!(r"\\?\{rest}"))
+}
+
+/// Resolve an operand the way the 1.x native_path boundary did: the extended
+/// spelling wins only for operands the Win32 plain path cannot address
+/// (#1332 trailing dot/space components, #1333 device-stem leaves).
+fn literal_operand_path(native: &str) -> PathBuf {
+    if has_literal_dot_space_component(native) {
+        return extended_preserving(native);
+    }
+    if winux_core::path::has_device_stem_with_extension(native) {
+        return extended_literal(native);
+    }
+    PathBuf::from(native)
 }
 
 /// Lexical normalization used by the `-m` (no existence check) modes:
