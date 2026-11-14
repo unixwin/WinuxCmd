@@ -34,8 +34,20 @@
 //!   `posix-awk` have no GNU operators (`\w` is the letter `w`).
 //!
 //! The rewrite never changes capture numbering: groups map 1:1.
+//!
+//! # Relationship to [`CompileOptions`]
+//!
+//! Since the regex-unify lane, [`CompileOptions`] is the canonical shape for
+//! every non-grep dialect: the syntax-bit deltas the native parser can
+//! express directly ([`CompileOptions::posix_strict`] — glibc
+//! RE_CONTEXT_INVALID_DUP / RE_CONTEXT_INVALID_OPS and the strict interval
+//! reader — and [`CompileOptions::no_gnu_ops`]) are carried there, while the
+//! *token classification* differences a BRE/ERE parser cannot represent
+//! (emacs' literal `( | { }`, awk's bracket escapes, awk's absent intervals
+//! and back-references) stay in the byte rewrite. [`Dialect::options`] is the
+//! single mapping table; [`compile`] is the one-line join of the two.
 
-use crate::{Error, ErrorKind, Regex, Syntax};
+use crate::{CompileOptions, Error, ErrorKind, Regex, Syntax};
 
 /// A GNU regex syntax family (findutils `-regextype` name table order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +117,26 @@ impl Dialect {
     fn gnu_ops(self) -> bool {
         !matches!(self, Dialect::Awk | Dialect::PosixAwk)
     }
+
+    /// The [`CompileOptions`] for this family: the one mapping table from
+    /// findutils `-regextype` names to the engine's dialect options. Families
+    /// whose glibc syntax bits are plain grep BRE/ERE (or whose deltas live
+    /// in the rewrite) take [`CompileOptions::default`].
+    pub fn options(self, ignore_case: bool) -> CompileOptions {
+        let strict = matches!(
+            self,
+            Dialect::PosixBasic
+                | Dialect::Ed
+                | Dialect::Sed
+                | Dialect::PosixExtended
+                | Dialect::PosixAwk
+        );
+        CompileOptions {
+            ignore_case,
+            posix_strict: strict,
+            ..CompileOptions::default()
+        }
+    }
 }
 
 /// Compile failure of a dialect pattern: either an engine error or the
@@ -151,10 +183,10 @@ impl From<Error> for DialectError {
 /// (find `-iregex`).
 pub fn compile(dialect: Dialect, pattern: &[u8], ignore_case: bool) -> Result<Regex, DialectError> {
     let (syntax, native) = translate(dialect, pattern)?;
-    Ok(Regex::compile_bytes_ignore_case(
+    Ok(Regex::compile_with(
         syntax,
         &native,
-        ignore_case,
+        dialect.options(ignore_case),
     )?)
 }
 

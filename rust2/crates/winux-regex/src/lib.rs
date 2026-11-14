@@ -37,8 +37,8 @@
 //! ```
 
 pub mod ast;
-pub mod dialect;
 pub mod dfa;
+pub mod dialect;
 pub(crate) mod fastpath;
 pub mod matcher;
 pub mod parser;
@@ -363,6 +363,10 @@ impl Regex {
     /// bounds; the backtracker then runs once, anchored at the match start,
     /// only when the pattern has capture groups (same spans and captures as
     /// `find_at_bytes`, far fewer futile attempts).
+    ///
+    /// A bounds disagreement is unreachable by construction (see
+    /// `tests/pike_equiv.rs`); were it to happen, the call returns the exact
+    /// legacy answer rather than a match with empty captures.
     pub fn find_at_bytes_with(
         &self,
         cache: &mut MatchCache,
@@ -407,21 +411,20 @@ impl Regex {
         }
         match self.match_at_bytes(text, begin) {
             Some(m) if m.end == end => Some(m),
+            // Invariant (pinned by tests/pike_equiv.rs): the NFA and the
+            // backtracker agree on the leftmost-longest bounds, because they
+            // run the same AST predicates over the same candidate starts. An
+            // all-unmatched capture vector here would silently make `\1`..`\9`
+            // expand to nothing in sed/grep output — a wrong RESULT, not a
+            // slow one — so a disagreement falls back to the exact legacy
+            // path instead of inventing spans.
             _ => {
-                let mut captures = vec![
-                    Submatch {
-                        begin: 0,
-                        end: 0,
-                        matched: false
-                    };
-                    self.capture_count + 1
-                ];
-                captures[0] = whole;
-                Some(Match {
-                    begin,
-                    end,
-                    captures,
-                })
+                debug_assert!(
+                    false,
+                    "NFA bounds {begin}..{end} disagree with the backtracker; \
+                     falling back to find_at_bytes"
+                );
+                self.find_at_bytes(text, start)
             }
         }
     }

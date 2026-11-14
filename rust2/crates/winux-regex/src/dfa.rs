@@ -40,7 +40,10 @@
 //!
 //! Back-references make the language non-regular: [`LineDfa::new`] returns
 //! `None` for them (and for NFAs above a size cap), and the caller keeps the
-//! interpreter.
+//! interpreter. The same `None` is returned for the dialect-only node kinds
+//! of [`crate::CompileOptions`] (sed `M` line anchors, `` \` ``/`\'` buffer
+//! anchors, the restricted `.`): this model's `eol` already delimits lines
+//! and it carries no buffer-anchor state, so those stay on the interpreter.
 //!
 //! # Scanning model
 //!
@@ -183,13 +186,6 @@ impl Nfa {
         let eol = self.eol;
         let id = match node {
             Node::Empty => next,
-            // sed-dialect nodes are not modeled by the grep line DFA; decline
-            // so the caller keeps the interpreter path.
-            Node::LineStart(_)
-            | Node::LineEnd(_)
-            | Node::BufferStart
-            | Node::BufferEnd
-            | Node::DotRestricted { .. } => return None,
             Node::Literal(c) => {
                 let c = *c;
                 self.bytes(ByteSet::from_fn(eol, |b| chars_equal(ic, b, c)), next)
@@ -253,6 +249,16 @@ impl Nfa {
             }
             Node::Capture { child, .. } => self.build(child, ic, next)?,
             Node::BackReference(_) => return None,
+            // Dialect-only nodes (sed `M` line anchors, `` \` ``/`\'` buffer
+            // anchors, the restricted `.`) are not part of this line-DFA
+            // model: its eol byte already delimits lines and it has no
+            // buffer-anchor state. Unsupported here means "keep the
+            // interpreter", so the answer stays exact.
+            Node::LineStart(_)
+            | Node::LineEnd(_)
+            | Node::BufferStart
+            | Node::BufferEnd
+            | Node::DotRestricted { .. } => return None,
             Node::Repeat { min, max, child } => {
                 // The interpreter ends a repeat at the first EMPTY
                 // iteration and lets the remaining copies count as empty;
@@ -311,15 +317,15 @@ fn nullable(node: &Node) -> bool {
         Node::Empty
         | Node::AnchorStart
         | Node::AnchorEnd
-        | Node::WordStart
-        | Node::WordEnd
-        | Node::WordBoundary
-        | Node::NotWordBoundary
         | Node::LineStart(_)
         | Node::LineEnd(_)
         | Node::BufferStart
-        | Node::BufferEnd => true,
-        Node::Literal(_) | Node::Dot | Node::CharClass { .. } | Node::DotRestricted { .. } => false,
+        | Node::BufferEnd
+        | Node::WordStart
+        | Node::WordEnd
+        | Node::WordBoundary
+        | Node::NotWordBoundary => true,
+        Node::Literal(_) | Node::Dot | Node::DotRestricted { .. } | Node::CharClass { .. } => false,
         Node::BackReference(_) => true,
         Node::Sequence(c) => c.iter().all(nullable),
         Node::Alternation(c) => c.iter().any(nullable),
@@ -333,6 +339,10 @@ fn has_assertion(node: &Node) -> bool {
     match node {
         Node::AnchorStart
         | Node::AnchorEnd
+        | Node::LineStart(_)
+        | Node::LineEnd(_)
+        | Node::BufferStart
+        | Node::BufferEnd
         | Node::WordStart
         | Node::WordEnd
         | Node::WordBoundary
