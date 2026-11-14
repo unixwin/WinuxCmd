@@ -17,6 +17,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+if __package__:
+    from .i18n_rust import extract_rust_messages
+else:
+    from i18n_rust import extract_rust_messages
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SUFFIXES = {".cpp", ".cppm", ".h", ".hpp"}
 # The configured OpenAI-compatible gateway exposes this model under the LUNA
@@ -441,7 +446,9 @@ MANUAL_MESSAGES = {
     "common.error.result_out_of_range": ": Numerical result out of range",
     "command.stdbuf.error.invalid_mode": "invalid mode '{}'",
     "command.stdbuf.error.mode_required": "you must specify a buffering mode option",
-    "command.nproc.error.invalid_number": "invalid number: '{}'",
+    # command.nproc.error.invalid_number moved to the rust2 nproc.rs tr! call
+    # (wave2a deleted the C++ body; extraction now owns the key with the
+    # named placeholder {raw}).
     "common.error.tab_ascending": "tab sizes must be ascending",
     "common.error.tab_repeat_last": "repeat tab stop must be last",
     "common.error.tab_value_too_large": "tab stop value is too large",
@@ -603,6 +610,10 @@ def extract(source_root: Path) -> dict:
                         and fallback):
                     messages.setdefault(key, fallback)
     messages.update(MANUAL_MESSAGES)
+    for key, fallback in extract_rust_messages(ROOT / "rust2" / "crates").items():
+        if key in messages and messages[key] != fallback:
+            raise ValueError(f"conflicting C++/Rust I18N fallbacks: {key}")
+        messages[key] = fallback
     return {"schema": 1, "locale": "en-US", "messages": dict(sorted(messages.items()))}
 
 

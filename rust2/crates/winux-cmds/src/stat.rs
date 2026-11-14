@@ -618,13 +618,7 @@ fn collect_fs_info(entry: &StatEntry, ctx: &Ctx) -> Option<FsInfo> {
                 total_free: *mut u64,
             ) -> i32;
         }
-        let mut volume_root = mount_point(
-            &Ctx {
-                cwd: ctx.cwd.clone(),
-                env: ctx.env,
-            },
-            &entry.resolved,
-        );
+        let mut volume_root = mount_point(ctx, &entry.resolved);
         if !volume_root.ends_with('\\') {
             volume_root.push('\\');
         }

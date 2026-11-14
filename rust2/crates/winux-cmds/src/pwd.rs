@@ -159,10 +159,7 @@ mod tests {
             let mut sc = ScratchCtx::new("pwd-dot");
             sc.env.set("PWD", pwd.as_ref());
             // The command's cwd must be the dir PWD names, so same_dir holds.
-            let ctx = Ctx {
-                cwd: base.dir.clone(),
-                env: &sc.env,
-            };
+            let ctx = Ctx::new(base.dir.clone(), &sc.env);
             let args = ["-L".into()];
             let r = super::pwd_cmd(&args, &mut io.split(), &ctx).unwrap();
             assert_eq!(r, 0);
