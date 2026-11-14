@@ -60,7 +60,7 @@ use crate::argopt::{self, OptSpec};
 use crate::digest::{blake2b, hex, md5, sha1, sha224, sha256, sha384, sha512};
 use crate::fsutil::resolve;
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -549,16 +549,40 @@ fn run(
                 Ok(0) => {}
                 Ok(v) => bits = v,
                 Err(kind) => {
-                    let _ = writeln!(io.stderr, "{prog}: invalid length: '{raw}'");
+                    // -l is b2sum-only (allows_length gates the parse), so
+                    // these keys live under command.b2sum — no family match.
+                    let _ = writeln!(
+                        io.stderr,
+                        "{prog}: {}",
+                        tr!(
+                            ctx,
+                            "command.b2sum.error.invalid_length",
+                            "invalid length: '{value}'",
+                            value = raw
+                        )
+                    );
                     match kind {
                         LengthError::NotMultiple => {
-                            let _ = writeln!(io.stderr, "{prog}: length is not a multiple of 8");
+                            let _ = writeln!(
+                                io.stderr,
+                                "{prog}: {}",
+                                tr!(
+                                    ctx,
+                                    "command.b2sum.error.length_not_multiple",
+                                    "length is not a multiple of 8"
+                                )
+                            );
                         }
                         LengthError::TooLong => {
                             let _ = writeln!(
                                 io.stderr,
-                                "{prog}: maximum digest length for '{}' is 512 bits",
-                                algo.name()
+                                "{prog}: {}",
+                                tr!(
+                                    ctx,
+                                    "command.b2sum.error.max_digest_length",
+                                    "maximum digest length for '{algo}' is 512 bits",
+                                    algo = algo.name()
+                                )
                             );
                         }
                         LengthError::NotANumber => {}
@@ -592,28 +616,13 @@ fn run(
     // GNU main() option-validation order (coreutils digest.c:1495-1586);
     // each violation is a usage error with status 1.
     if zero && check {
-        return usage_fail(
-            ctx,
-            prog,
-            "the --zero option is not supported when verifying checksums",
-            io,
-        );
+        return usage_fail(ctx, prog, &family::zero_with_check(ctx, prog), io);
     }
     if tag && check {
-        return usage_fail(
-            ctx,
-            prog,
-            "the --tag option is meaningless when verifying checksums",
-            io,
-        );
+        return usage_fail(ctx, prog, &family::tag_with_check(ctx, prog), io);
     }
     if mode_flag.is_some() && check {
-        return usage_fail(
-            ctx,
-            prog,
-            "the --binary and --text options are meaningless when verifying checksums",
-            io,
-        );
+        return usage_fail(ctx, prog, &family::binary_text_with_check(ctx, prog), io);
     }
     for (set, opt) in [
         (ignore_missing, "--ignore-missing"),
@@ -623,12 +632,7 @@ fn run(
         (strict, "--strict"),
     ] {
         if set && !check {
-            return usage_fail(
-                ctx,
-                prog,
-                &format!("the {opt} option is meaningful only when verifying checksums"),
-                io,
-            );
+            return usage_fail(ctx, prog, &family::option_needs_check(ctx, prog, opt), io);
         }
     }
 
@@ -679,7 +683,8 @@ fn run(
                 Ok(mut f) => {
                     let mut buf = Vec::new();
                     if std::io::copy(&mut f, &mut buf).is_err() {
-                        let _ = writeln!(io.stderr, "{prog}: {file}: read error");
+                        let _ =
+                            writeln!(io.stderr, "{prog}: {}", family::read_error(ctx, prog, file));
                         failed = true;
                         continue;
                     }
@@ -695,7 +700,11 @@ fn run(
                     // with EACCES/ERROR_INVALID_NAME, so the reason comes
                     // from the shared GNU recovery helper.
                     let reason = crate::fsutil::gnu_open_reason(ctx, file, &e, false);
-                    let _ = writeln!(io.stderr, "{prog}: {}: {reason}", quotef(file.as_bytes()));
+                    let _ = writeln!(
+                        io.stderr,
+                        "{prog}: {}",
+                        family::open_failed(ctx, prog, &quotef(file.as_bytes()), &reason)
+                    );
                     failed = true;
                     continue;
                 }
@@ -1003,11 +1012,783 @@ pub(crate) fn quotef(name: &[u8]) -> String {
     crate::fsutil::quotef(&String::from_utf8_lossy(name))
 }
 
-fn plural<'a>(n: u64, one: &'a str, many: &'a str) -> &'a str {
-    if n == 1 {
-        one
-    } else {
-        many
+// ---------------------------------------------------------------------------
+// tr! message table. The whole family shares GNU digest.c's wording and tr!
+// needs literal keys, so each command spells its own `command.<cmd>.*` key —
+// the same per-command duplication fsutil's preserve-root refusal lines use
+// (a locale catalog keeps each command's strings under its own namespace).
+// The `prog:` prefix stays in code; only the inner message is keyed.
+// ---------------------------------------------------------------------------
+mod family {
+    use winux_core::{tr, Ctx};
+
+    pub fn zero_with_check(ctx: &Ctx, prog: &str) -> String {
+        match prog {
+            "b2sum" => tr!(
+                ctx,
+                "command.b2sum.error.zero_with_check",
+                "the --zero option is not supported when verifying checksums"
+            ),
+            "md5sum" => tr!(
+                ctx,
+                "command.md5sum.error.zero_with_check",
+                "the --zero option is not supported when verifying checksums"
+            ),
+            "sha1sum" => tr!(
+                ctx,
+                "command.sha1sum.error.zero_with_check",
+                "the --zero option is not supported when verifying checksums"
+            ),
+            "sha224sum" => tr!(
+                ctx,
+                "command.sha224sum.error.zero_with_check",
+                "the --zero option is not supported when verifying checksums"
+            ),
+            "sha256sum" => tr!(
+                ctx,
+                "command.sha256sum.error.zero_with_check",
+                "the --zero option is not supported when verifying checksums"
+            ),
+            "sha384sum" => tr!(
+                ctx,
+                "command.sha384sum.error.zero_with_check",
+                "the --zero option is not supported when verifying checksums"
+            ),
+            _ => tr!(
+                ctx,
+                "command.sha512sum.error.zero_with_check",
+                "the --zero option is not supported when verifying checksums"
+            ),
+        }
+    }
+
+    pub fn tag_with_check(ctx: &Ctx, prog: &str) -> String {
+        match prog {
+            "b2sum" => tr!(
+                ctx,
+                "command.b2sum.error.tag_with_check",
+                "the --tag option is meaningless when verifying checksums"
+            ),
+            "md5sum" => tr!(
+                ctx,
+                "command.md5sum.error.tag_with_check",
+                "the --tag option is meaningless when verifying checksums"
+            ),
+            "sha1sum" => tr!(
+                ctx,
+                "command.sha1sum.error.tag_with_check",
+                "the --tag option is meaningless when verifying checksums"
+            ),
+            "sha224sum" => tr!(
+                ctx,
+                "command.sha224sum.error.tag_with_check",
+                "the --tag option is meaningless when verifying checksums"
+            ),
+            "sha256sum" => tr!(
+                ctx,
+                "command.sha256sum.error.tag_with_check",
+                "the --tag option is meaningless when verifying checksums"
+            ),
+            "sha384sum" => tr!(
+                ctx,
+                "command.sha384sum.error.tag_with_check",
+                "the --tag option is meaningless when verifying checksums"
+            ),
+            _ => tr!(
+                ctx,
+                "command.sha512sum.error.tag_with_check",
+                "the --tag option is meaningless when verifying checksums"
+            ),
+        }
+    }
+
+    pub fn binary_text_with_check(ctx: &Ctx, prog: &str) -> String {
+        match prog {
+            "b2sum" => tr!(
+                ctx,
+                "command.b2sum.error.binary_text_with_check",
+                "the --binary and --text options are meaningless when verifying checksums"
+            ),
+            "md5sum" => tr!(
+                ctx,
+                "command.md5sum.error.binary_text_with_check",
+                "the --binary and --text options are meaningless when verifying checksums"
+            ),
+            "sha1sum" => tr!(
+                ctx,
+                "command.sha1sum.error.binary_text_with_check",
+                "the --binary and --text options are meaningless when verifying checksums"
+            ),
+            "sha224sum" => tr!(
+                ctx,
+                "command.sha224sum.error.binary_text_with_check",
+                "the --binary and --text options are meaningless when verifying checksums"
+            ),
+            "sha256sum" => tr!(
+                ctx,
+                "command.sha256sum.error.binary_text_with_check",
+                "the --binary and --text options are meaningless when verifying checksums"
+            ),
+            "sha384sum" => tr!(
+                ctx,
+                "command.sha384sum.error.binary_text_with_check",
+                "the --binary and --text options are meaningless when verifying checksums"
+            ),
+            _ => tr!(
+                ctx,
+                "command.sha512sum.error.binary_text_with_check",
+                "the --binary and --text options are meaningless when verifying checksums"
+            ),
+        }
+    }
+
+    pub fn option_needs_check(ctx: &Ctx, prog: &str, option: &str) -> String {
+        match prog {
+            "b2sum" => tr!(
+                ctx,
+                "command.b2sum.error.option_needs_check",
+                "the {option} option is meaningful only when verifying checksums",
+                option = option
+            ),
+            "md5sum" => tr!(
+                ctx,
+                "command.md5sum.error.option_needs_check",
+                "the {option} option is meaningful only when verifying checksums",
+                option = option
+            ),
+            "sha1sum" => tr!(
+                ctx,
+                "command.sha1sum.error.option_needs_check",
+                "the {option} option is meaningful only when verifying checksums",
+                option = option
+            ),
+            "sha224sum" => tr!(
+                ctx,
+                "command.sha224sum.error.option_needs_check",
+                "the {option} option is meaningful only when verifying checksums",
+                option = option
+            ),
+            "sha256sum" => tr!(
+                ctx,
+                "command.sha256sum.error.option_needs_check",
+                "the {option} option is meaningful only when verifying checksums",
+                option = option
+            ),
+            "sha384sum" => tr!(
+                ctx,
+                "command.sha384sum.error.option_needs_check",
+                "the {option} option is meaningful only when verifying checksums",
+                option = option
+            ),
+            _ => tr!(
+                ctx,
+                "command.sha512sum.error.option_needs_check",
+                "the {option} option is meaningful only when verifying checksums",
+                option = option
+            ),
+        }
+    }
+
+    pub fn read_error(ctx: &Ctx, prog: &str, file: &str) -> String {
+        match prog {
+            "b2sum" => tr!(
+                ctx,
+                "command.b2sum.error.read_error",
+                "{file}: read error",
+                file = file
+            ),
+            "md5sum" => tr!(
+                ctx,
+                "command.md5sum.error.read_error",
+                "{file}: read error",
+                file = file
+            ),
+            "sha1sum" => tr!(
+                ctx,
+                "command.sha1sum.error.read_error",
+                "{file}: read error",
+                file = file
+            ),
+            "sha224sum" => tr!(
+                ctx,
+                "command.sha224sum.error.read_error",
+                "{file}: read error",
+                file = file
+            ),
+            "sha256sum" => tr!(
+                ctx,
+                "command.sha256sum.error.read_error",
+                "{file}: read error",
+                file = file
+            ),
+            "sha384sum" => tr!(
+                ctx,
+                "command.sha384sum.error.read_error",
+                "{file}: read error",
+                file = file
+            ),
+            _ => tr!(
+                ctx,
+                "command.sha512sum.error.read_error",
+                "{file}: read error",
+                file = file
+            ),
+        }
+    }
+
+    pub fn open_failed(ctx: &Ctx, prog: &str, file: &str, reason: &str) -> String {
+        match prog {
+            "b2sum" => tr!(
+                ctx,
+                "command.b2sum.error.open_failed",
+                "{file}: {reason}",
+                file = file,
+                reason = reason
+            ),
+            "md5sum" => tr!(
+                ctx,
+                "command.md5sum.error.open_failed",
+                "{file}: {reason}",
+                file = file,
+                reason = reason
+            ),
+            "sha1sum" => tr!(
+                ctx,
+                "command.sha1sum.error.open_failed",
+                "{file}: {reason}",
+                file = file,
+                reason = reason
+            ),
+            "sha224sum" => tr!(
+                ctx,
+                "command.sha224sum.error.open_failed",
+                "{file}: {reason}",
+                file = file,
+                reason = reason
+            ),
+            "sha256sum" => tr!(
+                ctx,
+                "command.sha256sum.error.open_failed",
+                "{file}: {reason}",
+                file = file,
+                reason = reason
+            ),
+            "sha384sum" => tr!(
+                ctx,
+                "command.sha384sum.error.open_failed",
+                "{file}: {reason}",
+                file = file,
+                reason = reason
+            ),
+            _ => tr!(
+                ctx,
+                "command.sha512sum.error.open_failed",
+                "{file}: {reason}",
+                file = file,
+                reason = reason
+            ),
+        }
+    }
+
+    pub fn misformatted_line(ctx: &Ctx, prog: &str, file: &str, line: usize, algo: &str) -> String {
+        match prog {
+            "b2sum" => tr!(
+                ctx,
+                "command.b2sum.warning.misformatted_line",
+                "{file}: {line}: improperly formatted {algo} checksum line",
+                file = file,
+                line = line,
+                algo = algo
+            ),
+            "md5sum" => tr!(
+                ctx,
+                "command.md5sum.warning.misformatted_line",
+                "{file}: {line}: improperly formatted {algo} checksum line",
+                file = file,
+                line = line,
+                algo = algo
+            ),
+            "sha1sum" => tr!(
+                ctx,
+                "command.sha1sum.warning.misformatted_line",
+                "{file}: {line}: improperly formatted {algo} checksum line",
+                file = file,
+                line = line,
+                algo = algo
+            ),
+            "sha224sum" => tr!(
+                ctx,
+                "command.sha224sum.warning.misformatted_line",
+                "{file}: {line}: improperly formatted {algo} checksum line",
+                file = file,
+                line = line,
+                algo = algo
+            ),
+            "sha256sum" => tr!(
+                ctx,
+                "command.sha256sum.warning.misformatted_line",
+                "{file}: {line}: improperly formatted {algo} checksum line",
+                file = file,
+                line = line,
+                algo = algo
+            ),
+            "sha384sum" => tr!(
+                ctx,
+                "command.sha384sum.warning.misformatted_line",
+                "{file}: {line}: improperly formatted {algo} checksum line",
+                file = file,
+                line = line,
+                algo = algo
+            ),
+            _ => tr!(
+                ctx,
+                "command.sha512sum.warning.misformatted_line",
+                "{file}: {line}: improperly formatted {algo} checksum line",
+                file = file,
+                line = line,
+                algo = algo
+            ),
+        }
+    }
+
+    pub fn no_proper_lines(ctx: &Ctx, prog: &str, file: &str) -> String {
+        match prog {
+            "b2sum" => tr!(
+                ctx,
+                "command.b2sum.error.no_proper_lines",
+                "{file}: no properly formatted checksum lines found",
+                file = file
+            ),
+            "md5sum" => tr!(
+                ctx,
+                "command.md5sum.error.no_proper_lines",
+                "{file}: no properly formatted checksum lines found",
+                file = file
+            ),
+            "sha1sum" => tr!(
+                ctx,
+                "command.sha1sum.error.no_proper_lines",
+                "{file}: no properly formatted checksum lines found",
+                file = file
+            ),
+            "sha224sum" => tr!(
+                ctx,
+                "command.sha224sum.error.no_proper_lines",
+                "{file}: no properly formatted checksum lines found",
+                file = file
+            ),
+            "sha256sum" => tr!(
+                ctx,
+                "command.sha256sum.error.no_proper_lines",
+                "{file}: no properly formatted checksum lines found",
+                file = file
+            ),
+            "sha384sum" => tr!(
+                ctx,
+                "command.sha384sum.error.no_proper_lines",
+                "{file}: no properly formatted checksum lines found",
+                file = file
+            ),
+            _ => tr!(
+                ctx,
+                "command.sha512sum.error.no_proper_lines",
+                "{file}: no properly formatted checksum lines found",
+                file = file
+            ),
+        }
+    }
+
+    pub fn no_file_verified(ctx: &Ctx, prog: &str, file: &str) -> String {
+        match prog {
+            "b2sum" => tr!(
+                ctx,
+                "command.b2sum.error.no_file_verified",
+                "{file}: no file was verified",
+                file = file
+            ),
+            "md5sum" => tr!(
+                ctx,
+                "command.md5sum.error.no_file_verified",
+                "{file}: no file was verified",
+                file = file
+            ),
+            "sha1sum" => tr!(
+                ctx,
+                "command.sha1sum.error.no_file_verified",
+                "{file}: no file was verified",
+                file = file
+            ),
+            "sha224sum" => tr!(
+                ctx,
+                "command.sha224sum.error.no_file_verified",
+                "{file}: no file was verified",
+                file = file
+            ),
+            "sha256sum" => tr!(
+                ctx,
+                "command.sha256sum.error.no_file_verified",
+                "{file}: no file was verified",
+                file = file
+            ),
+            "sha384sum" => tr!(
+                ctx,
+                "command.sha384sum.error.no_file_verified",
+                "{file}: no file was verified",
+                file = file
+            ),
+            _ => tr!(
+                ctx,
+                "command.sha512sum.error.no_file_verified",
+                "{file}: no file was verified",
+                file = file
+            ),
+        }
+    }
+
+    pub fn status_ok(ctx: &Ctx, prog: &str) -> String {
+        match prog {
+            "b2sum" => tr!(ctx, "command.b2sum.status.ok", ": OK"),
+            "md5sum" => tr!(ctx, "command.md5sum.status.ok", ": OK"),
+            "sha1sum" => tr!(ctx, "command.sha1sum.status.ok", ": OK"),
+            "sha224sum" => tr!(ctx, "command.sha224sum.status.ok", ": OK"),
+            "sha256sum" => tr!(ctx, "command.sha256sum.status.ok", ": OK"),
+            "sha384sum" => tr!(ctx, "command.sha384sum.status.ok", ": OK"),
+            _ => tr!(ctx, "command.sha512sum.status.ok", ": OK"),
+        }
+    }
+
+    pub fn status_failed(ctx: &Ctx, prog: &str) -> String {
+        match prog {
+            "b2sum" => tr!(ctx, "command.b2sum.status.failed", ": FAILED"),
+            "md5sum" => tr!(ctx, "command.md5sum.status.failed", ": FAILED"),
+            "sha1sum" => tr!(ctx, "command.sha1sum.status.failed", ": FAILED"),
+            "sha224sum" => tr!(ctx, "command.sha224sum.status.failed", ": FAILED"),
+            "sha256sum" => tr!(ctx, "command.sha256sum.status.failed", ": FAILED"),
+            "sha384sum" => tr!(ctx, "command.sha384sum.status.failed", ": FAILED"),
+            _ => tr!(ctx, "command.sha512sum.status.failed", ": FAILED"),
+        }
+    }
+
+    pub fn status_failed_open_read(ctx: &Ctx, prog: &str) -> String {
+        match prog {
+            "b2sum" => tr!(
+                ctx,
+                "command.b2sum.status.failed_open_read",
+                ": FAILED open or read"
+            ),
+            "md5sum" => tr!(
+                ctx,
+                "command.md5sum.status.failed_open_read",
+                ": FAILED open or read"
+            ),
+            "sha1sum" => tr!(
+                ctx,
+                "command.sha1sum.status.failed_open_read",
+                ": FAILED open or read"
+            ),
+            "sha224sum" => tr!(
+                ctx,
+                "command.sha224sum.status.failed_open_read",
+                ": FAILED open or read"
+            ),
+            "sha256sum" => tr!(
+                ctx,
+                "command.sha256sum.status.failed_open_read",
+                ": FAILED open or read"
+            ),
+            "sha384sum" => tr!(
+                ctx,
+                "command.sha384sum.status.failed_open_read",
+                ": FAILED open or read"
+            ),
+            _ => tr!(
+                ctx,
+                "command.sha512sum.status.failed_open_read",
+                ": FAILED open or read"
+            ),
+        }
+    }
+
+    pub fn misformatted_count(ctx: &Ctx, prog: &str, count: u64) -> String {
+        if count == 1 {
+            match prog {
+                "b2sum" => tr!(
+                    ctx,
+                    "command.b2sum.warning.misformatted_one",
+                    "WARNING: {count} line is improperly formatted",
+                    count = count
+                ),
+                "md5sum" => tr!(
+                    ctx,
+                    "command.md5sum.warning.misformatted_one",
+                    "WARNING: {count} line is improperly formatted",
+                    count = count
+                ),
+                "sha1sum" => tr!(
+                    ctx,
+                    "command.sha1sum.warning.misformatted_one",
+                    "WARNING: {count} line is improperly formatted",
+                    count = count
+                ),
+                "sha224sum" => tr!(
+                    ctx,
+                    "command.sha224sum.warning.misformatted_one",
+                    "WARNING: {count} line is improperly formatted",
+                    count = count
+                ),
+                "sha256sum" => tr!(
+                    ctx,
+                    "command.sha256sum.warning.misformatted_one",
+                    "WARNING: {count} line is improperly formatted",
+                    count = count
+                ),
+                "sha384sum" => tr!(
+                    ctx,
+                    "command.sha384sum.warning.misformatted_one",
+                    "WARNING: {count} line is improperly formatted",
+                    count = count
+                ),
+                _ => tr!(
+                    ctx,
+                    "command.sha512sum.warning.misformatted_one",
+                    "WARNING: {count} line is improperly formatted",
+                    count = count
+                ),
+            }
+        } else {
+            match prog {
+                "b2sum" => tr!(
+                    ctx,
+                    "command.b2sum.warning.misformatted_other",
+                    "WARNING: {count} lines are improperly formatted",
+                    count = count
+                ),
+                "md5sum" => tr!(
+                    ctx,
+                    "command.md5sum.warning.misformatted_other",
+                    "WARNING: {count} lines are improperly formatted",
+                    count = count
+                ),
+                "sha1sum" => tr!(
+                    ctx,
+                    "command.sha1sum.warning.misformatted_other",
+                    "WARNING: {count} lines are improperly formatted",
+                    count = count
+                ),
+                "sha224sum" => tr!(
+                    ctx,
+                    "command.sha224sum.warning.misformatted_other",
+                    "WARNING: {count} lines are improperly formatted",
+                    count = count
+                ),
+                "sha256sum" => tr!(
+                    ctx,
+                    "command.sha256sum.warning.misformatted_other",
+                    "WARNING: {count} lines are improperly formatted",
+                    count = count
+                ),
+                "sha384sum" => tr!(
+                    ctx,
+                    "command.sha384sum.warning.misformatted_other",
+                    "WARNING: {count} lines are improperly formatted",
+                    count = count
+                ),
+                _ => tr!(
+                    ctx,
+                    "command.sha512sum.warning.misformatted_other",
+                    "WARNING: {count} lines are improperly formatted",
+                    count = count
+                ),
+            }
+        }
+    }
+
+    pub fn unreadable_count(ctx: &Ctx, prog: &str, count: u64) -> String {
+        if count == 1 {
+            match prog {
+                "b2sum" => tr!(
+                    ctx,
+                    "command.b2sum.warning.unreadable_one",
+                    "WARNING: {count} listed file could not be read",
+                    count = count
+                ),
+                "md5sum" => tr!(
+                    ctx,
+                    "command.md5sum.warning.unreadable_one",
+                    "WARNING: {count} listed file could not be read",
+                    count = count
+                ),
+                "sha1sum" => tr!(
+                    ctx,
+                    "command.sha1sum.warning.unreadable_one",
+                    "WARNING: {count} listed file could not be read",
+                    count = count
+                ),
+                "sha224sum" => tr!(
+                    ctx,
+                    "command.sha224sum.warning.unreadable_one",
+                    "WARNING: {count} listed file could not be read",
+                    count = count
+                ),
+                "sha256sum" => tr!(
+                    ctx,
+                    "command.sha256sum.warning.unreadable_one",
+                    "WARNING: {count} listed file could not be read",
+                    count = count
+                ),
+                "sha384sum" => tr!(
+                    ctx,
+                    "command.sha384sum.warning.unreadable_one",
+                    "WARNING: {count} listed file could not be read",
+                    count = count
+                ),
+                _ => tr!(
+                    ctx,
+                    "command.sha512sum.warning.unreadable_one",
+                    "WARNING: {count} listed file could not be read",
+                    count = count
+                ),
+            }
+        } else {
+            match prog {
+                "b2sum" => tr!(
+                    ctx,
+                    "command.b2sum.warning.unreadable_other",
+                    "WARNING: {count} listed files could not be read",
+                    count = count
+                ),
+                "md5sum" => tr!(
+                    ctx,
+                    "command.md5sum.warning.unreadable_other",
+                    "WARNING: {count} listed files could not be read",
+                    count = count
+                ),
+                "sha1sum" => tr!(
+                    ctx,
+                    "command.sha1sum.warning.unreadable_other",
+                    "WARNING: {count} listed files could not be read",
+                    count = count
+                ),
+                "sha224sum" => tr!(
+                    ctx,
+                    "command.sha224sum.warning.unreadable_other",
+                    "WARNING: {count} listed files could not be read",
+                    count = count
+                ),
+                "sha256sum" => tr!(
+                    ctx,
+                    "command.sha256sum.warning.unreadable_other",
+                    "WARNING: {count} listed files could not be read",
+                    count = count
+                ),
+                "sha384sum" => tr!(
+                    ctx,
+                    "command.sha384sum.warning.unreadable_other",
+                    "WARNING: {count} listed files could not be read",
+                    count = count
+                ),
+                _ => tr!(
+                    ctx,
+                    "command.sha512sum.warning.unreadable_other",
+                    "WARNING: {count} listed files could not be read",
+                    count = count
+                ),
+            }
+        }
+    }
+
+    pub fn mismatch_count(ctx: &Ctx, prog: &str, count: u64) -> String {
+        if count == 1 {
+            match prog {
+                "b2sum" => tr!(
+                    ctx,
+                    "command.b2sum.warning.mismatch_one",
+                    "WARNING: {count} computed checksum did NOT match",
+                    count = count
+                ),
+                "md5sum" => tr!(
+                    ctx,
+                    "command.md5sum.warning.mismatch_one",
+                    "WARNING: {count} computed checksum did NOT match",
+                    count = count
+                ),
+                "sha1sum" => tr!(
+                    ctx,
+                    "command.sha1sum.warning.mismatch_one",
+                    "WARNING: {count} computed checksum did NOT match",
+                    count = count
+                ),
+                "sha224sum" => tr!(
+                    ctx,
+                    "command.sha224sum.warning.mismatch_one",
+                    "WARNING: {count} computed checksum did NOT match",
+                    count = count
+                ),
+                "sha256sum" => tr!(
+                    ctx,
+                    "command.sha256sum.warning.mismatch_one",
+                    "WARNING: {count} computed checksum did NOT match",
+                    count = count
+                ),
+                "sha384sum" => tr!(
+                    ctx,
+                    "command.sha384sum.warning.mismatch_one",
+                    "WARNING: {count} computed checksum did NOT match",
+                    count = count
+                ),
+                _ => tr!(
+                    ctx,
+                    "command.sha512sum.warning.mismatch_one",
+                    "WARNING: {count} computed checksum did NOT match",
+                    count = count
+                ),
+            }
+        } else {
+            match prog {
+                "b2sum" => tr!(
+                    ctx,
+                    "command.b2sum.warning.mismatch_other",
+                    "WARNING: {count} computed checksums did NOT match",
+                    count = count
+                ),
+                "md5sum" => tr!(
+                    ctx,
+                    "command.md5sum.warning.mismatch_other",
+                    "WARNING: {count} computed checksums did NOT match",
+                    count = count
+                ),
+                "sha1sum" => tr!(
+                    ctx,
+                    "command.sha1sum.warning.mismatch_other",
+                    "WARNING: {count} computed checksums did NOT match",
+                    count = count
+                ),
+                "sha224sum" => tr!(
+                    ctx,
+                    "command.sha224sum.warning.mismatch_other",
+                    "WARNING: {count} computed checksums did NOT match",
+                    count = count
+                ),
+                "sha256sum" => tr!(
+                    ctx,
+                    "command.sha256sum.warning.mismatch_other",
+                    "WARNING: {count} computed checksums did NOT match",
+                    count = count
+                ),
+                "sha384sum" => tr!(
+                    ctx,
+                    "command.sha384sum.warning.mismatch_other",
+                    "WARNING: {count} computed checksums did NOT match",
+                    count = count
+                ),
+                _ => tr!(
+                    ctx,
+                    "command.sha512sum.warning.mismatch_other",
+                    "WARNING: {count} computed checksums did NOT match",
+                    count = count
+                ),
+            }
+        }
     }
 }
 
@@ -1058,7 +1839,11 @@ fn check_file(
         match std::io::copy(&mut io.stdin, &mut buf) {
             Ok(_) => buf,
             Err(_) => {
-                let _ = writeln!(io.stderr, "{prog}: {display}: read error");
+                let _ = writeln!(
+                    io.stderr,
+                    "{prog}: {}",
+                    family::read_error(ctx, prog, display)
+                );
                 return false;
             }
         }
@@ -1069,7 +1854,11 @@ fn check_file(
                 match std::io::copy(&mut f, &mut buf) {
                     Ok(_) => buf,
                     Err(_) => {
-                        let _ = writeln!(io.stderr, "{prog}: {operand}: read error");
+                        let _ = writeln!(
+                            io.stderr,
+                            "{prog}: {}",
+                            family::read_error(ctx, prog, operand)
+                        );
                         return false;
                     }
                 }
@@ -1091,9 +1880,8 @@ fn check_file(
                 };
                 let _ = writeln!(
                     io.stderr,
-                    "{prog}: {}: {}",
-                    quotef(operand.as_bytes()),
-                    reason
+                    "{prog}: {}",
+                    family::open_failed(ctx, prog, &quotef(operand.as_bytes()), &reason)
                 );
                 return false;
             }
@@ -1138,9 +1926,14 @@ fn check_file(
                 if flags.warn {
                     let _ = writeln!(
                         io.stderr,
-                        "{prog}: {}: {line_number}: improperly formatted {} checksum line",
-                        quotef(display.as_bytes()),
-                        algo.tag()
+                        "{prog}: {}",
+                        family::misformatted_line(
+                            ctx,
+                            prog,
+                            &quotef(display.as_bytes()),
+                            line_number,
+                            algo.tag()
+                        )
                     );
                 }
             }
@@ -1161,10 +1954,18 @@ fn check_file(
                     Err(e) => {
                         open_fail += 1;
                         let reason = target_open_reason(&e, &name, ctx);
-                        let _ = writeln!(io.stderr, "{prog}: {}: {reason}", quotef(&cl.name));
+                        let _ = writeln!(
+                            io.stderr,
+                            "{prog}: {}",
+                            family::open_failed(ctx, prog, &quotef(&cl.name), &reason)
+                        );
                         if !flags.status {
                             let _ = write_escaped(io.stdout, &cl.name);
-                            let _ = writeln!(io.stdout, ": FAILED open or read");
+                            let _ = writeln!(
+                                io.stdout,
+                                "{}",
+                                family::status_failed_open_read(ctx, prog)
+                            );
                         }
                     }
                     Ok(content) => {
@@ -1180,9 +1981,9 @@ fn check_file(
                                 let _ = write_escaped(io.stdout, &cl.name);
                             }
                             if !m {
-                                let _ = writeln!(io.stdout, ": FAILED");
+                                let _ = writeln!(io.stdout, "{}", family::status_failed(ctx, prog));
                             } else if !flags.quiet {
-                                let _ = writeln!(io.stdout, ": OK");
+                                let _ = writeln!(io.stdout, "{}", family::status_ok(ctx, prog));
                             }
                         }
                     }
@@ -1193,9 +1994,14 @@ fn check_file(
                 if flags.warn {
                     let _ = writeln!(
                         io.stderr,
-                        "{prog}: {}: {line_number}: improperly formatted {} checksum line",
-                        quotef(display.as_bytes()),
-                        algo.tag()
+                        "{prog}: {}",
+                        family::misformatted_line(
+                            ctx,
+                            prog,
+                            &quotef(display.as_bytes()),
+                            line_number,
+                            algo.tag()
+                        )
                     );
                 }
             }
@@ -1205,8 +2011,8 @@ fn check_file(
     if !any_proper {
         let _ = writeln!(
             io.stderr,
-            "{prog}: {}: no properly formatted checksum lines found",
-            quotef(display.as_bytes())
+            "{prog}: {}",
+            family::no_proper_lines(ctx, prog, &quotef(display.as_bytes()))
         );
         return false;
     }
@@ -1214,29 +2020,29 @@ fn check_file(
         if misformatted > 0 {
             let _ = writeln!(
                 io.stderr,
-                "{prog}: WARNING: {misformatted} {} improperly formatted",
-                plural(misformatted, "line is", "lines are")
+                "{prog}: {}",
+                family::misformatted_count(ctx, prog, misformatted)
             );
         }
         if open_fail > 0 {
             let _ = writeln!(
                 io.stderr,
-                "{prog}: WARNING: {open_fail} {} could not be read",
-                plural(open_fail, "listed file", "listed files")
+                "{prog}: {}",
+                family::unreadable_count(ctx, prog, open_fail)
             );
         }
         if mismatched > 0 {
             let _ = writeln!(
                 io.stderr,
-                "{prog}: WARNING: {mismatched} {} did NOT match",
-                plural(mismatched, "computed checksum", "computed checksums")
+                "{prog}: {}",
+                family::mismatch_count(ctx, prog, mismatched)
             );
         }
         if flags.ignore_missing && !matched_any {
             let _ = writeln!(
                 io.stderr,
-                "{prog}: {}: no file was verified",
-                quotef(display.as_bytes())
+                "{prog}: {}",
+                family::no_file_verified(ctx, prog, &quotef(display.as_bytes()))
             );
         }
     }
