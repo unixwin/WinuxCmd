@@ -280,12 +280,16 @@ void append_column_prefix(std::string& output, const Config& cfg, int column) {
 }
 
 // [GNU] comm - - : both operands are the SAME stdin stream
-// (comm.c:303). Reads interleave one line at a time: FILE1's first
+// (comm.c:292). Reads interleave one line at a time: FILE1's first
 // line is physical line 1, FILE2's is line 2, and each merge step
 // that consumes a line pulls the next physical line into that
 // stream. The old code slurped stdin into FILE1 and left FILE2
 // empty (audit #1462). This pull-based merge mirrors run()'s
-// semantics over a shared queue.
+// semantics over a shared queue. Once the merge finishes, GNU
+// fclose()s both operands (comm.c:390-391): the first fclose(stdin)
+// succeeds and the second fails EBADF, so GNU dies with
+// "comm: -: Bad file descriptor" before it can print --total or the
+// "input is not in sorted order" summary (#429 residual #1712).
 auto run_both_stdin(const Config& cfg,
                     const SmallVector<std::string, 1024>& shared) -> int {
   const char record_delim = cfg.zero_terminated ? '\0' : '\n';
@@ -383,17 +387,6 @@ auto run_both_stdin(const Config& cfg,
     }
   }
 
-  if (cfg.total) {
-    std::string output = std::to_string(count_col1);
-    output += cfg.output_delimiter;
-    output += std::to_string(count_col2);
-    output += cfg.output_delimiter;
-    output += std::to_string(count_col3);
-    output += cfg.output_delimiter;
-    output += "total";
-    print_record(output, record_delim);
-  }
-
   // Default mode: a disorder noticed before any unpairable line is
   // reported at the end if an unpairable line turned up later.
   if (!check_disabled && !check_enabled) {
@@ -404,12 +397,15 @@ auto run_both_stdin(const Config& cfg,
       }
     }
   }
-  if (issued_disorder[0] || issued_disorder[1]) {
-    safeErrorPrintLn(winux::i18n::translate(
-        "command.comm.error.not_sorted", "comm: input is not in sorted order"));
-    return 1;
-  }
-  return 0;
+
+  // [GNU] comm.c:390-391: after the merge GNU fclose()s both operands;
+  // the second fclose(stdin) fails EBADF, so "comm - -" dies here --
+  // --total and the "input is not in sorted order" summary are never
+  // reached for this operand pair (#1712).
+  safeErrorPrintLn(
+      winux::i18n::translate("command.comm.error.bad_file_descriptor",
+                             "comm: -: Bad file descriptor"));
+  return 1;
 }
 
 auto run(const Config& cfg) -> int {
