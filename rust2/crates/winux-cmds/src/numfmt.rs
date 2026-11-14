@@ -32,7 +32,7 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 
 use crate::argopt::{self, OptSpec};
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -484,7 +484,7 @@ struct FmtSpec {
     user_precision: Option<u32>,
 }
 
-fn parse_format(fmt: &str) -> Result<FmtSpec, String> {
+fn parse_format(ctx: &Ctx, fmt: &str) -> Result<FmtSpec, String> {
     let mut out = FmtSpec {
         prefix: String::new(),
         suffix: String::new(),
@@ -500,7 +500,12 @@ fn parse_format(fmt: &str) -> Result<FmtSpec, String> {
     let mut prefix_len = 0usize;
     loop {
         if i >= bytes.len() {
-            return Err(format!("format '{fmt}' has no % directive"));
+            return Err(tr!(
+                ctx,
+                "command.numfmt.error.format_no_directive",
+                "format '{format}' has no % directive",
+                format = fmt
+            ));
         }
         if bytes[i] == '%' && (i + 1 >= bytes.len() || bytes[i + 1] != '%') {
             break;
@@ -547,12 +552,22 @@ fn parse_format(fmt: &str) -> Result<FmtSpec, String> {
         }
     }
     if i >= bytes.len() {
-        return Err(format!("format '{fmt}' ends in %"));
+        return Err(tr!(
+            ctx,
+            "command.numfmt.error.format_ends_in_percent",
+            "format '{format}' ends in %",
+            format = fmt
+        ));
     }
     if bytes[i] == '.' {
         i += 1;
         if i < bytes.len() && (bytes[i] == '+' || bytes[i] == ' ' || bytes[i] == '\t') {
-            return Err(format!("invalid precision in format '{fmt}'"));
+            return Err(tr!(
+                ctx,
+                "command.numfmt.error.invalid_precision",
+                "invalid precision in format '{format}'",
+                format = fmt
+            ));
         }
         let prec_start = i;
         while i < bytes.len() && bytes[i].is_ascii_digit() {
@@ -563,15 +578,23 @@ fn parse_format(fmt: &str) -> Result<FmtSpec, String> {
         out.user_precision = Some(prec_text.parse::<u32>().unwrap_or(0));
     }
     if i >= bytes.len() || bytes[i] != 'f' {
-        return Err(format!(
-            "invalid format '{fmt}', directive must be %[0]['][-][N][.][N]f"
+        return Err(tr!(
+            ctx,
+            "command.numfmt.error.invalid_format",
+            "invalid format '{format}', directive must be %[0]['][-][N][.][N]f",
+            format = fmt
         ));
     }
     i += 1;
     let suffix_start = i;
     while i < bytes.len() {
         if bytes[i] == '%' && i + 1 < bytes.len() && bytes[i + 1] != '%' {
-            return Err(format!("format '{fmt}' has too many % directives"));
+            return Err(tr!(
+                ctx,
+                "command.numfmt.error.format_too_many_directives",
+                "format '{format}' has too many % directives",
+                format = fmt
+            ));
         }
         i += if bytes[i] == '%' { 2 } else { 1 };
     }
@@ -580,7 +603,7 @@ fn parse_format(fmt: &str) -> Result<FmtSpec, String> {
 }
 
 /// cut(1)-style --field spec: N, N-, N-M, -M, -, comma separated.
-fn parse_field_spec(spec: &str) -> Result<Vec<(u64, u64)>, String> {
+fn parse_field_spec(ctx: &Ctx, spec: &str) -> Result<Vec<(u64, u64)>, String> {
     let max = u64::MAX;
     let mut ranges = Vec::new();
     for item in spec.split(',') {
@@ -603,18 +626,40 @@ fn parse_field_spec(spec: &str) -> Result<Vec<(u64, u64)>, String> {
         let lo = if open_lo {
             1
         } else {
-            parse_u(lo_text).ok_or_else(|| format!("invalid field value '{item}'"))?
+            parse_u(lo_text).ok_or_else(|| {
+                tr!(
+                    ctx,
+                    "command.numfmt.error.invalid_field_value",
+                    "invalid field value '{value}'",
+                    value = item
+                )
+            })?
         };
         let hi = match hi_text {
             None => lo,
             Some(h) if h.is_empty() => max,
-            Some(h) => parse_u(h).ok_or_else(|| format!("invalid field value '{item}'"))?,
+            Some(h) => parse_u(h).ok_or_else(|| {
+                tr!(
+                    ctx,
+                    "command.numfmt.error.invalid_field_value",
+                    "invalid field value '{value}'",
+                    value = item
+                )
+            })?,
         };
         if lo == 0 || hi == 0 {
-            return Err("fields are numbered from 1".to_string());
+            return Err(tr!(
+                ctx,
+                "command.numfmt.error.fields_from_1",
+                "fields are numbered from 1"
+            ));
         }
         if hi < lo {
-            return Err("invalid decreasing range".to_string());
+            return Err(tr!(
+                ctx,
+                "command.numfmt.error.invalid_decreasing_range",
+                "invalid decreasing range"
+            ));
         }
         ranges.push((lo, hi));
     }
@@ -622,13 +667,37 @@ fn parse_field_spec(spec: &str) -> Result<Vec<(u64, u64)>, String> {
 }
 
 fn argmatch_error(ctx: &Ctx, io: &mut Io, option: &str, value: &str, valid: &[&str]) {
-    let _ = write!(
+    let _ = writeln!(
         io.stderr,
-        "numfmt: invalid argument '{value}' for '{option}'\n"
+        "numfmt: {}",
+        tr!(
+            ctx,
+            "command.numfmt.error.invalid_argument",
+            "invalid argument '{value}' for '{option}'",
+            value = value,
+            option = option
+        )
     );
-    let _ = write!(io.stderr, "Valid arguments are:\n");
+    let _ = writeln!(
+        io.stderr,
+        "{}",
+        tr!(
+            ctx,
+            "command.numfmt.error.valid_arguments",
+            "Valid arguments are:"
+        )
+    );
     for v in valid {
-        let _ = write!(io.stderr, "  - '{v}'\n");
+        let _ = writeln!(
+            io.stderr,
+            "{}",
+            tr!(
+                ctx,
+                "command.numfmt.error.valid_argument_item",
+                "  - '{value}'",
+                value = v
+            )
+        );
     }
     let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "numfmt"));
 }
@@ -718,7 +787,12 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if delimiter_given && delimiter.chars().count() > 1 {
         let _ = writeln!(
             io.stderr,
-            "numfmt: the delimiter must be a single character"
+            "numfmt: {}",
+            tr!(
+                ctx,
+                "command.numfmt.error.delimiter_single_char",
+                "the delimiter must be a single character"
+            )
         );
         return Ok(1);
     }
@@ -730,7 +804,15 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if let Some(h) = p.value_of("header") {
         let n: i64 = h.parse().unwrap_or(-1);
         if n == 0 {
-            let _ = writeln!(io.stderr, "numfmt: invalid header value '0'");
+            let _ = writeln!(
+                io.stderr,
+                "numfmt: {}",
+                tr!(
+                    ctx,
+                    "command.numfmt.error.invalid_header",
+                    "invalid header value '0'"
+                )
+            );
             return Ok(1);
         }
     }
@@ -746,7 +828,15 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     if padding_given && padding == 0 {
-        let _ = writeln!(io.stderr, "numfmt: invalid padding value '0'");
+        let _ = writeln!(
+            io.stderr,
+            "numfmt: {}",
+            tr!(
+                ctx,
+                "command.numfmt.error.invalid_padding",
+                "invalid padding value '0'"
+            )
+        );
         return Ok(1);
     }
 
@@ -755,7 +845,12 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if grouping_flag && !format_str.is_empty() {
         let _ = writeln!(
             io.stderr,
-            "numfmt: --grouping cannot be combined with --format"
+            "numfmt: {}",
+            tr!(
+                ctx,
+                "command.numfmt.error.grouping_with_format",
+                "--grouping cannot be combined with --format"
+            )
         );
         return Ok(1);
     }
@@ -768,12 +863,20 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .map(|(_, v)| v.as_str())
         .collect();
     if field_specs.len() > 1 {
-        let _ = writeln!(io.stderr, "numfmt: multiple field specifications");
+        let _ = writeln!(
+            io.stderr,
+            "numfmt: {}",
+            tr!(
+                ctx,
+                "command.numfmt.error.multiple_field_specifications",
+                "multiple field specifications"
+            )
+        );
         return Ok(1);
     }
     let mut field_ranges: Vec<(u64, u64)> = Vec::new();
     if let Some(spec) = field_specs.first() {
-        match parse_field_spec(spec) {
+        match parse_field_spec(ctx, spec) {
             Ok(r) => field_ranges = r,
             Err(e) => {
                 let _ = writeln!(io.stderr, "numfmt: {e}");
@@ -801,7 +904,7 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             user_precision: None,
         }
     } else {
-        match parse_format(&format_str) {
+        match parse_format(ctx, &format_str) {
             Ok(f) => f,
             Err(e) => {
                 let _ = writeln!(io.stderr, "numfmt: {e}");
@@ -811,7 +914,15 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     };
     // [GNU] the %'f flag (or --grouping) conflicts with --to.
     if (fmt_spec.grouping || grouping_flag) && (to_si || to_iec || to_iec_i) {
-        let _ = writeln!(io.stderr, "numfmt: grouping cannot be combined with --to");
+        let _ = writeln!(
+            io.stderr,
+            "numfmt: {}",
+            tr!(
+                ctx,
+                "command.numfmt.error.grouping_with_to",
+                "grouping cannot be combined with --to"
+            )
+        );
         return Ok(1);
     }
     // Grouping separators exist only when the locale says so; the
@@ -834,7 +945,16 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         } else {
             &to_unit_value
         };
-        let _ = writeln!(io.stderr, "numfmt: invalid unit size: '{bad}'");
+        let _ = writeln!(
+            io.stderr,
+            "numfmt: {}",
+            tr!(
+                ctx,
+                "command.numfmt.error.invalid_unit_size",
+                "invalid unit size: '{value}'",
+                value = bad
+            )
+        );
         return Ok(1);
     }
 
@@ -844,7 +964,15 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         || !from_unit_value.is_empty()
         || !to_unit_value.is_empty();
     if debug && !scaling_used {
-        let _ = writeln!(io.stderr, "numfmt: no conversion option specified");
+        let _ = writeln!(
+            io.stderr,
+            "numfmt: {}",
+            tr!(
+                ctx,
+                "command.numfmt.warning.no_conversion",
+                "no conversion option specified"
+            )
+        );
     }
 
     let zero_terminated = p.has("zero-terminated");
@@ -867,6 +995,7 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let auto_padding = padding_width == 0 && delimiter.is_empty();
 
     let proc = Processor {
+        ctx,
         field_ranges: &field_ranges,
         from_unit: &from_unit,
         from_scale,
@@ -934,6 +1063,7 @@ pub fn numfmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 }
 
 struct Processor<'a> {
+    ctx: &'a Ctx<'a>,
     field_ranges: &'a [(u64, u64)],
     from_unit: &'a str,
     from_scale: f64,
@@ -952,16 +1082,45 @@ struct Processor<'a> {
     had_invalid: bool,
 }
 
-fn invalid_message(err: &ParseError, text: &str, tail: &str) -> String {
+fn invalid_message(ctx: &Ctx, err: &ParseError, text: &str, tail: &str) -> String {
     match err {
-        ParseError::ForbiddenSuffix => {
-            format!("rejecting suffix in input: '{text}' (consider using --from)")
-        }
-        ParseError::InvalidSuffixTail => format!("invalid suffix in input '{text}': '{tail}'"),
-        ParseError::MissingI => format!("missing 'i' suffix in input: '{text}' (e.g Ki/Mi/Gi)"),
-        ParseError::InvalidSuffix => format!("invalid suffix in input: '{text}'"),
-        ParseError::Overflow => format!("value too large to be converted: '{text}'"),
-        _ => format!("invalid number: '{text}'"),
+        ParseError::ForbiddenSuffix => tr!(
+            ctx,
+            "command.numfmt.error.rejecting_suffix",
+            "rejecting suffix in input: '{text}' (consider using --from)",
+            text = text
+        ),
+        ParseError::InvalidSuffixTail => tr!(
+            ctx,
+            "command.numfmt.error.invalid_suffix_tail",
+            "invalid suffix in input '{text}': '{tail}'",
+            text = text,
+            tail = tail
+        ),
+        ParseError::MissingI => tr!(
+            ctx,
+            "command.numfmt.error.missing_i_suffix",
+            "missing 'i' suffix in input: '{text}' (e.g Ki/Mi/Gi)",
+            text = text
+        ),
+        ParseError::InvalidSuffix => tr!(
+            ctx,
+            "command.numfmt.error.invalid_suffix",
+            "invalid suffix in input: '{text}'",
+            text = text
+        ),
+        ParseError::Overflow => tr!(
+            ctx,
+            "command.numfmt.error.value_too_large_convert",
+            "value too large to be converted: '{text}'",
+            text = text
+        ),
+        _ => tr!(
+            ctx,
+            "command.numfmt.error.invalid_number",
+            "invalid number: '{text}'",
+            text = text
+        ),
     }
 }
 
@@ -1069,7 +1228,7 @@ impl<'a> Processor<'a> {
                 let _ = writeln!(
                     io.stderr,
                     "numfmt: {}",
-                    invalid_message(&pi.err, number_text, &pi.tail)
+                    invalid_message(self.ctx, &pi.err, number_text, &pi.tail)
                 );
             }
             if self.invalid_policy == "abort" {
@@ -1095,13 +1254,25 @@ impl<'a> Processor<'a> {
                 if precision_used > 0 {
                     let _ = writeln!(
                         io.stderr,
-                        "numfmt: value/precision too large to be printed: '{value_text}/{}' (consider using --to)",
-                        precision_used
+                        "numfmt: {}",
+                        tr!(
+                            self.ctx,
+                            "command.numfmt.error.value_precision_too_large",
+                            "value/precision too large to be printed: '{value}/{precision}' (consider using --to)",
+                            value = value_text,
+                            precision = precision_used
+                        )
                     );
                 } else {
                     let _ = writeln!(
                         io.stderr,
-                        "numfmt: value too large to be printed: '{value_text}' (consider using --to)"
+                        "numfmt: {}",
+                        tr!(
+                            self.ctx,
+                            "command.numfmt.error.value_too_large_to",
+                            "value too large to be printed: '{value}' (consider using --to)",
+                            value = value_text
+                        )
                     );
                 }
             }
@@ -1117,7 +1288,13 @@ impl<'a> Processor<'a> {
                 let value_text = g6(val);
                 let _ = writeln!(
                     io.stderr,
-                    "numfmt: value too large to be printed: '{value_text}' (cannot handle values > 999Q)"
+                    "numfmt: {}",
+                    tr!(
+                        self.ctx,
+                        "command.numfmt.error.value_too_large_max",
+                        "value too large to be printed: '{value}' (cannot handle values > 999Q)",
+                        value = value_text
+                    )
                 );
             }
             if self.invalid_policy == "abort" {

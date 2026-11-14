@@ -20,7 +20,7 @@ use std::io::{Read, Write};
 
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::resolve;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -68,13 +68,31 @@ impl Default for Mode {
     }
 }
 
-fn invalid_chars(rest: &str) -> String {
-    format!("tab size contains invalid character(s): '{rest}'")
+/// Tab-spec parse failures. The parser stays pure: callers render the
+/// failure through `tabmsg`, which keys each message per program name so
+/// expand and unexpand share the machinery without sharing the keys.
+#[derive(Debug)]
+pub enum TabSpecError {
+    /// "tab size contains invalid character(s): '{text}'"
+    InvalidChars(String),
+    /// "'{specifier}' specifier not at start of number: '{text}'"
+    NotAtStart(char, String),
+    /// "tab stop is too large '{text}'"
+    TooLarge(String),
+    /// "'{specifier}' specifier only allowed with the last value"
+    RepeatNotLast(char),
+    /// "'/' specifier is mutually exclusive with '+'"
+    MutuallyExclusive,
+    /// "tab size cannot be 0"
+    Zero,
+    /// "tab sizes must be ascending"
+    Ascending,
 }
 
 /// Parse one spec token: optional '/'/'+' marker then decimal digits.
-/// Returns (marker, value, digit_text). On bad text, the GNU diagnostics.
-pub fn parse_token(token: &str) -> Result<(Option<char>, u64, String), String> {
+/// Returns (marker, value, digit_text). On bad text, the GNU diagnostics
+/// (as TabSpecError, rendered by the caller).
+pub fn parse_token(token: &str) -> Result<(Option<char>, u64, String), TabSpecError> {
     let marker = if token.starts_with('/') || token.starts_with('+') {
         Some(token.chars().next().unwrap())
     } else {
@@ -89,16 +107,16 @@ pub fn parse_token(token: &str) -> Result<(Option<char>, u64, String), String> {
         let rest = &value_text[digits.len()..];
         let c = rest.chars().next().unwrap();
         if c == '/' || c == '+' {
-            return Err(format!("'{c}' specifier not at start of number: '{rest}'"));
+            return Err(TabSpecError::NotAtStart(c, rest.to_string()));
         }
-        return Err(invalid_chars(rest));
+        return Err(TabSpecError::InvalidChars(rest.to_string()));
     }
     let value: u64 = if digits.is_empty() {
-        return Err(invalid_chars(""));
+        return Err(TabSpecError::InvalidChars(String::new()));
     } else {
         match digits.parse::<u64>() {
             Ok(v) => v,
-            Err(_) => return Err(format!("tab stop is too large '{digits}'")),
+            Err(_) => return Err(TabSpecError::TooLarge(digits)),
         }
     };
     Ok((marker, value, digits))
@@ -106,7 +124,7 @@ pub fn parse_token(token: &str) -> Result<(Option<char>, u64, String), String> {
 
 /// One-shot parse of the JOINED spec list (expand joins every -t and -NUM
 /// piece in argv order into a single list, then parses and validates once).
-fn parse_tab_stops(spec: &str) -> Result<TabStops, String> {
+fn parse_tab_stops(spec: &str) -> Result<TabStops, TabSpecError> {
     let mut out = TabStops {
         interval: 8,
         mode: Mode::EveryMultiple,
@@ -121,7 +139,7 @@ fn parse_tab_stops(spec: &str) -> Result<TabStops, String> {
     let mut slash_repeat = false;
     let mut plus_repeat = false;
     let mut repeat_specified = false;
-    let mut repeat_not_last: Option<String> = None;
+    let mut repeat_not_last: Option<TabSpecError> = None;
 
     for (i, token) in tokens.iter().enumerate() {
         let (marker, value, digits) = parse_token(token)?;
@@ -134,8 +152,7 @@ fn parse_tab_stops(spec: &str) -> Result<TabStops, String> {
                     continue;
                 }
                 if i + 1 != tokens.len() && repeat_not_last.is_none() {
-                    repeat_not_last =
-                        Some(format!("'{m}' specifier only allowed with the last value"));
+                    repeat_not_last = Some(TabSpecError::RepeatNotLast(m));
                 }
                 out.interval = value;
                 out.mode = if m == '/' {
@@ -151,7 +168,7 @@ fn parse_tab_stops(spec: &str) -> Result<TabStops, String> {
     }
 
     if slash_repeat && plus_repeat {
-        return Err("'/' specifier is mutually exclusive with '+'".to_string());
+        return Err(TabSpecError::MutuallyExclusive);
     }
     if let Some(e) = repeat_not_last {
         return Err(e);
@@ -159,10 +176,10 @@ fn parse_tab_stops(spec: &str) -> Result<TabStops, String> {
     let mut prev = 0u64;
     for stop in &out.stops {
         if *stop == 0 {
-            return Err("tab size cannot be 0".to_string());
+            return Err(TabSpecError::Zero);
         }
         if *stop <= prev {
-            return Err("tab sizes must be ascending".to_string());
+            return Err(TabSpecError::Ascending);
         }
         prev = *stop;
     }
@@ -177,6 +194,143 @@ fn parse_tab_stops(spec: &str) -> Result<TabStops, String> {
         out.mode = Mode::None;
     }
     Ok(out)
+}
+
+/// Shared tab-spec diagnostics. expand and unexpand parse the same
+/// GNU spec grammar, so the failure enum lives here once; the keys stay
+/// per-command (`command.expand.*` / `command.unexpand.*`).
+pub(crate) mod tabmsg {
+    use super::TabSpecError;
+    use winux_core::{tr, Ctx};
+
+    fn invalid_chars(ctx: &Ctx, prog: &str, text: &str) -> String {
+        match prog {
+            "expand" => tr!(
+                ctx,
+                "command.expand.error.tab_invalid_chars",
+                "tab size contains invalid character(s): '{text}'",
+                text = text
+            ),
+            _ => tr!(
+                ctx,
+                "command.unexpand.error.tab_invalid_chars",
+                "tab size contains invalid character(s): '{text}'",
+                text = text
+            ),
+        }
+    }
+
+    fn not_at_start(ctx: &Ctx, prog: &str, specifier: char, text: &str) -> String {
+        let specifier = specifier.to_string();
+        match prog {
+            "expand" => tr!(
+                ctx,
+                "command.expand.error.tab_specifier_not_start",
+                "'{specifier}' specifier not at start of number: '{text}'",
+                specifier = specifier,
+                text = text
+            ),
+            _ => tr!(
+                ctx,
+                "command.unexpand.error.tab_specifier_not_start",
+                "'{specifier}' specifier not at start of number: '{text}'",
+                specifier = specifier,
+                text = text
+            ),
+        }
+    }
+
+    fn too_large(ctx: &Ctx, prog: &str, text: &str) -> String {
+        match prog {
+            "expand" => tr!(
+                ctx,
+                "command.expand.error.tab_too_large",
+                "tab stop is too large '{text}'",
+                text = text
+            ),
+            _ => tr!(
+                ctx,
+                "command.unexpand.error.tab_too_large",
+                "tab stop is too large '{text}'",
+                text = text
+            ),
+        }
+    }
+
+    fn repeat_not_last(ctx: &Ctx, prog: &str, specifier: char) -> String {
+        let specifier = specifier.to_string();
+        match prog {
+            "expand" => tr!(
+                ctx,
+                "command.expand.error.tab_repeat_not_last",
+                "'{specifier}' specifier only allowed with the last value",
+                specifier = specifier
+            ),
+            _ => tr!(
+                ctx,
+                "command.unexpand.error.tab_repeat_not_last",
+                "'{specifier}' specifier only allowed with the last value",
+                specifier = specifier
+            ),
+        }
+    }
+
+    fn mutually_exclusive(ctx: &Ctx, prog: &str) -> String {
+        match prog {
+            "expand" => tr!(
+                ctx,
+                "command.expand.error.tab_mutually_exclusive",
+                "'/' specifier is mutually exclusive with '+'"
+            ),
+            _ => tr!(
+                ctx,
+                "command.unexpand.error.tab_mutually_exclusive",
+                "'/' specifier is mutually exclusive with '+'"
+            ),
+        }
+    }
+
+    fn zero(ctx: &Ctx, prog: &str) -> String {
+        match prog {
+            "expand" => {
+                tr!(ctx, "command.expand.error.tab_zero", "tab size cannot be 0")
+            }
+            _ => tr!(
+                ctx,
+                "command.unexpand.error.tab_zero",
+                "tab size cannot be 0"
+            ),
+        }
+    }
+
+    fn ascending(ctx: &Ctx, prog: &str) -> String {
+        match prog {
+            "expand" => tr!(
+                ctx,
+                "command.expand.error.tab_ascending",
+                "tab sizes must be ascending"
+            ),
+            _ => tr!(
+                ctx,
+                "command.unexpand.error.tab_ascending",
+                "tab sizes must be ascending"
+            ),
+        }
+    }
+
+    /// Render a parse failure for the caller's program name (message only;
+    /// the `{prog}: ` prefix stays at the call site).
+    pub fn text(ctx: &Ctx, prog: &str, e: &TabSpecError) -> String {
+        match e {
+            TabSpecError::InvalidChars(t) => invalid_chars(ctx, prog, t),
+            TabSpecError::NotAtStart(c, t) => not_at_start(ctx, prog, *c, t),
+            TabSpecError::TooLarge(t) => too_large(ctx, prog, t),
+            TabSpecError::RepeatNotLast(c) => repeat_not_last(ctx, prog, *c),
+            TabSpecError::MutuallyExclusive => mutually_exclusive(ctx, prog),
+            TabSpecError::Zero => zero(ctx, prog),
+            TabSpecError::Ascending => ascending(ctx, prog),
+        }
+    }
 }
 
 /// The next tab stop strictly greater than `column`, saturating instead of
@@ -345,7 +499,7 @@ pub fn expand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         match parse_tab_stops(&specs.join(" ")) {
             Ok(ts) => ts,
             Err(e) => {
-                let _ = writeln!(io.stderr, "expand: {e}");
+                let _ = writeln!(io.stderr, "expand: {}", tabmsg::text(ctx, "expand", &e));
                 return Ok(1);
             }
         }
@@ -365,7 +519,16 @@ pub fn expand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let bytes = if file == "-" {
             let mut buf = Vec::new();
             if io.stdin.read_to_end(&mut buf).is_err() {
-                let _ = writeln!(io.stderr, "expand: {file}: read error");
+                let _ = writeln!(
+                    io.stderr,
+                    "expand: {}",
+                    tr!(
+                        ctx,
+                        "command.expand.error.read_error",
+                        "{file}: read error",
+                        file = file
+                    )
+                );
                 failed = true;
                 continue;
             }
@@ -373,7 +536,16 @@ pub fn expand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         } else {
             match std::fs::metadata(resolve(ctx, file)) {
                 Ok(m) if m.is_dir() => {
-                    let _ = writeln!(io.stderr, "expand: {file}: Is a directory");
+                    let _ = writeln!(
+                        io.stderr,
+                        "expand: {}",
+                        tr!(
+                            ctx,
+                            "command.expand.error.is_directory",
+                            "{file}: Is a directory",
+                            file = file
+                        )
+                    );
                     failed = true;
                     continue;
                 }
@@ -382,7 +554,16 @@ pub fn expand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match std::fs::read(resolve(ctx, file)) {
                 Ok(b) => b,
                 Err(_) => {
-                    let _ = writeln!(io.stderr, "expand: {file}: No such file or directory");
+                    let _ = writeln!(
+                        io.stderr,
+                        "expand: {}",
+                        tr!(
+                            ctx,
+                            "command.expand.error.no_such_file",
+                            "{file}: No such file or directory",
+                            file = file
+                        )
+                    );
                     failed = true;
                     continue;
                 }

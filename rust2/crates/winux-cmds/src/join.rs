@@ -31,7 +31,7 @@ use std::io::{Read, Write};
 
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::resolve;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     // GNU join defines NO long forms for the letter options; the `long`
@@ -131,11 +131,16 @@ struct Config {
 }
 
 /// xstrtol-shaped field parse: leading int, clamped when out of range.
-fn parse_positive_field(text: &str) -> Result<i64, String> {
+fn parse_positive_field(ctx: &Ctx, text: &str) -> Result<i64, String> {
     match text.parse::<i64>() {
         Ok(v) => {
             if v <= 0 {
-                Err(format!("invalid field number: '{text}'"))
+                Err(tr!(
+                    ctx,
+                    "command.join.error.invalid_field_number",
+                    "invalid field number: '{value}'",
+                    value = text
+                ))
             } else {
                 Ok(v)
             }
@@ -150,17 +155,27 @@ fn parse_positive_field(text: &str) -> Result<i64, String> {
             {
                 Ok(i64::MAX)
             } else {
-                Err(format!("invalid field number: '{text}'"))
+                Err(tr!(
+                    ctx,
+                    "command.join.error.invalid_field_number",
+                    "invalid field number: '{value}'",
+                    value = text
+                ))
             }
         }
     }
 }
 
 /// Only 1/2 are valid file numbers for -a/-v (through xstrtol, so "01" is 1).
-fn parse_file_number(value: &str) -> Result<i64, String> {
+fn parse_file_number(ctx: &Ctx, value: &str) -> Result<i64, String> {
     match value.parse::<i64>() {
         Ok(v @ (1 | 2)) => Ok(v),
-        _ => Err(format!("invalid field number: '{value}'")),
+        _ => Err(tr!(
+            ctx,
+            "command.join.error.invalid_field_number",
+            "invalid field number: '{value}'",
+            value = value
+        )),
     }
 }
 
@@ -220,7 +235,7 @@ fn parse_line(line: &str, cfg: &Config, field_num: i64) -> ParsedLine {
 
 /// Decode the -o output format (add_field_list/decode_field_spec): items
 /// split on each ','/' '/'\t' and EVERY item is decoded, empty items fatal.
-fn parse_output_format(format: &str) -> Result<Vec<OutputField>, String> {
+fn parse_output_format(ctx: &Ctx, format: &str) -> Result<Vec<OutputField>, String> {
     let mut fields = Vec::new();
     let tokens: Vec<&str> = format
         .split(|c: char| c == ',' || c == ' ' || c == '\t')
@@ -228,18 +243,33 @@ fn parse_output_format(format: &str) -> Result<Vec<OutputField>, String> {
     for token in tokens {
         let first = token.chars().next().unwrap_or('\0');
         if token.is_empty() || (first != '0' && first != '1' && first != '2') {
-            return Err(format!("invalid file number in field spec: '{token}'"));
+            return Err(tr!(
+                ctx,
+                "command.join.error.invalid_file_number_in_spec",
+                "invalid file number in field spec: '{token}'",
+                token = token
+            ));
         }
         if first == '0' {
             if token.len() != 1 {
-                return Err(format!("invalid field specifier: '{token}'"));
+                return Err(tr!(
+                    ctx,
+                    "command.join.error.invalid_field_specifier",
+                    "invalid field specifier: '{token}'",
+                    token = token
+                ));
             }
             fields.push(OutputField { file: 0, field: 0 });
         } else {
             if token.len() < 2 || token.as_bytes()[1] != b'.' {
-                return Err(format!("invalid field specifier: '{token}'"));
+                return Err(tr!(
+                    ctx,
+                    "command.join.error.invalid_field_specifier",
+                    "invalid field specifier: '{token}'",
+                    token = token
+                ));
             }
-            let field = parse_positive_field(&token[2..])?;
+            let field = parse_positive_field(ctx, &token[2..])?;
             fields.push(OutputField {
                 file: first as u8 - b'0',
                 field,
@@ -372,6 +402,7 @@ struct OrderState {
 
 #[allow(clippy::too_many_arguments)]
 fn check_line_order(
+    ctx: &Ctx,
     state: &mut OrderState,
     which: usize,
     idx: usize,
@@ -394,8 +425,14 @@ fn check_line_order(
                 if let (Some(ck), Some(pk)) = (&cur.key, &prev.key) {
                     if ck < pk {
                         state.issued[which - 1] = true;
-                        let message =
-                            format!("join: {fname}:{}: is not sorted: {}", nc + 1, raw_lines[nc]);
+                        let message = tr!(
+                            ctx,
+                            "command.join.error.file_not_sorted",
+                            "join: {file}:{line}: is not sorted: {text}",
+                            file = fname,
+                            line = nc + 1,
+                            text = raw_lines[nc]
+                        );
                         let _ = writeln!(io.stderr, "{message}");
                         if cfg.check_order {
                             return false;
@@ -413,6 +450,7 @@ fn check_line_order(
 /// [GNU] set_join_field (join.c): a conflicting re-set is fatal; the
 /// diagnostic names the fields 0-based ("incompatible join fields 0, 1").
 fn apply_field(
+    ctx: &Ctx,
     which: u8,
     value: i64,
     cfg: &mut Config,
@@ -425,10 +463,12 @@ fn apply_field(
         (&mut cfg.field2, field2_seen)
     };
     if *seen && *slot != value {
-        return Err(format!(
-            "incompatible join fields {}, {}",
-            *slot - 1,
-            value - 1
+        return Err(tr!(
+            ctx,
+            "command.join.error.incompatible_fields",
+            "incompatible join fields {first}, {second}",
+            first = *slot - 1,
+            second = value - 1
         ));
     }
     *seen = true;
@@ -558,15 +598,17 @@ fn scan_order_sensitive(
                             prev = OpStatus::J2Arg;
                         }
                         'j' => {
-                            let field = match parse_positive_field(&val) {
+                            let field = match parse_positive_field(ctx, &val) {
                                 Ok(f) => f,
                                 Err(e) => {
                                     let _ = writeln!(io.stderr, "join: {e}");
                                     return Err(());
                                 }
                             };
-                            if let Err(e) = apply_field(1, field, cfg, field1_seen, field2_seen)
-                                .and_then(|_| apply_field(2, field, cfg, field1_seen, field2_seen))
+                            if let Err(e) =
+                                apply_field(ctx, 1, field, cfg, field1_seen, field2_seen).and_then(
+                                    |_| apply_field(ctx, 2, field, cfg, field1_seen, field2_seen),
+                                )
                             {
                                 let _ = writeln!(io.stderr, "join: {e}");
                                 return Err(());
@@ -574,7 +616,7 @@ fn scan_order_sensitive(
                             prev = OpStatus::Operand;
                         }
                         '1' | '2' => {
-                            let field = match parse_positive_field(&val) {
+                            let field = match parse_positive_field(ctx, &val) {
                                 Ok(f) => f,
                                 Err(e) => {
                                     let _ = writeln!(io.stderr, "join: {e}");
@@ -582,7 +624,8 @@ fn scan_order_sensitive(
                                 }
                             };
                             let which = if c == '1' { 1 } else { 2 };
-                            if let Err(e) = apply_field(which, field, cfg, field1_seen, field2_seen)
+                            if let Err(e) =
+                                apply_field(ctx, which, field, cfg, field1_seen, field2_seen)
                             {
                                 let _ = writeln!(io.stderr, "join: {e}");
                                 return Err(());
@@ -612,7 +655,7 @@ fn scan_order_sensitive(
                     return Err(());
                 }
                 OpStatus::J1Arg | OpStatus::J2Arg => {
-                    let field = match parse_positive_field(&arg) {
+                    let field = match parse_positive_field(ctx, &arg) {
                         Ok(f) => f,
                         Err(e) => {
                             let _ = writeln!(io.stderr, "join: {e}");
@@ -626,7 +669,7 @@ fn scan_order_sensitive(
                         jcount[1] -= 1;
                         2
                     };
-                    if let Err(e) = apply_field(which, field, cfg, field1_seen, field2_seen) {
+                    if let Err(e) = apply_field(ctx, which, field, cfg, field1_seen, field2_seen) {
                         let _ = writeln!(io.stderr, "join: {e}");
                         return Err(());
                     }
@@ -653,8 +696,8 @@ fn scan_order_sensitive(
     for (i_, count) in jcount.iter().enumerate() {
         if *count != 0 {
             let field = (i_ + 1) as i64;
-            if let Err(e) = apply_field(1, field, cfg, field1_seen, field2_seen)
-                .and_then(|_| apply_field(2, field, cfg, field1_seen, field2_seen))
+            if let Err(e) = apply_field(ctx, 1, field, cfg, field1_seen, field2_seen)
+                .and_then(|_| apply_field(ctx, 2, field, cfg, field1_seen, field2_seen))
             {
                 let _ = writeln!(io.stderr, "join: {e}");
                 return Err(());
@@ -721,13 +764,30 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             // rejected with the same diagnostic (probed)
             let bytes = v.as_bytes();
             if bytes.len() != 1 {
-                let _ = writeln!(io.stderr, "join: multi-character tab '{v}'");
+                let _ = writeln!(
+                    io.stderr,
+                    "join: {}",
+                    tr!(
+                        ctx,
+                        "command.join.error.multi_character_tab",
+                        "multi-character tab '{value}'",
+                        value = v
+                    )
+                );
                 return Ok(1);
             }
             bytes[0] as char
         };
         if tab_seen && tab_char != newtab {
-            let _ = writeln!(io.stderr, "join: incompatible tabs");
+            let _ = writeln!(
+                io.stderr,
+                "join: {}",
+                tr!(
+                    ctx,
+                    "command.join.error.incompatible_tabs",
+                    "incompatible tabs"
+                )
+            );
             return Ok(1);
         }
         tab_seen = true;
@@ -760,7 +820,12 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         if empty_field_seen && *v != cfg.empty_field {
             let _ = writeln!(
                 io.stderr,
-                "join: conflicting empty-field replacement strings"
+                "join: {}",
+                tr!(
+                    ctx,
+                    "command.join.error.conflicting_empty_field",
+                    "conflicting empty-field replacement strings"
+                )
             );
             return Ok(1);
         }
@@ -773,7 +838,7 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // scan_order_sensitive.
     if !real_lists.is_empty() {
         let joined = real_lists.join(",");
-        match parse_output_format(&joined) {
+        match parse_output_format(ctx, &joined) {
             Ok(fields) => cfg.output_fields = fields,
             Err(e) => {
                 let _ = writeln!(io.stderr, "join: {e}");
@@ -785,7 +850,7 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
 
     for (k, v) in p.values.iter().filter(|(k, _)| k == "a" || k == "v") {
-        let file_number = match parse_file_number(v) {
+        let file_number = match parse_file_number(ctx, v) {
             Ok(n) => n,
             Err(e) => {
                 let _ = writeln!(io.stderr, "join: {e}");
@@ -824,7 +889,15 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // [GNU] "both files cannot be standard input".
     if cfg.files[0] == "-" && cfg.files[1] == "-" {
-        let _ = writeln!(io.stderr, "join: both files cannot be standard input");
+        let _ = writeln!(
+            io.stderr,
+            "{}",
+            tr!(
+                ctx,
+                "command.join.error.both_stdin",
+                "join: both files cannot be standard input"
+            )
+        );
         return Ok(1);
     }
 
@@ -847,9 +920,28 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         // file name (probed WSL 9.4: "join: read error: Is
                         // a directory" rc 1 -- the read_error() path, not
                         // the fopen strerror path that carries quotef()).
-                        let _ = writeln!(io.stderr, "join: read error: Is a directory");
+                        let _ = writeln!(
+                            io.stderr,
+                            "join: {}",
+                            tr!(
+                                ctx,
+                                "command.join.error.read_error",
+                                "read error: {reason}",
+                                reason = "Is a directory"
+                            )
+                        );
                     } else {
-                        let _ = writeln!(io.stderr, "join: {name}: No such file or directory");
+                        let _ = writeln!(
+                            io.stderr,
+                            "join: {}",
+                            tr!(
+                                ctx,
+                                "command.join.error.open_failed",
+                                "{file}: {reason}",
+                                file = name,
+                                reason = "No such file or directory"
+                            )
+                        );
                     }
                     return Err(());
                 }
@@ -921,7 +1013,9 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                          fname: &str,
                          io: &mut Io|
          -> bool {
-            check_line_order(state, which, idx, start, parsed, raw, fname, cfg_ref, io)
+            check_line_order(
+                ctx, state, which, idx, start, parsed, raw, fname, cfg_ref, io,
+            )
         };
 
         let n1 = parsed1.len();
@@ -1142,7 +1236,15 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     if order.disorder {
         // [GNU] "join: input is not in sorted order"
-        let _ = writeln!(io.stderr, "join: input is not in sorted order");
+        let _ = writeln!(
+            io.stderr,
+            "{}",
+            tr!(
+                ctx,
+                "command.join.error.not_sorted",
+                "join: input is not in sorted order"
+            )
+        );
         return Ok(1);
     }
     Ok(0)

@@ -35,7 +35,7 @@ use std::io::{Read, Write};
 use std::rc::Rc;
 
 use crate::argopt;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const EMPTY_DELIM: u8 = b'\0';
 
@@ -115,6 +115,7 @@ fn read_byte(slot: &Slot<'_>) -> std::io::Result<Option<u8>> {
 
 /// paste_parallel(): the paste.c algorithm (delbuf handling included).
 fn paste_parallel(
+    ctx: &Ctx,
     sources: &mut [Slot<'_>],
     delims: &[u8],
     line_delim: u8,
@@ -173,7 +174,11 @@ fn paste_parallel(
                 // EOF, read error, or closed file: close the slot
                 if !sources[i].closed {
                     if had_err {
-                        let _ = writeln!(err, "paste: read error");
+                        let _ = writeln!(
+                            err,
+                            "paste: {}",
+                            tr!(ctx, "command.paste.error.read_error", "read error")
+                        );
                         ok = false;
                     }
                     sources[i].closed = true;
@@ -374,7 +379,13 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         None => {
             let _ = writeln!(
                 io.stderr,
-                "paste: delimiter list ends with an unescaped backslash: {delim_arg}"
+                "paste: {}",
+                tr!(
+                    ctx,
+                    "command.paste.error.delimiter_backslash",
+                    "delimiter list ends with an unescaped backslash: {value}",
+                    value = delim_arg
+                )
             );
             return Ok(1);
         }
@@ -429,7 +440,17 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     } else {
                         reason_str(&e)
                     };
-                    let _ = writeln!(io.stderr, "paste: {op}: {reason}");
+                    let _ = writeln!(
+                        io.stderr,
+                        "paste: {}",
+                        tr!(
+                            ctx,
+                            "command.paste.error.open_failed",
+                            "{file}: {reason}",
+                            file = op,
+                            reason = reason
+                        )
+                    );
                     if serial {
                         // serial continues with the remaining files
                         sources.push(Slot {
@@ -447,7 +468,7 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let ok = if serial {
         paste_serial(&sources, &delims, line_delim, io.stdout)? && ok
     } else {
-        paste_parallel(&mut sources, &delims, line_delim, io.stdout, io.stderr)? && ok
+        paste_parallel(ctx, &mut sources, &delims, line_delim, io.stdout, io.stderr)? && ok
     };
     Ok(if ok { 0 } else { 1 })
 }
