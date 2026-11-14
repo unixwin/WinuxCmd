@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
+#include <cstring>
 #include <regex>
+#include <string_view>
 
 #include "framework/winuxtest.h"
 
@@ -1650,6 +1652,51 @@ bool du_test_create_junction(const std::filesystem::path& link,
   return _wsystem(command.c_str()) == 0;
 }
 
+// WSL stores a link on a Windows volume as an LX reparse point (tag
+// 0xA000001D: u32 version, then the UTF-8 target). Writing that shape with
+// FSCTL_SET_REPARSE_POINT needs no SeCreateSymbolicLinkPrivilege, so the
+// exact object WSL's `ln -s` produces is constructible in tests. #1670:
+// GetFileAttributesW reports Archive|ReparsePoint for it (no DIRECTORY),
+// which is what made a live directory link look like a file operand.
+bool du_test_create_lx_symlink(const std::filesystem::path& link,
+                               std::string_view target_utf8) {
+  HANDLE handle = CreateFileW(
+      link.wstring().c_str(), GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+      nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    std::cout << "  SKIPPED (LX reparse create failed with error "
+              << GetLastError() << ")\n";
+    return false;
+  }
+
+  const size_t data_len = 4 + target_utf8.size();
+  std::vector<BYTE> buffer(8 + data_len, 0);
+  const DWORD tag = 0xA000001D;
+  std::memcpy(buffer.data(), &tag, sizeof(tag));
+  const uint16_t data_len16 = static_cast<uint16_t>(data_len);
+  std::memcpy(buffer.data() + 4, &data_len16, sizeof(data_len16));
+  const uint32_t version = 2;
+  std::memcpy(buffer.data() + 8, &version, sizeof(version));
+  std::memcpy(buffer.data() + 12, target_utf8.data(), target_utf8.size());
+
+  DWORD returned = 0;
+  // FSCTL_SET_REPARSE_POINT = CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 41,
+  // METHOD_BUFFERED, FILE_ANY_ACCESS).
+  const BOOL ok = DeviceIoControl(handle, 0x000900A4, buffer.data(),
+                                  static_cast<DWORD>(buffer.size()), nullptr, 0,
+                                  &returned, nullptr);
+  const DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+  CloseHandle(handle);
+  if (!ok) {
+    std::cout << "  SKIPPED (LX reparse ioctl failed with error " << error
+              << ")\n";
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 TEST(du, du_dereference_live_directory_junction_operand) {
@@ -1716,4 +1763,117 @@ TEST(du, du_dereference_dangling_junction_keeps_the_access_error) {
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text, "du: cannot access 'dangling'\n");
+}
+
+// [#1670] GNU du hashes entries by (st_dev, st_ino) when dereferencing
+// (du.c:1042 sets hash_all for -L; du.c:546-549 drops a repeated pair), so
+// `du -L dirlink dir` visits the target once and prints it under the
+// spelling that arrived first. A DrvFs LX link must also be classified
+// through its resolved target: GetFileAttributesW reports the link's own
+// Archive|ReparsePoint, so the gate used to count it as a zero-size file
+// and then print the real directory as a second line.
+TEST(du, issue1670_du_followed_lx_dir_operand_dedups_against_real_dir) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir" / "sub");
+  tmp.write("dir/f.txt", "x");
+  if (!du_test_create_lx_symlink(tmp.path / "dirlink", "dir")) {
+    return;
+  }
+
+  const std::string blocks = std::to_string(expected_blocks(1, 1024, tmp.path));
+
+  for (const wchar_t* opt : {L"-L", L"-H"}) {
+    Pipeline first;
+    first.set_cwd(tmp.wpath());
+    first.add(L"du.exe", {opt, L"-s", L"dirlink", L"dir"});
+    auto r_first = first.run();
+    EXPECT_EQ(r_first.exit_code, 0);
+    EXPECT_TRUE(r_first.stderr_text.empty());
+    EXPECT_EQ_TEXT(r_first.stdout_text, blocks + "\tdirlink\n");
+
+    Pipeline reversed;
+    reversed.set_cwd(tmp.wpath());
+    reversed.add(L"du.exe", {opt, L"-s", L"dir", L"dirlink"});
+    auto r_reversed = reversed.run();
+    EXPECT_EQ(r_reversed.exit_code, 0);
+    EXPECT_TRUE(r_reversed.stderr_text.empty());
+    EXPECT_EQ_TEXT(r_reversed.stdout_text, blocks + "\tdir\n");
+  }
+}
+
+// [#1670] -P must keep the link as its own entry: only the dereferencing
+// spellings (-L/-H) identify the visited directory by its target.
+TEST(du, issue1670_du_no_dereference_lx_link_and_dir_stay_distinct) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir" / "sub");
+  tmp.write("dir/f.txt", "x");
+  if (!du_test_create_lx_symlink(tmp.path / "dirlink", "dir")) {
+    return;
+  }
+
+  const std::string blocks = std::to_string(expected_blocks(1, 1024, tmp.path));
+
+  Pipeline first;
+  first.set_cwd(tmp.wpath());
+  first.add(L"du.exe", {L"-P", L"-s", L"dirlink", L"dir"});
+  auto r_first = first.run();
+  EXPECT_EQ(r_first.exit_code, 0);
+  EXPECT_EQ_TEXT(r_first.stdout_text, "0\tdirlink\n" + blocks + "\tdir\n");
+
+  Pipeline reversed;
+  reversed.set_cwd(tmp.wpath());
+  reversed.add(L"du.exe", {L"-P", L"-s", L"dir", L"dirlink"});
+  auto r_reversed = reversed.run();
+  EXPECT_EQ(r_reversed.exit_code, 0);
+  EXPECT_EQ_TEXT(r_reversed.stdout_text, blocks + "\tdir\n0\tdirlink\n");
+}
+
+// [#1670] A junction needs no symlink privilege; under -L/-H it must also
+// be identified by its target so the real directory does not print twice.
+TEST(du, issue1670_du_followed_junction_dir_operand_dedups_against_real_dir) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir" / "sub");
+  tmp.write("dir/f.txt", "x");
+  if (!du_test_create_junction(tmp.path / "dirlink", tmp.path / "dir")) {
+    std::cout << "  SKIPPED (mklink /j failed)\n";
+    return;
+  }
+
+  const std::string blocks = std::to_string(expected_blocks(1, 1024, tmp.path));
+
+  for (const wchar_t* opt : {L"-L", L"-H"}) {
+    Pipeline first;
+    first.set_cwd(tmp.wpath());
+    first.add(L"du.exe", {opt, L"-s", L"dirlink", L"dir"});
+    auto r_first = first.run();
+    EXPECT_EQ(r_first.exit_code, 0);
+    EXPECT_EQ_TEXT(r_first.stdout_text, blocks + "\tdirlink\n");
+
+    Pipeline reversed;
+    reversed.set_cwd(tmp.wpath());
+    reversed.add(L"du.exe", {opt, L"-s", L"dir", L"dirlink"});
+    auto r_reversed = reversed.run();
+    EXPECT_EQ(r_reversed.exit_code, 0);
+    EXPECT_EQ_TEXT(r_reversed.stdout_text, blocks + "\tdir\n");
+  }
+}
+
+// [#1670] GNU's `! opt_count_all` guard also covers directories: -l disables
+// the visited set, so two dereferenced spellings print two totals.
+TEST(du, issue1670_du_count_links_keeps_both_followed_dir_operands) {
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir" / "sub");
+  tmp.write("dir/f.txt", "x");
+  if (!du_test_create_lx_symlink(tmp.path / "dirlink", "dir")) {
+    return;
+  }
+
+  const std::string blocks = std::to_string(expected_blocks(1, 1024, tmp.path));
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"-l", L"-s", L"dirlink", L"dir"});
+  auto r = p.run();
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, blocks + "\tdirlink\n" + blocks + "\tdir\n");
 }

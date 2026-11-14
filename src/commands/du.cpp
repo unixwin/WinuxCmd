@@ -1261,6 +1261,48 @@ auto get_link_inode_key(const std::wstring& path) -> std::wstring {
   return key;
 }
 
+// [GNU] Identity of the directory a FOLLOWED path names. GNU du hashes
+// every entry by (st_dev, st_ino) when links are followed (du.c:1042 sets
+// hash_all for -L; process_file drops a pair hash_ins (du.c:365) already
+// holds, du.c:546-549), so a directory reached both through a link
+// spelling and through its real name is traversed and printed once - under
+// the spelling that arrived first. CreateFileW follows native symlinks and
+// junctions; a DrvFs LX link is opaque to the kernel (see
+// operand_target_present), so its stored target is resolved before the
+// identity is read. Empty when neither works.
+auto get_followed_dir_key(const std::wstring& path) -> std::wstring {
+  const auto identity_of = [](const std::wstring& target) -> std::wstring {
+    HANDLE handle = CreateFileW(
+        target.c_str(), 0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+      return L"";
+    }
+    BY_HANDLE_FILE_INFORMATION info{};
+    std::wstring key;
+    if (GetFileInformationByHandle(handle, &info)) {
+      const uint64_t index =
+          (static_cast<uint64_t>(info.nFileIndexHigh) << 32) |
+          info.nFileIndexLow;
+      key = std::to_wstring(info.dwVolumeSerialNumber) + L":" +
+            std::to_wstring(index);
+    }
+    CloseHandle(handle);
+    return key;
+  };
+
+  std::wstring key = identity_of(path);
+  if (!key.empty()) {
+    return key;
+  }
+  std::wstring target;
+  if (!read_lx_symlink_target(path, &target)) {
+    return L"";
+  }
+  return identity_of(resolve_link_target_path(path, target));
+}
+
 // A symlink's own contribution: st_size of the link for apparent
 // size, its own allocation (size rounded up to the volume cluster,
 // mirroring get_file_size's model) otherwise.
@@ -1400,12 +1442,23 @@ auto calculate_dir_size(const std::wstring& path,
         }
       }
       // [GNU] Subtrees already traversed under an earlier argument contribute
-      // nothing to this parent (Savannah #10397).
-      const std::wstring child_key = du_dir_key(full_path);
-      if (visited_dirs.count(child_key) != 0) {
-        continue;
+      // nothing to this parent (Savannah #10397). Under -L the key is the
+      // followed target's (volume serial, file index), so the same directory
+      // reached through a link and through its real name counts once;
+      // --count-links disables the dedup entirely, exactly like GNU's
+      // `! opt_count_all` guard around hash_ins (du.c:546-549).
+      if (!cfg.count_links) {
+        std::wstring child_key;
+        if (cfg.dereference) {
+          child_key = get_followed_dir_key(full_path);
+        }
+        if (child_key.empty()) {
+          child_key = du_dir_key(full_path);
+        }
+        if (!visited_dirs.insert(child_key).second) {
+          continue;
+        }
       }
-      visited_dirs.insert(child_key);
       // --dereference: on Windows, follow junction points
       // (FindFirstFile already handles this for most cases)
 
@@ -1644,7 +1697,13 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
 
     // Check if path exists.  Without -L/-H du lstats the operand, so a
     // dangling symlink still counts (as a zero-size entry) like GNU -P.
-    DWORD attrs = GetFileAttributesW(wpath.c_str());
+    // Under -L/-H a DrvFs LX link was resolved above: GetFileAttributesW
+    // reports the LINK's own attributes for it (Archive|ReparsePoint, no
+    // DIRECTORY), so the target must be classified through walk_path or a
+    // live directory link would be counted as a zero-size file and its
+    // directory printed again on its own (#1670).
+    const std::wstring attrs_path = walk_path != wpath ? walk_path : wpath;
+    DWORD attrs = GetFileAttributesW(attrs_path.c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES) {
       std::error_code lec;
       const auto link_status =
@@ -1687,10 +1746,22 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
 
     if ((attrs & FILE_ATTRIBUTE_DIRECTORY) && !operand_is_unfollowed_link) {
       // [GNU] Skip an argument directory that was already traversed under an
-      // earlier argument (Savannah #10397).
-      const std::wstring arg_key = du_dir_key(wpath);
-      if (!visited_dirs.insert(arg_key).second) {
-        continue;
+      // earlier argument (Savannah #10397). -L/-H follow the operand, so the
+      // key is the target's (volume serial, file index): `du -L dirlink dir`
+      // visits one directory, not two spellings of it (du.c:1042/546-549).
+      // Without -L/-H the link is an entry of its own and keeps the lexical
+      // key. --count-links disables the dedup (GNU's `! opt_count_all`).
+      if (!cfg.count_links) {
+        std::wstring arg_key;
+        if (cfg.dereference || cfg.dereference_args) {
+          arg_key = get_followed_dir_key(walk_path);
+        }
+        if (arg_key.empty()) {
+          arg_key = du_dir_key(wpath);
+        }
+        if (!visited_dirs.insert(arg_key).second) {
+          continue;
+        }
       }
       // [GNU] Entries print in traversal post-order: every directory line
       // follows its subtree, so the operand directory prints last
