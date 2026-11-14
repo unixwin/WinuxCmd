@@ -496,7 +496,6 @@ fn autoscale_ceil(n: u64, base1024: bool, suppress0: bool) -> (u64, Option<u8>, 
             if rounding > 0 {
                 // ceiling: bump the tenths digit on any residue
                 tenths += 1;
-                rounding = 0;
                 if tenths == 10 {
                     amt += 1;
                     tenths = 0;
@@ -556,8 +555,8 @@ fn human(n: u64, si1000: bool) -> String {
 /// decimal). Decimal base forces human_B ("1kB"/"512B"); binary keeps
 /// the spec's own flags ("1KiB" for `-B KiB`).
 fn size_label(size: u64, spec_base1024: bool, spec_b: bool) -> String {
-    let mut d1000 = 0u32;
-    let mut d1024 = 0u32;
+    let mut d1000: u32;
+    let mut d1024: u32;
     let (mut q1000, mut q1024) = (size, size);
     loop {
         d1000 = u32::from(q1000 % 1000 == 0);
