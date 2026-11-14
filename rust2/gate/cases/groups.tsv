@@ -7,9 +7,9 @@ gr04-empty-named	exit				@EMPTY@
 gr05-two-missing	exit				nosuch1	nosuch2
 gr06-named-win-parity	win				Administrator
 gr07-named-win-two	win				Administrator	cmx
-gr08-help	strict				--help
-gr09-version	strict				--version
-gr10-version-help	strict				--version	--help
+gr08-help	win				--help
+gr09-version	win				--version
+gr10-version-help	win				--version	--help
 gr11-bogus-short	exit				-x
 gr12-h-note	note				-h
 gr13-bogus-long	exit				--bogus
@@ -19,6 +19,6 @@ gr16-dash-operand	exit				-
 gr17-mixed-first-ok	win				cmx	nosuch123
 gr18-upper-operand	exit				NOSUCH123
 gr19-self-extra-env	win			
-gr20-help-extra	strict				--help	x
-gr21-version-extra	strict				--version	x
+gr20-help-extra	win				--help	x
+gr21-version-extra	win				--version	x
 gr22-numeric-operand	exit				12345

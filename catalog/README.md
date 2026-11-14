@@ -124,3 +124,49 @@ Numbers:
 Release note: `VERSION` in `unixwin/winuxcmd-i18n` must be bumped in the
 same PR as any `catalogs/` change (AGENTS.md); this lane did not touch
 that repository.
+
+---
+
+## wave-W1 lane — arch/csplit/factor/groups/pathchk/pinky/ptx/shuf/who runtime message face
+
+Prepared by the wave-W1 wiring lane (`rust2/wire-w1-devin`, worktree
+`D:/repo/wc-devin-w1`). The captain lands the `catalogs/` part in
+`unixwin/winuxcmd-i18n`; nothing here is applied to the shared catalog
+checkout.
+
+| file | purpose |
+|---|---|
+| `wave-w1-zh-CN.json` | WP-I W1 patch: `set` (new/re-worded `command.<cmd>.error.*` keys, named placeholders) and `remove` (dead `legacy.<fnv>` reverse-lookup entries whose C++ bodies this wave deleted). |
+
+## Applying (in `D:/repo/winuxcmd-i18n`, separate commit, not pushed by agents)
+
+```python
+import json
+patch = json.load(open("catalog/wave-w1-zh-CN.json", encoding="utf-8"))
+path = "catalogs/zh-CN/catalog.json"
+cat = json.load(open(path, encoding="utf-8"))
+cat["messages"].update(patch["set"])
+for key in patch["remove"]:
+    cat["messages"].pop(key, None)
+cat["messages"] = dict(sorted(cat["messages"].items()))
+open(path, "w", encoding="utf-8").write(
+    json.dumps(cat, ensure_ascii=False, indent=2) + "\n")
+```
+
+Then:
+
+1. **Bump `VERSION`** (at least the patch segment). Every change under
+   `catalogs/` requires it; CI blocks the PR otherwise, and WPM treats an
+   unchanged version as already installed.
+2. Validate against the freshly extracted English catalog:
+   `python scripts/i18n_batch.py validate --base <extract.json> --translated catalogs/zh-CN/catalog.json`
+   from the WinuxCmd checkout.
+3. Only then push, and re-run `scripts/check_i18n_drift.py` on the WinuxCmd
+   side.
+
+## English source of truth
+
+`python scripts/i18n_batch.py extract --output <tmp>.json` scans
+`src/commands/*.cpp` (registration metadata), `src/**` (legacy literal
+fallbacks) and `rust2/crates` (`tr!` fallbacks, edge-followed from the crate
+roots).

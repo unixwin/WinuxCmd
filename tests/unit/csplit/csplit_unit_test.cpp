@@ -101,7 +101,13 @@ TEST(csplit, csplit_quiet_and_elide_empty_files) {
   EXPECT_EQ_TEXT(r.stdout_text, "");
 }
 
-TEST(csplit, csplit_wildcard_input_rejects_ambiguous_match) {
+// #1488 wave-W1 re-pin: the 1.x C++ body glob-expanded the FILE operand and
+// rejected a wildcard matching several files ("wildcard input must match
+// exactly one file"). GNU csplit treats argv literally (no glob), and so does
+// the rust2 body: `csplit '*.txt' /separator/` dies on the open with
+// "cannot open '*.txt' for reading: No such file or directory" rc 1 (probed
+// coreutils 9.4). The retired wildcard extension is pinned to the GNU shape.
+TEST(csplit, csplit_wildcard_input_is_literal_single_operand) {
   TempDir tmp;
   tmp.write("a.txt", "line1\nseparator\n");
   tmp.write("b.txt", "line2\nseparator\n");
@@ -112,9 +118,11 @@ TEST(csplit, csplit_wildcard_input_rejects_ambiguous_match) {
 
   auto r = p.run();
 
-  EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("exactly one file") != std::string::npos ||
-              r.stderr_text.find("exactly one file") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "csplit: cannot open '*.txt' for reading: No such file or "
+                  "directory") != std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "xx00"));
 }
 
 TEST(csplit, csplit_missing_input_reports_help_hint) {

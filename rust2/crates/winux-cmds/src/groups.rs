@@ -26,7 +26,7 @@ use std::ffi::OsString;
 use crate::argopt;
 use crate::gnuhelp;
 use crate::winsys;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[argopt::OptSpec] = &[];
 
@@ -93,11 +93,11 @@ pub fn groups_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let Some(user) = winsys::imp::user_name() else {
             return Ok(1);
         };
-        failed |= !print_user(out, err, &user, false);
+        failed |= !print_user(ctx, out, err, &user, false);
     } else {
         for operand in &p.positionals {
             let name = operand.to_string_lossy().into_owned();
-            if !print_user(out, err, &name, true) {
+            if !print_user(ctx, out, err, &name, true) {
                 failed = true;
             }
         }
@@ -107,8 +107,10 @@ pub fn groups_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 /// One `<user> : <groups>` (prefixed) or bare-names line; false on
 /// membership lookup failure (GNU wording to stderr, processing of the
-/// remaining users continues).
+/// remaining users continues). The program prefix stays in code; the
+/// error() inner wording is the tr! key (`command.groups.error.*`).
 fn print_user(
+    ctx: &Ctx,
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
     user: &str,
@@ -129,11 +131,30 @@ fn print_user(
             true
         }
         Err(winsys::imp::NERR_USER_NOT_FOUND) => {
-            let _ = writeln!(err, "groups: '{user}': no such user");
+            let _ = writeln!(
+                err,
+                "groups: {}",
+                tr!(
+                    ctx,
+                    "command.groups.error.no_such_user",
+                    "'{user}': no such user",
+                    user = user
+                )
+            );
             false
         }
         Err(code) => {
-            let _ = writeln!(err, "groups: {user}: netapi error {code}");
+            let _ = writeln!(
+                err,
+                "groups: {}",
+                tr!(
+                    ctx,
+                    "command.groups.error.netapi_error",
+                    "{user}: netapi error {code}",
+                    user = user,
+                    code = code
+                )
+            );
             false
         }
     }

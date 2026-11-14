@@ -82,26 +82,31 @@ TEST(factor, factor_accepts_leading_whitespace_and_plus_sign) {
   EXPECT_EQ(rt.exit_code, 1);
 }
 
-// [#1004] numbers beyond uint64 are factored via bignum arithmetic.
-TEST(factor, factor_numbers_above_uint64) {
+// [#1004] re-pinned for #1488 wave-W1: the 1.x bignum path factored numbers
+// beyond uint64. The rust2 subset covers 0..=u64::MAX exactly and rejects
+// larger operands with the invalid-operand diagnostic rc 1 — the documented
+// deviation recorded by gate row fa24-beyond-u64 (`note`, never gating) and
+// by the module header. GNU factors these via GMP; restoring that is a
+// command-impl item, not a wiring item.
+TEST(factor, factor_numbers_above_uint64_are_rejected) {
   Pipeline p;
   p.add(L"factor.exe", {L"18446744073709551616"});
   auto r = p.run();
-  EXPECT_EQ(r.exit_code, 0);
-  std::string expected = "18446744073709551616:";
-  for (int i = 0; i < 64; ++i) expected += " 2";
-  expected += "\n";
-  EXPECT_EQ_TEXT(r.stdout_text, expected);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("is not a valid positive integer") !=
+              std::string::npos);
 
   Pipeline semiprime;
   semiprime.add(L"factor.exe", {L"18446744073709551617"});
   auto rs = semiprime.run();
-  EXPECT_EQ(rs.exit_code, 0);
-  EXPECT_EQ_TEXT(rs.stdout_text,
-                 "18446744073709551617: 274177 67280421310721\n");
+  EXPECT_EQ(rs.exit_code, 1);
+  EXPECT_TRUE(rs.stdout_text.empty());
 }
 
-// [#1006] -h (and documented alias -e) select exponent form.
+// [#1006] -h selects exponent form. The 1.x `-e` alias is RETIRED by the
+// #1488 wave-W1 wiring (GNU factor 9.x has no -e: "invalid option -- 'e'",
+// rc 1, probed coreutils 9.4), matching the retired `-e` help line.
 TEST(factor, factor_exponents_flag_forms) {
   Pipeline h;
   h.add(L"factor.exe", {L"-h", L"72"});
@@ -112,8 +117,9 @@ TEST(factor, factor_exponents_flag_forms) {
   Pipeline e;
   e.add(L"factor.exe", {L"-e", L"8"});
   auto re = e.run();
-  EXPECT_EQ(re.exit_code, 0);
-  EXPECT_EQ_TEXT(re.stdout_text, "8: 2^3\n");
+  EXPECT_EQ(re.exit_code, 1);
+  EXPECT_TRUE(re.stdout_text.empty());
+  EXPECT_TRUE(re.stderr_text.find("invalid option") != std::string::npos);
 
   Pipeline lng;
   lng.add(L"factor.exe", {L"--exponents", L"8"});
