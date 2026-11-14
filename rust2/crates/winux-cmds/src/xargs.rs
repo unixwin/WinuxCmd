@@ -2081,10 +2081,7 @@ mod tests {
     fn run_tty(input: &[u8], args: &[&str], tty: &mut FakeTty) -> (u32, String, String) {
         let sc = ScratchCtx::new("xargs");
         let env = real_env();
-        let ctx = Ctx {
-            cwd: sc.dir.clone(),
-            env: &env,
-        };
+        let ctx = Ctx::new(sc.dir.clone(), &env);
         let mut io = MemIo::new("");
         io.input = std::io::Cursor::new(input.to_vec());
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
@@ -2110,10 +2107,7 @@ mod tests {
     /// run_bytes with an explicit cwd (child-side file probes).
     fn run_in(dir: &std::path::Path, input: &[u8], args: &[&str]) -> (u32, Vec<u8>, Vec<u8>) {
         let env = real_env();
-        let ctx = Ctx {
-            cwd: dir.to_path_buf(),
-            env: &env,
-        };
+        let ctx = Ctx::new(dir.to_path_buf(), &env);
         let mut io = MemIo::new("");
         io.input = std::io::Cursor::new(input.to_vec());
         let mut tty = FakeTty {
@@ -2606,10 +2600,7 @@ mod tests {
         std::fs::write(sc.path("args.txt"), "f1 f2\nf3\n").unwrap();
         std::fs::create_dir_all(sc.path("d1")).unwrap();
         let env = MapEnv::new();
-        let ctx = Ctx {
-            cwd: sc.dir.clone(),
-            env: &env,
-        };
+        let ctx = Ctx::new(sc.dir.clone(), &env);
         let go = |args: &[&str], input: &str| {
             let mut io = MemIo::new(input);
             let owned: Vec<OsString> = args.iter().map(Into::into).collect();

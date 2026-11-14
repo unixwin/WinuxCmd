@@ -12,7 +12,7 @@ use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::{reason, resolve};
-use winux_core::{q, usage_error, CmdResult, Ctx, Io};
+use winux_core::{q, tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -47,7 +47,15 @@ pub fn rmdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "rmdir", "missing operand");
+        let _ = usage_error(
+            io,
+            "rmdir",
+            &tr!(
+                ctx,
+                "command.rmdir.error.missing_operand",
+                "missing operand"
+            ),
+        );
         return Ok(1);
     }
     let parents = p.has("parents") || p.has("path");
@@ -60,7 +68,16 @@ pub fn rmdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         for operand in &p.positionals {
             let name = operand.to_string_lossy().into_owned();
             if verbose {
-                let _ = writeln!(out, "rmdir: removing directory, {}", q(&name));
+                let _ = writeln!(
+                    out,
+                    "rmdir: {}",
+                    tr!(
+                        ctx,
+                        "command.rmdir.status.removing_directory",
+                        "removing directory, {directory}",
+                        directory = q(&name)
+                    )
+                );
             }
             if let Err(kind) = remove_one(ctx, &name) {
                 if !(ignore_nonempty && kind == FailKind::NonEmpty) {
@@ -68,9 +85,14 @@ pub fn rmdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     let e = fail_error(&path, kind);
                     let _ = writeln!(
                         io.stderr,
-                        "rmdir: failed to remove {}: {}",
-                        q(&name),
-                        reason(&e)
+                        "rmdir: {}",
+                        tr!(
+                            ctx,
+                            "command.rmdir.error.failed_to_remove",
+                            "failed to remove {directory}: {reason}",
+                            directory = q(&name),
+                            reason = reason(&e)
+                        )
                     );
                     failed = true;
                 }
@@ -86,7 +108,16 @@ pub fn rmdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             comps[..i].join("/")
                         };
                         if verbose {
-                            let _ = writeln!(out, "rmdir: removing directory, {}", q(&parent));
+                            let _ = writeln!(
+                                out,
+                                "rmdir: {}",
+                                tr!(
+                                    ctx,
+                                    "command.rmdir.status.removing_directory",
+                                    "removing directory, {directory}",
+                                    directory = q(&parent)
+                                )
+                            );
                         }
                         if let Err(kind) = remove_one(ctx, &parent) {
                             if !(ignore_nonempty && kind == FailKind::NonEmpty) {
@@ -94,9 +125,14 @@ pub fn rmdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 let e = fail_error(&path, kind);
                                 let _ = writeln!(
                                     io.stderr,
-                                    "rmdir: failed to remove directory {}: {}",
-                                    q(&parent),
-                                    reason(&e)
+                                    "rmdir: {}",
+                                    tr!(
+                                        ctx,
+                                        "command.rmdir.error.failed_to_remove_directory",
+                                        "failed to remove directory {directory}: {reason}",
+                                        directory = q(&parent),
+                                        reason = reason(&e)
+                                    )
                                 );
                                 failed = true;
                             }
@@ -223,5 +259,41 @@ mod tests {
         let args = ["-v".into(), "dv".into()];
         super::rmdir_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(io.out(), "rmdir: removing directory, 'dv'\n");
+    }
+
+    #[test]
+    fn catalog_injection_translates_verbose_and_failure() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("rmdir-i18n");
+        std::fs::create_dir(sc.path("dv")).unwrap();
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.rmdir.status.removing_directory".to_string(),
+            "正在删除目录，{directory}".to_string(),
+        );
+        host.messages.insert(
+            "command.rmdir.error.failed_to_remove".to_string(),
+            "删除 {directory} 失败：{reason}".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+
+        let mut io = MemIo::new("");
+        let args = ["-v".into(), "dv".into()];
+        let r = super::rmdir_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(io.out(), "rmdir: 正在删除目录，'dv'\n");
+
+        let mut io = MemIo::new("");
+        let args = ["nosuch".into()];
+        let r = super::rmdir_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(
+            io.err().contains("删除 'nosuch' 失败："),
+            "got {}",
+            io.err()
+        );
     }
 }

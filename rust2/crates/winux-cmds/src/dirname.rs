@@ -7,7 +7,7 @@
 use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[OptSpec {
     short: Some('z'),
@@ -47,7 +47,16 @@ pub fn dirname_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     let zero = p.has("zero");
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "dirname", "missing operand");
+        // [GNU] dirname.c: usage (EXIT_FAILURE) with "missing operand".
+        let _ = usage_error(
+            io,
+            "dirname",
+            &tr!(
+                ctx,
+                "command.dirname.error.missing_operand",
+                "missing operand"
+            ),
+        );
         return Ok(1);
     }
     let sep = if zero { '\0' } else { '\n' };
@@ -100,5 +109,24 @@ mod tests {
         let r = super::dirname_cmd(&[], &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 1);
         assert!(io.err().contains("missing operand"));
+    }
+
+    #[test]
+    fn catalog_injection_translates_missing_operand() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("dirname-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.dirname.error.missing_operand".to_string(),
+            "缺少操作数".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+        let mut io = MemIo::new("");
+        let r = super::dirname_cmd(&[], &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("缺少操作数"), "got {}", io.err());
     }
 }

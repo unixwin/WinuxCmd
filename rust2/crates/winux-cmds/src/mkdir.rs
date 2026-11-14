@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::{reason, resolve, split_slashes};
 use crate::modemap;
-use winux_core::{q, usage_error, CmdResult, Ctx, Io};
+use winux_core::{q, tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -61,7 +61,15 @@ pub fn mkdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(0);
     }
     if p.positionals.is_empty() {
-        let _ = usage_error(io, "mkdir", "missing operand");
+        let _ = usage_error(
+            io,
+            "mkdir",
+            &tr!(
+                ctx,
+                "command.mkdir.error.missing_operand",
+                "missing operand"
+            ),
+        );
         return Ok(1);
     }
     let parents = p.has("parents");
@@ -72,7 +80,16 @@ pub fn mkdir_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             // [GNU] mkdir.c:290: invalid mode is a RUNTIME operand error,
             // not a usage error - no Try hint (probed 9.4: exactly one
             // stderr line, rc 1).
-            let _ = writeln!(io.stderr, "mkdir: invalid mode {}", q(&bad));
+            let _ = writeln!(
+                io.stderr,
+                "mkdir: {}",
+                tr!(
+                    ctx,
+                    "command.mkdir.error.invalid_mode",
+                    "invalid mode {mode}",
+                    mode = q(&bad)
+                )
+            );
             return Ok(1);
         }
     }
@@ -118,13 +135,31 @@ fn mkdir_fold(ctx: &Ctx, effective: &str) -> Option<String> {
     }
 }
 
-fn report_error(io: &mut Io, shown: &str, e: &io::Error) {
-    let msg = format!("cannot create directory {}: {}", q(shown), reason(e));
-    let _ = writeln!(io.stderr, "mkdir: {msg}");
+fn report_error(ctx: &Ctx, io: &mut Io, shown: &str, e: &io::Error) {
+    let _ = writeln!(
+        io.stderr,
+        "mkdir: {}",
+        tr!(
+            ctx,
+            "command.mkdir.error.cannot_create_directory",
+            "cannot create directory {directory}: {reason}",
+            directory = q(shown),
+            reason = reason(e)
+        )
+    );
 }
 
-fn verbose_created(io: &mut Io, shown: &str) {
-    let _ = writeln!(*io.stdout, "mkdir: created directory {}", q(shown));
+fn verbose_created(ctx: &Ctx, io: &mut Io, shown: &str) {
+    let _ = writeln!(
+        *io.stdout,
+        "mkdir: {}",
+        tr!(
+            ctx,
+            "command.mkdir.status.created_directory",
+            "created directory {directory}",
+            directory = q(shown)
+        )
+    );
 }
 
 fn create_one(
@@ -142,12 +177,12 @@ fn create_one(
                 let _ = modemap::apply_mode_dir(&path, m);
             }
             if verbose {
-                verbose_created(io, shown);
+                verbose_created(ctx, io, shown);
             }
             Ok(())
         }
         Err(e) => {
-            report_error(io, shown, &e);
+            report_error(ctx, io, shown, &e);
             Err(())
         }
     }
@@ -191,6 +226,7 @@ fn create_parents(
             mode,
             verbose,
             io,
+            ctx,
         );
     }
     let fs_comps: Vec<String> = split_slashes(fs_name)
@@ -211,9 +247,11 @@ fn create_parents(
         mode,
         verbose,
         io,
+        ctx,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_parents_walk(
     root: PathBuf,
     fs_comps: Vec<String>,
@@ -222,6 +260,7 @@ fn create_parents_walk(
     mode: Option<u32>,
     verbose: bool,
     io: &mut Io,
+    ctx: &Ctx,
 ) -> Result<(), ()> {
     if fs_comps.is_empty() {
         // Operand named an existing root ("/" or a bare drive root): -p is
@@ -247,7 +286,7 @@ fn create_parents_walk(
                     continue; // existing dir: silent, not "created"
                 }
                 let err = io::Error::from(io::ErrorKind::AlreadyExists);
-                report_error(io, &shown, &err);
+                report_error(ctx, io, &shown, &err);
                 return Err(());
             }
             Err(_) => match std::fs::create_dir(&acc) {
@@ -262,11 +301,11 @@ fn create_parents_walk(
                         }
                     }
                     if verbose {
-                        verbose_created(io, &shown);
+                        verbose_created(ctx, io, &shown);
                     }
                 }
                 Err(e) => {
-                    report_error(io, &shown, &e);
+                    report_error(ctx, io, &shown, &e);
                     return Err(());
                 }
             },
@@ -471,5 +510,36 @@ mod tests {
         unsafe { _umask(old) };
         unset_readonly(&sc.path("u2"));
         unset_readonly(&sc.path("u3"));
+    }
+
+    #[test]
+    fn catalog_injection_translates_verbose_and_failure() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = ScratchCtx::new("mkdir-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.mkdir.status.created_directory".to_string(),
+            "已创建目录 {directory}".to_string(),
+        );
+        host.messages.insert(
+            "command.mkdir.error.cannot_create_directory".to_string(),
+            "无法创建目录 {directory}：{reason}".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+
+        let mut io = MemIo::new("");
+        let args = ["-v".into(), "d".into()];
+        let r = super::mkdir_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(io.out(), "mkdir: 已创建目录 'd'\n");
+
+        let mut io = MemIo::new("");
+        let args = ["d".into()];
+        let r = super::mkdir_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("无法创建目录 'd'："), "got {}", io.err());
     }
 }

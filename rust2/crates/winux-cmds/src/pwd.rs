@@ -11,7 +11,7 @@
 
 use std::ffi::OsString;
 
-use winux_core::{abs_path, strip_verbatim, usage_error, CmdResult, Ctx, Io};
+use winux_core::{abs_path, strip_verbatim, tr, usage_error, CmdResult, Ctx, Io};
 
 pub fn pwd_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut logical: Option<bool> = None;
@@ -30,8 +30,18 @@ pub fn pwd_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             "--help" | "--version" => return Ok(0),
             _ => {
                 if s.starts_with('-') && s.len() > 1 {
-                    let msg = format!("unrecognized option '{s}'");
-                    let _ = usage_error(io, "pwd", &msg);
+                    // [GNU] pwd.c has no short options; getopt's shared
+                    // "unrecognized option" diagnostic is keyed per command.
+                    let _ = usage_error(
+                        io,
+                        "pwd",
+                        &tr!(
+                            ctx,
+                            "command.pwd.error.unrecognized_option",
+                            "unrecognized option '{option}'",
+                            option = s
+                        ),
+                    );
                     return Ok(1);
                 }
                 extras += 1;
@@ -39,7 +49,17 @@ pub fn pwd_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     }
     if extras > 0 {
-        let _ = writeln!(io.stderr, "pwd: ignoring non-option arguments");
+        // [GNU] pwd.c: error(0, 0, "ignoring non-option arguments") — a
+        // status-0 warning, not a failure.
+        let _ = writeln!(
+            io.stderr,
+            "pwd: {}",
+            tr!(
+                ctx,
+                "command.pwd.warning.ignoring_non_option_arguments",
+                "ignoring non-option arguments"
+            )
+        );
     }
 
     let default_logical = ctx.env.get("POSIXLY_CORRECT").is_some();
@@ -190,5 +210,40 @@ mod tests {
         assert!(super::has_relative_components("/a/../b"));
         assert!(super::has_relative_components("/a/b/.."));
         assert!(super::has_relative_components("\\a\\."));
+    }
+
+    #[test]
+    fn catalog_injection_translates_warning_and_option_error() {
+        use winux_core::host::MapHost;
+        use winux_core::MapEnv;
+
+        let sc = ScratchCtx::new("pwd-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.pwd.warning.ignoring_non_option_arguments".to_string(),
+            "忽略非选项参数".to_string(),
+        );
+        host.messages.insert(
+            "command.pwd.error.unrecognized_option".to_string(),
+            "无法识别的选项 '{option}'".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+
+        let mut io = MemIo::new("");
+        let args = ["extra".into()];
+        let r = super::pwd_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert!(io.err().contains("忽略非选项参数"), "got {}", io.err());
+
+        let mut io = MemIo::new("");
+        let args = ["--bogus".into()];
+        let r = super::pwd_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(
+            io.err().contains("无法识别的选项 '--bogus'"),
+            "got {}",
+            io.err()
+        );
     }
 }

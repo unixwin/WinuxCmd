@@ -23,7 +23,7 @@ use std::io::{Read, Write};
 
 use crate::argopt;
 use crate::fsutil::resolve;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 pub fn tsort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // GNU tsort main() parses argv with getopt_long against an EMPTY option
@@ -49,8 +49,13 @@ pub fn tsort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if args.len() > 1 {
         let _ = writeln!(
             io.stderr,
-            "tsort: extra operand '{}'",
-            args[1].to_string_lossy()
+            "tsort: {}",
+            tr!(
+                ctx,
+                "command.tsort.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = args[1].to_string_lossy()
+            )
         );
         let _ = writeln!(io.stderr, "Try 'tsort --help' for more information.");
         return Ok(1);
@@ -62,7 +67,16 @@ pub fn tsort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         None | Some("-") => {
             let mut buf = Vec::new();
             if io.stdin.read_to_end(&mut buf).is_err() {
-                let _ = writeln!(io.stderr, "tsort: {input_name}: read error");
+                let _ = writeln!(
+                    io.stderr,
+                    "tsort: {}",
+                    tr!(
+                        ctx,
+                        "command.tsort.error.read_error",
+                        "{file}: read error",
+                        file = input_name
+                    )
+                );
                 return Ok(1);
             }
             buf
@@ -71,7 +85,16 @@ pub fn tsort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             let path = resolve(ctx, name);
             match std::fs::metadata(&path) {
                 Ok(m) if m.is_dir() => {
-                    let _ = writeln!(io.stderr, "tsort: {name}: read error: Is a directory");
+                    let _ = writeln!(
+                        io.stderr,
+                        "tsort: {}",
+                        tr!(
+                            ctx,
+                            "command.tsort.error.read_error_directory",
+                            "{file}: read error: Is a directory",
+                            file = name
+                        )
+                    );
                     return Ok(1);
                 }
                 _ => {}
@@ -87,7 +110,17 @@ pub fn tsort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     } else {
                         "No such file or directory"
                     };
-                    let _ = writeln!(io.stderr, "tsort: {name}: {reason}");
+                    let _ = writeln!(
+                        io.stderr,
+                        "tsort: {}",
+                        tr!(
+                            ctx,
+                            "command.tsort.error.open",
+                            "{file}: {reason}",
+                            file = name,
+                            reason = reason
+                        )
+                    );
                     return Ok(1);
                 }
             }
@@ -100,7 +133,13 @@ pub fn tsort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if tokens.len() % 2 != 0 {
         let _ = writeln!(
             io.stderr,
-            "tsort: {input_name}: input contains an odd number of tokens"
+            "tsort: {}",
+            tr!(
+                ctx,
+                "command.tsort.error.odd_token_count",
+                "{file}: input contains an odd number of tokens",
+                file = input_name
+            )
         );
         return Ok(1);
     }
@@ -188,7 +227,16 @@ pub fn tsort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     break;
                 }
             }
-            let _ = writeln!(io.stderr, "tsort: {input_name}: input contains a loop:");
+            let _ = writeln!(
+                io.stderr,
+                "tsort: {}",
+                tr!(
+                    ctx,
+                    "command.tsort.error.input_loop",
+                    "{file}: input contains a loop:",
+                    file = input_name
+                )
+            );
             for member in &loop_members {
                 let _ = writeln!(io.stderr, "tsort: {member}");
             }
@@ -323,5 +371,24 @@ mod tests {
         // whitespace-separated pairs
         let (r, out, _) = run(&[], "  a   b \n\n c  d\n");
         assert_eq!((r, out.as_str()), (0, "a\nc\nb\nd\n"));
+    }
+
+    #[test]
+    fn catalog_injection_translates_loop_header() {
+        use winux_core::host::MapHost;
+        use winux_core::{Ctx, MapEnv};
+
+        let sc = scratch("tsort-i18n");
+        let mut host = MapHost::default();
+        host.messages.insert(
+            "command.tsort.error.input_loop".to_string(),
+            "{file}：输入中存在循环：".to_string(),
+        );
+        let env = MapEnv::new();
+        let ctx = Ctx::with_host(sc.dir.clone(), &env, &host);
+        let mut io = MemIo::new("a b\nb a\n");
+        let r = super::tsort_cmd(&[], &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io.err().contains("-：输入中存在循环："), "got {}", io.err());
     }
 }
