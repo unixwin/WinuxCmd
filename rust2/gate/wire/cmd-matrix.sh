@@ -101,6 +101,31 @@ setup_fixture() {
       rm -rf flong fwords
       printf 'The quick brown fox jumps over the lazy dog again and again.\n' > flong
       printf 'supercalifragilisticexpialidocious antidisestablishmentarianism word\n' > fwords ;;
+    # wave-W2 wire (#1488): cut/tr/od/sum fixtures. All relative names, no
+    # POSIX spellings (the MSYS probe channel must not rewrite operands).
+    cut)
+      rm -rf cf cs cbin czon
+      printf 'a,b,c\nd,e,f\n' > cf
+      printf 'a,b\nnodelim\nx\n' > cs
+      printf 'aa\0bb\0cc' > czon
+      printf 'one\ttwo\tthree\n' > cbin ;;
+    tr)
+      : ;;
+    od)
+      rm -rf of os1
+      printf 'abcdefghijklmnopqrstuvwxyz0123456789' > of
+      printf 'xxhello\0world\0' > os1 ;;
+    sum)
+      rm -rf su6 su512 su700 su1024 su1025 su0
+      printf 'abcdef' > su6
+      i=0; while [ $i -lt 51 ]; do printf 'abcdefghij'; i=$((i+1)); done > su512
+      printf 'xy' >> su512
+      i=0; while [ $i -lt 70 ]; do printf 'abcdefghij'; i=$((i+1)); done > su700
+      i=0; while [ $i -lt 102 ]; do printf 'abcdefghij'; i=$((i+1)); done > su1024
+      printf 'abcde' >> su1024
+      cp su1024 su1025 2>/dev/null
+      printf 'f' >> su1025
+      : > su0 ;;
     fmt)
       rm -rf fpara fpre
       printf 'This is the first paragraph of the sample text used by the fmt matrix. It has enough words to wrap around several times when the width is small.\n\nThis is the second paragraph.\n' > fpara
@@ -1196,6 +1221,155 @@ TABLE
 20|||-w
 21|||-w:30:fpara:fpre:fpara
 22|||-d
+TABLE
+      ;;
+    # wave-W2 wire (#1488): cut -> rust2. Row shape id|env|stdin|args
+    # (args ':'-joined). Fixture: cut (cf/cs/czon/cbin). The GNU ledger is
+    # the rc oracle; portable stdout is compared byte-for-byte by gate a.
+    cut)
+      cat <<'TABLE'
+01|||cf
+02||-c:2|cf
+03|||-c:2-4:cf
+04|||-f:2:cf
+05|||-d:,:-f:2:cf
+06|||-d:,:-f:1,3:cf
+07|||-d:,:-f:2-:cf
+08|||-d:,:-f:-2:cf
+09|||-d:,:-f:1-2:--output-delimiter=XY:cf
+10|||-d:,:-f:1,3:--output-delimiter=:cf
+11|||-s:cs
+12|||-d:,:-f:2:-s:cs
+13|||-d:,:-f:1:--complement:cf
+14|||-b:2,5:cbin
+15|||-b:1-2:-n:cbin
+16|||-z:-d:@EMPTY@:-f:2:czon
+17|||-z:-d:@EMPTY@:-s:-f:1:czon
+18|||cf:cs
+19|||missing-cut-file
+20|||-f:0:cf
+21|||-f:3x:cf
+22|||-f:2-1:cf
+23|||-d:ab:-f:1:cf
+24|||-s:-c:1:cf
+25|||-b:1:-c:1:cf
+26|||--help
+27|||--version
+28|||--bogus
+29||a,b,cd|-d:,:-f:2
+30|||
+TABLE
+      ;;
+    # wave-W2 wire (#1488): tr -> rust2. stdin rows carry their payload in
+    # the stdin column (no newlines); args never contain ':' (the matrix
+    # joins args with ':', so the tr class spellings are covered by gate a
+    # instead).
+    tr)
+      cat <<'TABLE'
+01||abc|a-z:A-Z
+02||ABC|A-Z:a-z
+03||hello world|-d:l
+04||aaabbb|-s:a
+05||abcabc|-dc:a
+06||abc|-c:a:x
+07||abc|-cs:a:xy
+08||abc|-t:abc:xy
+09||abc|a:[b*3]
+10||abcde|[a-c]:[x*]
+11||abcdef|a-f:A-F
+12||a1b2|-d:0-9
+13||a..b...c|-s:.
+14||abc|a-c:x-z
+15||ab|[=a=]:X
+16||a\\b|\\\\:-
+17||aAb|\\101:Z
+18||abc|a-c:[x*3]
+19||abc|[a*b]:X
+20||ABC|a-z:0-9
+21||ab|abc:XYZ
+22||abc|-A:a-z:A-Z
+23||abc|-C:a:x
+24||ab|a-z:x
+25||a  b   c|-s:ab
+26||abc|--help
+27||abc|--version
+28||abc|--bogus
+29||a|-ds:a
+30||a:b
+TABLE
+      ;;
+    # wave-W2 wire (#1488): od -> rust2 (dump + strings + old-style
+    # operands; of/os1 fixtures).
+    od)
+      cat <<'TABLE'
+01|||of
+02|||-c:of
+03|||-An:-c:of
+04|||-An:-tx1:of
+05|||-An:-td1:of
+06|||-An:-f:of
+07|||-An:-a:of
+08|||-An:-b:of
+09|||-A:d:-tx1:of
+10|||-A:x:-tx1:of
+11|||-A:n:-tx1:of
+12|||-N:8:-An:-c:of
+13|||-j:8:-c:of
+14|||-j:99:of
+15|||-w4:-An:-c:of
+16|||-v:-An:-c:of
+17|||--endian=big:-An:-td2:of
+18|||-An:-S5:os1
+19|||-S5:os1
+20|||-An:-S3:-N8:os1
+21|||-S5:-tx1:os1
+22|||--traditional:2:of
+23|||--traditional:2:3:of
+24|||-An:--traditional:2:16:of
+25|||of:2
+26|||--traditional:of:os1
+27|||-t:x1zq:of
+28|||missing-od-file
+29|||--help
+30|||--version
+31|||--bogus
+32||abc|-An:-c
+33|||
+TABLE
+      ;;
+    # wave-W2 wire (#1488): sum -> rust2 (BSD/SysV across block boundaries).
+    sum)
+      cat <<'TABLE'
+01|||su6
+02|||-r:su6
+03|||-s:su6
+04|||-rs:su6
+05|||-sr:su6
+06|||-r:-s:su6
+07|||-s:-r:su6
+08|||--sysv:su6
+09|||su0
+10|||-s:su0
+11|||su512
+12|||-s:su512
+13|||su700
+14|||-s:su700
+15|||su1024
+16|||-s:su1024
+17|||su1025
+18|||-s:su1025
+19|||su6:su1024
+20|||missing-sum-file
+21|||su6:missing-sum-file
+22|||--help
+23|||--version
+24|||--bogus
+25||abc|
+26||abc|-s
+27||ab|-
+28|||-s:-
+29|||--sysv:su6
+30|||.
 TABLE
       ;;
     grep|egrep|fgrep)

@@ -1118,3 +1118,108 @@ Rust i18n runtime (no tr! macro, no catalog plumbing in winux-core, no
 Rust recognition in the extractor) — that infra belongs to the
 unmerged stream-abi lane; Rust output drains through the bridge's raw
 writers without catalog lookup. Recorded as a dependency, not skipped.
+
+---
+
+## wave-W2 wire — `cut`, `tr`, `od`, `sum` (#1488, worktree `D:/repo/wc-w2`)
+
+Four text-surface applets replaced by their rust2 library bodies; the 1.x
+record/expansion/format pipelines are deleted, `REGISTER_COMMAND` keeps the
+help/man metadata, and each handler is one ABI v2 **streaming** call
+(`run_command_with_stdin_streaming`) so fd 0 stays untouched for
+file-operand shapes and stdin arrives in segments.
+
+### Library work the wire required (probed against WSL coreutils 9.4)
+
+`cut`
+- the LIST selector: a second list in ANY combination
+  (`-b 1 -c 1`, `-f 1 -f 2`) is "only one list may be specified"; an empty
+  LIST element (`1,,2`, `,2`, `''`) is GNU's numbered-from-1 fatal.
+- `--output-delimiter` is legal in byte/character mode and marks each
+  range start (`cut -b 1-2,3 --output-delimiter='|'` -> `ab|c`); set-fields
+  merges only OVERLAPPING ranges, so adjacent specs stay separate.
+- `--output-delimiter=` means NUL.
+- the `-z -d ''` shape (field delimiter == record delimiter) implements
+  cut.c `cut_fields` (#1511): the input is one record, a trailing delimiter
+  terminates it, `-s` suppresses undelimited input.
+
+`tr`
+- `-A` is GNU's undocumented no-op (was rejected by the library).
+- reverse ranges print `range-endpoints of 'z-a' are in reverse collating
+  sequence order` with tr.c `make_printable_char` endpoints (`'\200-@'`).
+- an escaped range endpoint forms a range (`\200-\100`).
+- unquote warnings restored: `an unescaped backslash at end of string is
+  not portable`, and the ambiguous-octal note (`\400` -> `\040` + `0`,
+  third digit NOT consumed).
+- `[=c=]` in string2 while translating is the tr.c validate() fatal.
+
+`od`
+- `-j/-N` print addresses in the combined-input coordinate space (the
+  library printed 0-based).
+- `-S/--strings` (bare `--strings` = 3, `-S` requires a value, `-N` bound,
+  spelling-carrying diagnostics) and the old-style operand form
+  `[FILE] [[+]OFFSET[.] [b]] [[+]LABEL]` with the parenthesised
+  pseudo-address column and the `-A n` bare-paren address.
+- obsolescent `CASE_OLD_ARG` letters `D e F H I L O B h X` plus clusters
+  (`-bc`, `-D -e -H -O`); multi-spec fields use od.c's width_per_block/pad
+  distribution, and the `z` trailer belongs to the spec it is spelled on.
+- a dump with NO openable operand prints nothing (od.c main() skips dump()).
+- `-S` with a type is the "no type may be specified" fatal.
+
+`sum`
+- the LAST of `-r/-s` wins in any spelling (`-sr` = BSD, `-rs` = SysV) —
+  the library used mere presence.
+- operand opens route through the #1038 `!<fifo>` marker bridge
+  (fsutil::open_read_operand; cut/od/sum), so `mkfifo` rendezvous rows read
+  the payload, not the marker.
+
+### Gates
+
+- **gate a (GNU oracle, RUST_BIN = wired `build-vs/winuxcmd.exe`)**
+  `bash gate/run-gate.sh cut tr od sum`: **170/170 GNU rows PASS, 8/8 win**
+  (the 8 = the four `--help`/`--version` rows, `win` because the
+  dispatcher keeps the WinuxCmd-branded interception). Tables grew from
+  33+37+36+20 to 48+46+56+28 rows (cut ct34-48, tr tr38-46, od od37-56,
+  sum sm21-28), every row GNU-probed first. Oracle: Ubuntu 24.04.4 LTS /
+  coreutils 9.4 / C.UTF-8.
+- **gate b (ctest, full run, `--timeout 200 -j8`)**: failing set identical
+  to the pre-wire baseline (26 = 22 pre-existing + 4 `rust2-stream-*`
+  "Not Run" that the default target does not build). The one test the
+  wire invalidates was re-pinned to the GNU/ABI contract:
+  `cut.cut_streams_yes_through_head_exits_early_on_closed_pipe` ->
+  `cut.cut_pipeline_drains_bounded_stream_after_consumer_closes` (see the
+  ABI note below); `od.od_width` re-pinned to GNU's attached `-w4` plus a
+  new separated-`-w 4` pin; three `tr` quote/wording pins moved to GNU
+  9.4's curly-quoted text.
+- **gate c (old vs new exe, `wire/cmd-matrix.sh` + `compare.sh`, 30/30/33/30
+  rows)**: cut 30/30 rc + 30/30 stdout (2 stderr diffs = GNU alignment:
+  curly-quoted list diagnostics, the two-line `-s` refusal); tr 30/30/30;
+  sum 30/30/30; od 29/33 rc (the 4 rc diffs are 1.x deviations now
+  GNU-aligned: `-j` past end, `of 2`/`--traditional 2 of` old-style
+  operands) and 29/33 stdout (same rows). New-vs-GNU rc on the same
+  matrices: cut 30/30, od 33/33.
+- **differential corpus** (`WINUXCMD_BIN=build-vs/usr/bin runner.sh`):
+  cut 6/6, tr 7/7, sum 1/1, od 4/5 + 1 pre-existing `KNOWN_DIFF`
+  (`corpus/od/01-invalid-utf8-operand`, whitelisted).
+
+### ABI note (streaming stdin, buffered stdout)
+
+All four use the v2 streaming **input** entry. Output stays the ABI's
+buffered `CBuf` drained after the call (REPLACEMENT-RECIPE §5 "Output
+side"), so an INFINITE producer cannot observe a consumer's close: that is
+the same trade #1376 accepted for `seq`. cut's `yes | cut | head` test is
+re-pinned to a bounded producer past the 64 KiB flush scale; the
+early-exit termination returns with a streaming-write callback.
+
+### I18N
+
+48 new stable keys (`command.cut.error.*` 16, `command.od.error.*` 19,
+`command.tr.error/warn.*` 11, `command.sum.error.*` 2) with GNU's
+`error()` wording as the English fallback (curly quotes where GNU quotes).
+`scripts/i18n_batch.py extract` -> 3835 keys; the retired C++ bodies drop
+9 `legacy.*` digests (plus pre-existing catalog drift from other lanes).
+`command.tr.error.invalid_repeat_count` keeps its C++ key with the corrected
+curly spelling (annotation added to `scripts/i18n_rust.py`).
+`validate` passes against the merged zh-CN file; the patch + delta live in
+`catalog/` (`zh-CN-w2-patch.json`, `w2-delta.json`, `w2-new-keys.txt`) and
+the shared I18N repository needs its `VERSION` bump (0.6.42 -> 0.6.43).
