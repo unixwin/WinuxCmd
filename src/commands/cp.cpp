@@ -380,6 +380,17 @@ auto create_directory_recursive(const std::string& path) -> cp::Result<bool> {
   return true;
 }
 
+// [GNU] stat(2) resolves the whole source link chain (#1647, #1693).  Win32
+// does not: a WSL DrvFs LX symlink (tag 0xA000001D) cannot be opened or
+// traversed at all, and a symlink whose reparse point is file-flagged but
+// whose target is a directory is reported as a non-directory entry.  These
+// helpers read the stored target and resolve it in user space; defined below
+// next to the reparse readers.
+auto resolved_link_target_w(const std::string& path)
+    -> std::optional<std::wstring>;
+auto dereferenced_source_path(const std::string& path)
+    -> std::optional<std::string>;
+
 // ----------------------------------------------
 // 4. Check if path exists
 // ----------------------------------------------
@@ -404,11 +415,12 @@ auto path_exists(const std::string& path) -> cp::Result<bool> {
   // reported the operand as existing and the copy died later in
   // open_binary_file ("cannot open 'x' for reading", a different diagnostic
   // and a different errno path).  std::filesystem::status is the stat-shaped
-  // probe: it follows reparse points and reports not_found when the target
-  // is missing.
+  // probe; the link chain is resolved first so Win32's blind spots (DrvFs LX
+  // symlinks, file-flagged directory symlinks) behave like the kernel stat.
+  const std::string probe = dereferenced_source_path(path).value_or(path);
   std::error_code ec;
-  const auto status = std::filesystem::status(
-      std::filesystem::path(api_operand_w(path)), ec);
+  const auto status =
+      std::filesystem::status(std::filesystem::path(api_operand_w(probe)), ec);
   return !ec && status.type() != std::filesystem::file_type::not_found;
 }
 
@@ -416,7 +428,11 @@ auto path_exists(const std::string& path) -> cp::Result<bool> {
 // 5. Check if path exists and is directory
 // ----------------------------------------------
 auto path_exists_and_is_directory(const std::string& path) -> cp::Result<bool> {
-  DWORD attr = native_path::attributes_w(api_operand_w(path));
+  // [GNU] -H and -L stat the source through the link, so a command-line
+  // link to a directory is a directory regardless of the link's own
+  // DIRECTORY attribute (#1693).
+  const std::string probe = dereferenced_source_path(path).value_or(path);
+  DWORD attr = native_path::attributes_w(api_operand_w(probe));
   return (attr != INVALID_FILE_ATTRIBUTES) && (attr & FILE_ATTRIBUTE_DIRECTORY);
 }
 
@@ -779,10 +795,15 @@ auto is_symlink_path(const std::string& path) -> bool {
       std::filesystem::symlink_status(api_operand_w(path), ec));
 }
 
-// [GNU] POSIX symlinks correspond to two Windows reparse tags:
-// IO_REPARSE_TAG_SYMLINK and directory junctions (IO_REPARSE_TAG_MOUNT_POINT).
-// is_symlink() misses junctions, which made `cp -r` follow — and explode on —
-// a cyclic junction instead of recreating the link (#1064).
+// [GNU] POSIX symlinks correspond to three Windows reparse tags:
+// IO_REPARSE_TAG_SYMLINK, directory junctions (IO_REPARSE_TAG_MOUNT_POINT)
+// and WSL DrvFs POSIX symlinks (IO_REPARSE_TAG_LX_SYMLINK, ntifs.h).  The
+// first two are traversed by the kernel; the LX tag is opaque to Win32 and
+// must be resolved from its reparse payload (#1647).  is_symlink() misses
+// junctions, which made `cp -r` follow — and explode on — a cyclic junction
+// instead of recreating the link (#1064).
+constexpr DWORD kIoReparseTagLxSymlink = 0xA000001Du;
+
 auto link_reparse_tag(const std::string& path) -> std::optional<DWORD> {
   WIN32_FIND_DATAW fd{};
   const auto operand =
@@ -794,7 +815,8 @@ auto link_reparse_tag(const std::string& path) -> std::optional<DWORD> {
     return std::nullopt;
   }
   if (fd.dwReserved0 == IO_REPARSE_TAG_SYMLINK ||
-      fd.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT) {
+      fd.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT ||
+      fd.dwReserved0 == kIoReparseTagLxSymlink) {
     return fd.dwReserved0;
   }
   return std::nullopt;
@@ -868,6 +890,14 @@ auto read_mount_point_target(const std::string& path)
     return std::nullopt;
   }
   const auto& mp = reparse->MountPointReparseBuffer;
+  // A volume-GUID target has no printable name and stores
+  // "\??\Volume{GUID}\...".  strip_nt_prefix removes the namespace marker
+  // that the GUID form requires, so restore it.
+  auto clean = [](std::wstring_view name) {
+    std::wstring value = strip_nt_prefix(name);
+    if (value.starts_with(L"Volume{")) value = L"\\\\?\\" + value;
+    return value;
+  };
   std::wstring_view print_name(
       mp.PathBuffer + mp.PrintNameOffset / sizeof(wchar_t),
       mp.PrintNameLength / sizeof(wchar_t));
@@ -875,9 +905,112 @@ auto read_mount_point_target(const std::string& path)
     std::wstring_view substitute_name(
         mp.PathBuffer + mp.SubstituteNameOffset / sizeof(wchar_t),
         mp.SubstituteNameLength / sizeof(wchar_t));
-    return strip_nt_prefix(substitute_name);
+    return clean(substitute_name);
   }
-  return strip_nt_prefix(print_name);
+  return clean(print_name);
+}
+
+// Read a WSL DrvFs POSIX symlink's target.  The payload is a little-endian
+// u32 version followed by the UTF-8 target, without a terminator; Windows
+// has no reader for the tag, so every dereference has to start here
+// (#1647/#1656).
+auto read_lx_symlink_target(const std::string& path)
+    -> std::optional<std::wstring> {
+  const auto operand = native_path::make_api_path_operand(path);
+  UniqueHandle h(CreateFileW(
+      operand.extended.c_str(), 0,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr));
+  if (!h) return std::nullopt;
+
+  alignas(8) std::array<std::byte, MAXIMUM_REPARSE_DATA_BUFFER_SIZE> buffer{};
+  DWORD returned = 0;
+  if (!DeviceIoControl(h.get(), FSCTL_GET_REPARSE_POINT, nullptr, 0,
+                       buffer.data(), static_cast<DWORD>(buffer.size()),
+                       &returned, nullptr)) {
+    return std::nullopt;
+  }
+  if (returned < 12) return std::nullopt;
+  const auto* raw = reinterpret_cast<const unsigned char*>(buffer.data());
+  const auto read_u16 = [&](size_t off) {
+    return static_cast<unsigned>(raw[off]) |
+           (static_cast<unsigned>(raw[off + 1]) << 8);
+  };
+  const auto read_u32 = [&](size_t off) {
+    return static_cast<DWORD>(read_u16(off)) |
+           (static_cast<DWORD>(read_u16(off + 2)) << 16);
+  };
+  const DWORD tag = read_u32(0);
+  const size_t data_len = read_u16(4);
+  if (tag != kIoReparseTagLxSymlink || data_len < 4 ||
+      8 + data_len > returned) {
+    return std::nullopt;
+  }
+  std::string utf8(reinterpret_cast<const char*>(raw + 12), data_len - 4);
+  while (!utf8.empty() && utf8.back() == '\0') {
+    utf8.pop_back();
+  }
+  if (utf8.empty()) return std::nullopt;
+  return utf8_to_wstring(utf8);
+}
+
+// A stored link target is absolute when it starts at a root (POSIX "/...",
+// Windows "\..." or a UNC "\\server") or carries a drive designator.
+auto target_is_absolute_w(std::wstring_view target) -> bool {
+  if (target.empty()) return false;
+  if (target.front() == L'\\' || target.front() == L'/') return true;
+  return target.size() >= 2 && target[1] == L':';
+}
+
+// Resolve a link's stored target to a native absolute path.  Relative text
+// resolves against the link's own directory (POSIX readlink semantics);
+// absolute POSIX spellings such as /mnt/d/x fold through the shared operand
+// boundary onto D:\x (#1647).
+auto resolved_link_target_w(const std::string& path)
+    -> std::optional<std::wstring> {
+  const auto tag = link_reparse_tag(path);
+  if (!tag) return std::nullopt;
+
+  std::optional<std::wstring> stored;
+  if (*tag == kIoReparseTagLxSymlink) {
+    stored = read_lx_symlink_target(path);
+  } else if (*tag == IO_REPARSE_TAG_MOUNT_POINT) {
+    stored = read_mount_point_target(path);
+  } else {
+    std::error_code ec;
+    auto target = std::filesystem::read_symlink(
+        std::filesystem::path(api_operand_w(path)), ec);
+    if (!ec) stored = target.wstring();
+  }
+  if (!stored || stored->empty()) return std::nullopt;
+
+  std::wstring target = strip_nt_prefix(*stored);
+  if (target_is_absolute_w(target)) {
+    return native_path::make_api_path_operand_w(target).normalized;
+  }
+  const std::wstring parent =
+      std::filesystem::path(api_operand_w(path)).parent_path().wstring();
+  if (parent.empty()) return std::nullopt;
+  std::wstring combined = parent;
+  if (combined.back() != L'\\' && combined.back() != L'/') combined += L'\\';
+  combined += target;
+  return std::filesystem::path(combined).lexically_normal().wstring();
+}
+
+// Follow the source link chain the way stat(2) would.  Non-links come back
+// unchanged; std::nullopt means a reparse point exists but its payload could
+// not be read.
+auto dereferenced_source_path(const std::string& path)
+    -> std::optional<std::string> {
+  std::string current = path;
+  for (int hops = 0; hops < 16; ++hops) {
+    if (!link_reparse_tag(current)) return current;
+    auto target = resolved_link_target_w(current);
+    if (!target) return std::nullopt;
+    current = wstring_to_utf8(*target);
+  }
+  return std::nullopt;
 }
 
 // [GNU] dereference resolution (cp.c DEREF_*): the last of -H/-L/-P/-d/-a
@@ -1095,13 +1228,16 @@ auto create_symlink_copy(const std::string& srcPath,
 }
 
 // Shared tail of a completed copy: attribute preservation then verbose
-// output, identical for every copy mechanism.
+// output, identical for every copy mechanism.  metadataSrc differs from
+// srcPath only when a dereferenced link was opened through its target: the
+// metadata comes from the target, the printed name stays the operand.
 auto finish_copy(const std::string& srcPath, const std::string& destPath,
-                 const CommandContext<CP_OPTIONS.size()>& ctx, bool verbose)
-    -> cp::Result<bool> {
+                 const CommandContext<CP_OPTIONS.size()>& ctx, bool verbose,
+                 const std::string& metadataSrc = {}) -> cp::Result<bool> {
   const PreserveAttrs attrs = preserve_attrs(ctx);
   if (attrs.any()) {
-    auto preserveResult = preserve_metadata(srcPath, destPath, attrs);
+    auto preserveResult = preserve_metadata(
+        metadataSrc.empty() ? srcPath : metadataSrc, destPath, attrs);
     if (!preserveResult) return preserveResult;
   }
   if (verbose) {
@@ -1365,7 +1501,8 @@ auto copy_sparse_file(const std::string& srcPath, const std::string& destPath,
 // ----------------------------------------------
 auto copy_file(const std::string& srcPath, const std::string& destPath,
                const CommandContext<CP_OPTIONS.size()>& ctx,
-               bool command_line_arg = false) -> cp::Result<bool> {
+               bool command_line_arg = false,
+               const std::string& open_path_override = {}) -> cp::Result<bool> {
   // [GNU] -i and -n are last-wins: whichever overwrite mode was given
   // later on the command line takes effect (cp.c: "override a previous -n"
   // and vice versa).  Occurrence order in the parsed options is argv order.
@@ -1423,25 +1560,52 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   const ReflinkMode reflink =
       parse_reflink_mode(ctx).value_or(ReflinkMode::Never);
 
+  // [GNU] Dereference the source chain before opening it (copy.c:2294
+  // should_dereference).  Win32 cannot open an LX symlink at all and cannot
+  // reliably traverse a file-flagged symlink to a directory, so the resolved
+  // path is what GNU's stat/open would have operated on (#1647, #1693).
+  // Diagnostics and -v keep the operand spelling.
+  const std::string& real_src =
+      open_path_override.empty() ? srcPath : open_path_override;
+  const std::optional<DWORD> src_reparse_tag = link_reparse_tag(real_src);
+  const bool src_is_symlink = src_reparse_tag.has_value();
+  std::string open_src = real_src;
+  if (src_is_symlink && !no_deref) {
+    auto deref = dereferenced_source_path(real_src);
+    if (!deref) {
+      return std::unexpected("cannot read symbolic link '" + srcPath +
+                             "': Invalid argument");
+    }
+    open_src = *deref;
+    // A dangling link is cp's stat failure, never an open failure
+    // (copy.c:2250-2253).
+    std::error_code link_ec;
+    const auto link_status = std::filesystem::status(
+        std::filesystem::path(api_operand_w(open_src)), link_ec);
+    if (link_ec ||
+        link_status.type() == std::filesystem::file_type::not_found) {
+      return std::unexpected("cannot stat '" + srcPath +
+                             "': No such file or directory");
+    }
+  }
+
   std::error_code equivalent_ec;
   // Use the error_code overload: pseudo-device operands such as "NUL" make
   // GetFileAttributesExW report ERROR_INVALID_PARAMETER, which the throwing
   // overload turns into an uncaught filesystem_error.  Both sides go through
   // the API-path boundary so a POSIX drive-form operand compares against the
   // file it names, not a current-drive root-relative misreading (#1145).
-  const std::wstring src_api = api_operand_w(srcPath);
+  const std::wstring src_api = api_operand_w(open_src);
   if (!hard_link && !symbolic_link &&
-      std::filesystem::exists(std::filesystem::path(src_api),
-                              equivalent_ec) &&
+      std::filesystem::exists(std::filesystem::path(src_api), equivalent_ec) &&
       !equivalent_ec && lexists(destPath) &&
-      std::filesystem::equivalent(std::filesystem::path(src_api),
-                                  std::filesystem::path(api_operand_w(destPath)),
-                                  equivalent_ec) &&
+      std::filesystem::equivalent(
+          std::filesystem::path(src_api),
+          std::filesystem::path(api_operand_w(destPath)), equivalent_ec) &&
       !equivalent_ec) {
     return copy_self_with_backup(srcPath, destPath, ctx);
   }
 
-  bool src_is_symlink = is_link_path(srcPath);
   bool dest_exists = lexists(destPath);
 
   if ((no_clobber || update_none) && dest_exists) {
@@ -1456,7 +1620,7 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   if (update && dest_exists) {
     WIN32_FILE_ATTRIBUTE_DATA src_data{};
     WIN32_FILE_ATTRIBUTE_DATA dest_data{};
-    auto src_operand = native_path::make_api_path_operand(srcPath);
+    auto src_operand = native_path::make_api_path_operand(open_src);
     auto dst_operand = native_path::make_api_path_operand(destPath);
     if (GetFileAttributesExW(src_operand.extended.c_str(),
                              GetFileExInfoStandard, &src_data) &&
@@ -1516,7 +1680,7 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
 
   if (hard_link) {
     std::wstring dest = api_operand_w(destPath);
-    std::wstring link_source = api_operand_w(srcPath);
+    std::wstring link_source = api_operand_w(open_src);
     // GNU -l dereferences the source by default; only -P/-d/-a link the
     // symlink itself.  CreateHardLinkW on a symlink operand links the
     // reparse point, which is exactly the no-dereference behaviour.
@@ -1609,33 +1773,53 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
 
   // [GNU] -P/-d/-a and plain -r/-R: a symlink/junction source is recreated
   // as a link (the link text is copied verbatim), not followed (#1064).
+  // A WSL LX symlink has no Win32 reader, so its UTF-8 target comes from the
+  // reparse payload; an absolute POSIX spelling is folded onto the drive the
+  // operand boundary names (#1647).
   if (no_deref && src_is_symlink) {
-    std::error_code rl_ec;
-    auto target = std::filesystem::read_symlink(api_operand_w(srcPath), rl_ec);
-    if (rl_ec) {
-      // std::filesystem::read_symlink only decodes IO_REPARSE_TAG_SYMLINK;
-      // junctions (MOUNT_POINT) need the raw reparse buffer.
-      auto junction_target = read_mount_point_target(srcPath);
-      if (!junction_target) {
-        return std::unexpected("cannot read symbolic link '" + srcPath +
-                               "': " + std::string(rl_ec.message()));
-      }
-      target = *junction_target;
+    std::optional<std::wstring> target;
+    if (*src_reparse_tag == kIoReparseTagLxSymlink) {
+      target = read_lx_symlink_target(real_src);
+    } else if (*src_reparse_tag == IO_REPARSE_TAG_MOUNT_POINT) {
+      target = read_mount_point_target(real_src);
+    } else {
+      std::error_code rl_ec;
+      auto link = std::filesystem::read_symlink(api_operand_w(real_src), rl_ec);
+      if (!rl_ec) target = link.wstring();
+    }
+    if (!target) {
+      return std::unexpected("cannot read symbolic link '" + srcPath +
+                             "': Invalid argument");
+    }
+    std::wstring link_target = *target;
+    if (*src_reparse_tag == kIoReparseTagLxSymlink &&
+        target_is_absolute_w(link_target)) {
+      link_target =
+          native_path::make_api_path_operand_w(link_target).normalized;
     }
     if (dest_exists) {
       auto rm = remove_destination_entry(destPath);
       if (!rm) return rm;
     }
     // A junction is always a directory link even when its target is
-    // dangling; for plain symlinks the (followed) attributes decide.
-    bool src_is_dir = link_reparse_tag(srcPath) ==
-                      std::optional<DWORD>{IO_REPARSE_TAG_MOUNT_POINT};
+    // dangling; otherwise the resolved target decides (a file-flagged
+    // symlink to a directory must be recreated with the DIRECTORY flag to be
+    // traversable on Windows), falling back to the link's own attributes
+    // when the target is missing.
+    bool src_is_dir = *src_reparse_tag == IO_REPARSE_TAG_MOUNT_POINT;
     if (!src_is_dir) {
-      DWORD sattrs = GetFileAttributesW(api_operand_w(srcPath).c_str());
+      if (auto resolved = resolved_link_target_w(real_src)) {
+        DWORD tattrs = native_path::attributes_w(*resolved);
+        src_is_dir = tattrs != INVALID_FILE_ATTRIBUTES &&
+                     (tattrs & FILE_ATTRIBUTE_DIRECTORY);
+      }
+    }
+    if (!src_is_dir) {
+      DWORD sattrs = GetFileAttributesW(api_operand_w(real_src).c_str());
       src_is_dir = sattrs != INVALID_FILE_ATTRIBUTES &&
                    (sattrs & FILE_ATTRIBUTE_DIRECTORY);
     }
-    return create_symlink_copy(srcPath, destPath, target.wstring(), src_is_dir,
+    return create_symlink_copy(srcPath, destPath, link_target, src_is_dir,
                                verbose);
   }
 
@@ -1651,7 +1835,7 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
       attrs.timestamps = true;
     }
     {
-      auto preserveResult = preserve_metadata(srcPath, destPath, attrs);
+      auto preserveResult = preserve_metadata(open_src, destPath, attrs);
       if (!preserveResult) return preserveResult;
     }
     if (verbose) {
@@ -1668,9 +1852,9 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   // copy when the clone is unavailable; 'always' reports the failure
   // (#1066).
   if (reflink != ReflinkMode::Never) {
-    auto clone = clone_file(srcPath, destPath);
+    auto clone = clone_file(open_src, destPath);
     if (clone) {
-      return finish_copy(srcPath, destPath, ctx, verbose);
+      return finish_copy(srcPath, destPath, ctx, verbose, open_src);
     }
     if (reflink == ReflinkMode::Always) {
       return std::unexpected("failed to clone '" + destPath + "' from '" +
@@ -1681,15 +1865,15 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   // [GNU] --sparse: 'always' writes only non-zero extents; 'auto' does so
   // only when the source actually has unallocated regions (#1066).
   if (sparse != SparseMode::Never &&
-      (sparse == SparseMode::Always || source_may_have_holes(srcPath))) {
-    auto sparseResult = copy_sparse_file(srcPath, destPath, force);
+      (sparse == SparseMode::Always || source_may_have_holes(open_src))) {
+    auto sparseResult = copy_sparse_file(open_src, destPath, force);
     if (!sparseResult) return sparseResult;
-    return finish_copy(srcPath, destPath, ctx, verbose);
+    return finish_copy(srcPath, destPath, ctx, verbose, open_src);
   }
 
   // Check if source file exists and is readable
   errno = 0;
-  std::ifstream src = file_io::open_binary_file(srcPath);
+  std::ifstream src = file_io::open_binary_file(open_src);
   if (!src) {
     return std::unexpected("cannot open '" + srcPath +
                            "' for reading: " + strerror(errno));
@@ -1760,7 +1944,7 @@ auto copy_file(const std::string& srcPath, const std::string& destPath,
   }
   src.close();
 
-  return finish_copy(srcPath, destPath, ctx, verbose);
+  return finish_copy(srcPath, destPath, ctx, verbose, open_src);
 }
 
 // ----------------------------------------------
@@ -1806,15 +1990,41 @@ auto directory_key_contains(const std::wstring& src_key,
   return src_key.back() == L'\\' || dest_key[src_key.size()] == L'\\';
 }
 
-// Helper function with depth limit
+// Helper function with depth limit.  srcPath is the path Win32 must open;
+// displaySrcPath is the operand spelling used in diagnostics and -v (they
+// differ once a command-line link is dereferenced: GNU copies the target but
+// prints the link's name).
 auto copy_directory_helper(const std::string& srcPath,
                            const std::string& destPath,
                            const CommandContext<CP_OPTIONS.size()>& ctx,
-                           int depth, std::vector<DirectoryId>& ancestors)
+                           int depth, std::vector<DirectoryId>& ancestors,
+                           const std::string& displaySrcPath = {})
     -> cp::Result<bool> {
   // Prevent deep recursion
   if (depth > 100) {
     return std::unexpected("maximum recursion depth exceeded");
+  }
+
+  const std::string display_src =
+      displaySrcPath.empty() ? srcPath : displaySrcPath;
+  // [GNU] inside a recursive copy a link child is recreated unless -L
+  // dereferences everything; -H dereferences only command-line sources
+  // (copy.c:2151 should_dereference).
+  const DerefMode deref_mode = resolve_deref_mode(ctx);
+  const bool deref_here = deref_mode == DerefMode::Always ||
+                          (deref_mode == DerefMode::CommandLine && depth == 0);
+  // Win32 cannot traverse an LX symlink or a file-flagged symlink to a
+  // directory; walk the resolved target instead while keeping the operand
+  // spelling for output (#1647, #1693).
+  std::string traversal_src = srcPath;
+  if (deref_here) {
+    auto resolved = dereferenced_source_path(srcPath);
+    if (!resolved) {
+      safeErrorPrintLn("cp: cannot stat '" + display_src +
+                       "': No such file or directory");
+      return false;
+    }
+    traversal_src = *resolved;
   }
 
   // [GNU] cyclic-link detection by (volume, file-index): a followed link
@@ -1822,9 +2032,9 @@ auto copy_directory_helper(const std::string& srcPath,
   // target is an ancestor directory reports "cannot copy cyclic symbolic
   // link" instead of recursing without bound (#1064).
   bool pushed_ancestor = false;
-  if (auto self_id = directory_file_id(srcPath)) {
+  if (auto self_id = directory_file_id(traversal_src)) {
     if (std::ranges::find(ancestors, *self_id) != ancestors.end()) {
-      safeErrorPrintLn("cp: cannot copy cyclic symbolic link '" + srcPath +
+      safeErrorPrintLn("cp: cannot copy cyclic symbolic link '" + display_src +
                        "'");
       return false;
     }
@@ -1840,7 +2050,7 @@ auto copy_directory_helper(const std::string& srcPath,
   } ancestor_guard{ancestors, pushed_ancestor};
 
   // Prevent copying directory into itself
-  if (srcPath == destPath) {
+  if (traversal_src == destPath) {
     return true;
   }
 
@@ -1852,11 +2062,11 @@ auto copy_directory_helper(const std::string& srcPath,
   // "A" for "a", a drive form) walk straight past a prefix test and
   // self-nest to the depth cap (#1435). GNU detects the same relation
   // by (dev,ino) identity before copying anything.
-  if (directory_key_contains(directory_identity_key(srcPath),
+  if (directory_key_contains(directory_identity_key(traversal_src),
                              directory_identity_key(destPath))) {
     // OPTIMIZED: Avoid wstring concatenation
     safeErrorPrint("cp: cannot copy directory '");
-    safeErrorPrint(srcPath);
+    safeErrorPrint(display_src);
     safeErrorPrint("' into itself '");
     safeErrorPrint(destPath);
     safeErrorPrint("'\n");
@@ -1866,7 +2076,7 @@ auto copy_directory_helper(const std::string& srcPath,
   // the destination that resolves into the source ("cp -r dir dirlink").
   if (destination_inside_ancestors(destPath, ancestors)) {
     safeErrorPrint("cp: cannot copy directory '");
-    safeErrorPrint(srcPath);
+    safeErrorPrint(display_src);
     safeErrorPrint("' into itself '");
     safeErrorPrint(destPath);
     safeErrorPrint("'\n");
@@ -1880,7 +2090,7 @@ auto copy_directory_helper(const std::string& srcPath,
   }
 
   // Open source directory
-  std::wstring searchPath = utf8_to_wstring(srcPath) + L"\\*";
+  std::wstring searchPath = utf8_to_wstring(traversal_src) + L"\\*";
   searchPath = native_path::make_api_path_operand_w(searchPath).extended;
   WIN32_FIND_DATAW findData;
   HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
@@ -1890,9 +2100,6 @@ auto copy_directory_helper(const std::string& srcPath,
 
   bool success = true;
   bool verbose = verbose_enabled(ctx);
-  // [GNU] inside a recursive copy a link child is recreated unless -L
-  // dereferences everything; -H dereferences only command-line sources.
-  const DerefMode deref_mode = resolve_deref_mode(ctx);
 
   // Process each item in the directory
   do {
@@ -1916,36 +2123,58 @@ auto copy_directory_helper(const std::string& srcPath,
     // Remove the null terminator if present
     fileName.resize(actualLength);
 
-    std::string srcItemPath = srcPath + "\\" + fileName;
+    std::string srcItemPath = traversal_src + "\\" + fileName;
+    std::string displayItemPath = display_src + "\\" + fileName;
     std::string destItemPath = destPath + "\\" + fileName;
 
     bool is_dir_child =
         (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     // [GNU] a symlink/junction child is recreated as a link, not followed,
     // unless -L dereferences everything (#1064).  Junctions use
-    // IO_REPARSE_TAG_MOUNT_POINT rather than IO_REPARSE_TAG_SYMLINK.
-    bool link_child =
-        deref_mode != DerefMode::Always &&
+    // IO_REPARSE_TAG_MOUNT_POINT and WSL links IO_REPARSE_TAG_LX_SYMLINK
+    // rather than IO_REPARSE_TAG_SYMLINK.
+    bool link_child_any =
         (findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
         (findData.dwReserved0 == IO_REPARSE_TAG_SYMLINK ||
-         findData.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT);
+         findData.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT ||
+         findData.dwReserved0 == kIoReparseTagLxSymlink);
+    bool link_child = deref_mode != DerefMode::Always && link_child_any;
+    // A file-flagged symlink to a directory looks like a file in the find
+    // data; -L must still recurse into its target (#1693).
+    if (deref_mode == DerefMode::Always && link_child_any && !is_dir_child) {
+      if (auto resolved = resolved_link_target_w(srcItemPath)) {
+        DWORD tattrs = native_path::attributes_w(*resolved);
+        if (tattrs != INVALID_FILE_ATTRIBUTES &&
+            (tattrs & FILE_ATTRIBUTE_DIRECTORY)) {
+          is_dir_child = true;
+        }
+      }
+    }
 
     // Check if it's a directory
     if (is_dir_child && !link_child) {
-      // Verify it's actually a directory
+      // Verify it's actually a directory (through a followed link's target
+      // under -L, so a file-flagged directory link is not taken for a file).
       DWORD attr = native_path::attributes_w(api_operand_w(srcItemPath));
+      if (deref_mode == DerefMode::Always && link_child_any) {
+        if (auto resolved = resolved_link_target_w(srcItemPath)) {
+          attr = native_path::attributes_w(*resolved);
+        }
+      }
       if (attr != INVALID_FILE_ATTRIBUTES &&
           (attr & FILE_ATTRIBUTE_DIRECTORY)) {
         // Recursively copy subdirectory with increased depth
-        auto subDirResult = copy_directory_helper(srcItemPath, destItemPath,
-                                                  ctx, depth + 1, ancestors);
+        auto subDirResult =
+            copy_directory_helper(srcItemPath, destItemPath, ctx, depth + 1,
+                                  ancestors, displayItemPath);
         if (!subDirResult) {
           success = false;
         }
       } else if (attr != INVALID_FILE_ATTRIBUTES) {
         // [GNU] -L: a directory link whose target is a plain file is
         // copied as a file.
-        auto fileResult = copy_file(srcItemPath, destItemPath, ctx);
+        auto fileResult =
+            copy_file(displayItemPath, destItemPath, ctx, false, srcItemPath);
         if (!fileResult) {
           safeErrorPrint("cp: ");
           safeErrorPrint(fileResult.error());
@@ -1957,13 +2186,14 @@ auto copy_directory_helper(const std::string& srcPath,
       } else if (findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
         // [GNU] -L on a dangling directory link is a stat failure, not a
         // silent skip (#1064).
-        safeErrorPrintLn("cp: cannot stat '" + srcItemPath +
+        safeErrorPrintLn("cp: cannot stat '" + displayItemPath +
                          "': No such file or directory");
         success = false;
       }
     } else {
       // Copy file (or recreate the symlink under -P/-d/-a)
-      auto fileResult = copy_file(srcItemPath, destItemPath, ctx);
+      auto fileResult =
+          copy_file(displayItemPath, destItemPath, ctx, false, srcItemPath);
       if (!fileResult) {
         safeErrorPrint("cp: ");
         safeErrorPrint(fileResult.error());
@@ -1980,7 +2210,7 @@ auto copy_directory_helper(const std::string& srcPath,
   if (success) {
     const PreserveAttrs attrs = preserve_attrs(ctx);
     if (attrs.any()) {
-      auto preserveResult = preserve_metadata(srcPath, destPath, attrs);
+      auto preserveResult = preserve_metadata(traversal_src, destPath, attrs);
       if (!preserveResult) return preserveResult;
     }
   }
@@ -2121,14 +2351,12 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
   // followed by default, so this flag is silently accepted as a no-op.
   (void)ctx.get<bool>("--keep-directory-symlink", false);
 
-  // [DIFFERS] -H: follow command-line symbolic links in SOURCE.
-  // On Windows, symbolic links are resolved transparently by the file system
-  // layer, so this flag is a no-op.
+  // -H/--dereference-args and -L/--dereference are resolved to a DerefMode
+  // by resolve_deref_mode(): -H follows only command-line sources,
+  // -L follows every link, including forms Win32 cannot traverse itself
+  // (WSL DrvFs LX symlinks, file-flagged directory symlinks).
   (void)ctx.get<bool>("-H", false);
 
-  // [DIFFERS] -L/--dereference: always follow symbolic links in SOURCE.
-  // On Windows, the default file-open behaviour already follows symlinks,
-  // so this flag is a no-op.
   (void)ctx.get<bool>("-L", false);
   (void)ctx.get<bool>("--dereference", false);
 
