@@ -391,6 +391,54 @@ TEST(cksum, cksum_check_quiet_suppresses_ok_lines_only) {
               std::string::npos);
 }
 
+// [#1752] `--base64 -a sha256` output must round-trip through `-c`: GNU
+// accepts the base64 digest form on tagged check lines (hex stays valid
+// too). Pre-fix the shared line parser required hex digits, so the whole
+// file was "no properly formatted checksum lines found".
+TEST(cksum, cksum_check_accepts_base64_digest_issue1752) {
+  TempDir tmp;
+  tmp.write("good.txt", "hello");
+  tmp.write("check.txt",
+            "SHA256 (good.txt) = LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"cksum.exe", {L"-c", L"check.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "good.txt: OK\n");
+  EXPECT_EQ_TEXT(r.stderr_text, "");
+
+  // A tampered base64 line parses but reports FAILED, not a format error.
+  tmp.write("check.txt",
+            "SHA256 (good.txt) = XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX=\n");
+  Pipeline bad;
+  bad.set_cwd(tmp.wpath());
+  bad.add(L"cksum.exe", {L"-c", L"check.txt"});
+  auto bad_result = bad.run();
+
+  EXPECT_NE(bad_result.exit_code, 0);
+  EXPECT_TRUE(bad_result.stdout_text.find("good.txt: FAILED") !=
+              std::string::npos);
+  EXPECT_TRUE(bad_result.stderr_text.find(
+                  "cksum: WARNING: 1 computed checksum did NOT match") !=
+              std::string::npos);
+
+  // Bad padding is still an improperly formatted line (GNU valid_digits).
+  tmp.write("check.txt",
+            "SHA256 (good.txt) = LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQX\n");
+  Pipeline pad;
+  pad.set_cwd(tmp.wpath());
+  pad.add(L"cksum.exe", {L"-c", L"check.txt"});
+  auto pad_result = pad.run();
+
+  EXPECT_NE(pad_result.exit_code, 0);
+  EXPECT_TRUE(pad_result.stderr_text.find(
+                  "no properly formatted checksum lines found") !=
+              std::string::npos);
+}
+
 // [#1195] every cksum stdin route (legacy read_file/read_crc_file and the
 // digest path via portable_digest::hash_file_hex) must read fd 0 in binary
 // mode: the CRT's default text mode silently stops at the first 0x1A

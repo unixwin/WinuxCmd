@@ -52,3 +52,5 @@ du46-noderef-link-value	win	mkdir -p d1; printf ab > d1/f; ln -s d1 dlink			-b	d
 du47-deref-file-operand-dedup	strict	printf ab > f; ln -s f flink			-L	-s	flink	f
 du48-deref-file-operand-dedup-reversed	strict	printf ab > f; ln -s f flink			-L	-s	f	flink
 du49-deref-args-count-links-keeps-both	strict	printf ab > f; ln -s f flink			-L	-l	-s	flink	f
+du50-deref-child-dir-link	strict	mkdir -p d1; printf ab > d1/f; mkdir tree; if [ "$(uname -s)" = Linux ]; then ln -s ../d1 tree/rel; else wsl.exe ln -s ../d1 tree/rel; fi			-a	-b	-L	tree
+du51-deref-link-operand-children	strict	mkdir -p d1; printf ab > d1/f; if [ "$(uname -s)" = Linux ]; then ln -s d1 dlink; else wsl.exe ln -s d1 dlink; fi			-a	-b	-L	dlink

@@ -4138,6 +4138,17 @@ du_rows = [
      "printf ab > f; ln -s f flink", "", "", ["-L", "-s", "f", "flink"]),
     ("du49-deref-args-count-links-keeps-both", "strict",
      "printf ab > f; ln -s f flink", "", "", ["-L", "-l", "-s", "flink", "f"]),
+    # #1748: -L must descend through a directory link that appears INSIDE
+    # the walked tree, and a link operand must show its children under -a
+    # (du41-49 only used `-b`, whose single total row masked the missing
+    # walk). The exe sides build the DrvFs LX reparse point with `wsl.exe
+    # ln`, which needs no SeCreateSymbolicLinkPrivilege.
+    ("du50-deref-child-dir-link", "strict",
+     'mkdir -p d1; printf ab > d1/f; mkdir tree; if [ "$(uname -s)" = Linux ]; then ln -s ../d1 tree/rel; else wsl.exe ln -s ../d1 tree/rel; fi',
+     "", "", ["-a", "-b", "-L", "tree"]),
+    ("du51-deref-link-operand-children", "strict",
+     'mkdir -p d1; printf ab > d1/f; if [ "$(uname -s)" = Linux ]; then ln -s d1 dlink; else wsl.exe ln -s d1 dlink; fi',
+     "", "", ["-a", "-b", "-L", "dlink"]),
 ]
 
 date_rows = [
