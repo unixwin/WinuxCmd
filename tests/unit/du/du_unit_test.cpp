@@ -1269,6 +1269,161 @@ TEST(du, du_dereference_missing_operand_reports_reason) {
               std::string::npos);
 }
 
+TEST(du, du_dereference_dirlink_and_dir_operands_print_once) {
+  // [GNU] "du -L dirlink dir" prints the directory once, under the first
+  // spelling (coreutils 9.4 probed): dir and dirlink are the same inode,
+  // so the second operand is skipped entirely (Savannah #10397, #1670).
+  // The old visited_dirs key was lexical (du_dir_key), so both spellings
+  // were traversed and printed.
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"dir"), true)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"dirlink", L"dir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(line_usage_values(r.stdout_text).size() == 1);
+  EXPECT_TRUE(r.stdout_text.find("\tdir\n") == std::string::npos);
+  const auto usage = usage_for_path(r.stdout_text, "dirlink");
+  EXPECT_TRUE(usage.has_value());
+  if (!usage.has_value()) return;
+  EXPECT_EQ(*usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_dereference_dir_and_dirlink_operands_print_once) {
+  // [GNU] Operand order decides which spelling prints: "du -L dir
+  // dirlink" prints only `dir` (coreutils 9.4 probed; #1670).
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"dir"), true)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"dir", L"dirlink"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(line_usage_values(r.stdout_text).size() == 1);
+  EXPECT_TRUE(r.stdout_text.find("\tdirlink\n") == std::string::npos);
+  const auto usage = usage_for_path(r.stdout_text, "dir");
+  EXPECT_TRUE(usage.has_value());
+  if (!usage.has_value()) return;
+  EXPECT_EQ(*usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_dereference_args_dirlink_and_dir_operands_print_once) {
+  // [GNU] -H follows only the operand link, so "du -H dirlink dir" also
+  // prints once, under `dirlink` (coreutils 9.4 probed; #1670).
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"dir"), true)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-H", L"dirlink", L"dir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(line_usage_values(r.stdout_text).size() == 1);
+  EXPECT_TRUE(r.stdout_text.find("\tdir\n") == std::string::npos);
+  const auto usage = usage_for_path(r.stdout_text, "dirlink");
+  EXPECT_TRUE(usage.has_value());
+  if (!usage.has_value()) return;
+  EXPECT_EQ(*usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_no_dereference_dirlink_and_dir_operands_print_twice) {
+  // Lock: without -L/-H the link operand is the LINK itself (its own
+  // inode), so `du dirlink dir` still prints both lines (coreutils 9.4
+  // probed; #1670 must not over-dedup the default -P policy). The link
+  // line's value is NOT pinned here: GNU prints 0 (st_blocks of the
+  // lstat'd link) while link_entry_size models the target-path length
+  // rounded to the cluster, a pre-existing question outside #1670 — the
+  // X299 probe records the actual value for a follow-up.
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "dir");
+  tmp.write("dir/f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "dirlink";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"dir"), true)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"dirlink", L"dir"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(line_usage_values(r.stdout_text).size() == 2);
+  const auto link_usage = usage_for_path(r.stdout_text, "dirlink");
+  EXPECT_TRUE(link_usage.has_value());
+  const auto dir_usage = usage_for_path(r.stdout_text, "dir");
+  EXPECT_TRUE(dir_usage.has_value());
+  if (!dir_usage.has_value()) return;
+  EXPECT_EQ(*dir_usage, expected_blocks(1, 1024, tmp.path));
+}
+
+TEST(du, du_dereference_nested_dirlink_dedupes_subtree) {
+  // [GNU] Inside one traversal, a subdirectory reached through a link
+  // name and through its real name prints once, under the first spelling
+  // encountered (coreutils 9.4 probed: `du -L top` prints `top/link`,
+  // never `top/sub`; #1670). Which spelling wins follows traversal
+  // order, so the nail accepts either — but never both.
+  TempDir tmp;
+  std::filesystem::create_directories(tmp.path / "top" / "sub");
+  tmp.write("top/sub/f.txt", "x");
+
+  std::filesystem::path link = tmp.path / "top" / "link";
+  if (!du_test_create_symlink(link, std::filesystem::path(L"sub"), true)) {
+    return;
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"du.exe", {L"-L", L"top"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_TRUE(line_usage_values(r.stdout_text).size() == 2);
+  const auto link_usage = usage_for_path(r.stdout_text, "top/link");
+  const auto sub_usage = usage_for_path(r.stdout_text, "top/sub");
+  EXPECT_TRUE(link_usage.has_value() != sub_usage.has_value());
+  const auto winner =
+      link_usage.has_value() ? link_usage : sub_usage;
+  EXPECT_TRUE(winner.has_value());
+  if (winner.has_value()) {
+    EXPECT_EQ(*winner, expected_blocks(1, 1024, tmp.path));
+  }
+  const auto top_usage = usage_for_path(r.stdout_text, "top");
+  EXPECT_TRUE(top_usage.has_value());
+  if (!top_usage.has_value()) return;
+  EXPECT_EQ(*top_usage, expected_blocks(1, 1024, tmp.path));
+}
+
 TEST(du, du_block_size_env_is_honored) {
   TempDir tmp;
   tmp.write("file.bin", std::string(2048, 'x'));

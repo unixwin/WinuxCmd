@@ -379,16 +379,17 @@ auto ceil_div(uint64_t value, uint64_t divisor) -> uint64_t {
   return 1 + ((value - 1) / divisor);
 }
 
-// [GNU] Canonical, case-insensitive key used to detect directories that were
-// already traversed earlier in this invocation. GNU du skips such arguments
-// entirely and lets already-traversed subtrees contribute nothing to later
-// parent arguments (Savannah #10397).
+// Lexical fallback for the visited-directory key (du_visited_dir_key):
+// canonical, case-insensitive spelling of the path. GNU du keys visited
+// directories by inode (Savannah #10397); the lexical key is used only
+// when the inode cannot be read, so spellings like `dir` and `dir/.`
+// still key identically there.
 auto du_dir_key(const std::wstring& path) -> std::wstring {
   std::error_code ec;
   // #1288: canonicalize the extended spelling so the key is computed,
   // not degraded to the raw literal, for directories past MAX_PATH.
   // Keys stay uniform within a run because every directory passes
-  // through this one function.
+  // through the one visited-dir key function.
   std::filesystem::path canon = std::filesystem::weakly_canonical(
       std::filesystem::path(native_path::to_extended_path(path)), ec);
   std::wstring key = ec ? path : canon.wstring();
@@ -1261,6 +1262,46 @@ auto get_link_inode_key(const std::wstring& path) -> std::wstring {
   return key;
 }
 
+// Identity of a directory by its TARGET inode (volume serial + file
+// index), following symlinks: the same directory reached through its
+// link name and its real name keys identically (Savannah #10397,
+// #1670). Unlike get_link_inode_key the reparse point is opened
+// followed, not as itself, so a directory symlink reports its
+// target's inode. Returns empty when the directory cannot be opened.
+auto get_dir_inode_key(const std::wstring& path) -> std::wstring {
+  HANDLE hDir = CreateFileW(
+      path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (hDir == INVALID_HANDLE_VALUE) {
+    return L"";
+  }
+  BY_HANDLE_FILE_INFORMATION info{};
+  std::wstring key;
+  if (GetFileInformationByHandle(hDir, &info)) {
+    const uint64_t index =
+        (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+    key = L"ino:" + std::to_wstring(info.dwVolumeSerialNumber) + L":" +
+          std::to_wstring(index);
+  }
+  CloseHandle(hDir);
+  return key;
+}
+
+// [GNU] Directory dedup key: the target inode when it can be read, so
+// `du -L dirlink dir` visits the directory once and skips the second
+// spelling entirely (Savannah #10397, #1670). The "ino:" prefix keeps
+// inode keys in a separate namespace from the lexical fallback keys in
+// the same visited_dirs set. Falls back to the lexical du_dir_key when
+// the inode cannot be read (e.g. an unreadable directory), preserving
+// the old behavior there.
+auto du_visited_dir_key(const std::wstring& path) -> std::wstring {
+  std::wstring inode_key = get_dir_inode_key(path);
+  if (!inode_key.empty()) {
+    return inode_key;
+  }
+  return du_dir_key(path);
+}
+
 // A symlink's own contribution: st_size of the link for apparent
 // size, its own allocation (size rounded up to the volume cluster,
 // mirroring get_file_size's model) otherwise.
@@ -1400,8 +1441,10 @@ auto calculate_dir_size(const std::wstring& path,
         }
       }
       // [GNU] Subtrees already traversed under an earlier argument contribute
-      // nothing to this parent (Savannah #10397).
-      const std::wstring child_key = du_dir_key(full_path);
+      // nothing to this parent (Savannah #10397). The key is the target
+      // inode (#1670): a subdirectory reached through a link name and
+      // through its real name is the same subtree.
+      const std::wstring child_key = du_visited_dir_key(full_path);
       if (visited_dirs.count(child_key) != 0) {
         continue;
       }
@@ -1687,8 +1730,10 @@ auto print_disk_usage(const CommandContext<DU_OPTIONS.size()>& ctx)
 
     if ((attrs & FILE_ATTRIBUTE_DIRECTORY) && !operand_is_unfollowed_link) {
       // [GNU] Skip an argument directory that was already traversed under an
-      // earlier argument (Savannah #10397).
-      const std::wstring arg_key = du_dir_key(wpath);
+      // earlier argument (Savannah #10397). The key is the target inode
+      // (#1670), taken on walk_path — the directory actually traversed,
+      // which is the resolved target for an LX-link operand.
+      const std::wstring arg_key = du_visited_dir_key(walk_path);
       if (!visited_dirs.insert(arg_key).second) {
         continue;
       }
