@@ -26,6 +26,11 @@ LEDGER = os.path.join(HERE, "..", "target", "gate", "ledger.tsv")
 # Per-table provenance comments preserved on regeneration (appended after the
 # two standard header lines). Keys are case-table stems.
 TABLE_NOTES = {
+    "cp": [
+        "# cp gate cases (WP-J, rust2) — TAB-separated",
+        "# junction rows: GNU side `ln -s`, exe sides `cmd /c mklink /J`",
+        "# cp88-cp90 are note/SKIP: file symlinks need Windows Developer Mode",
+    ],
     "chmod": [
         "# chmod gate cases (#1488 wave1 deepening) — TAB-separated",
         "# NOTE: this WSL oracle was built with preserve-root DISABLED by default,",
@@ -3881,6 +3886,118 @@ xargs_rows = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# cp (WP-J, #1488 rust2 library lane; coreutils 9.4 oracle)
+#
+# Every expected value was probed first (rust2/target/probe/p-cp1..4.sh in the
+# lane report). Junction rows materialize the POSIX symlink on the GNU side
+# (`ln -s`) and its unprivileged Windows analog on the exe sides
+# (`cmd /c mklink /J`), so the #1647 link paths gate without Developer Mode.
+# cp88-cp90 are `note` SKIP rows: file-symlink creation needs Developer Mode
+# (the same bound NOTE-QC records for ln22-ln25).
+# ---------------------------------------------------------------------------
+CP_ROWS = [
+    ('cp01-basic', 'strict', "printf 'A\\n' > a", '', '', ['a', 'b']),
+    ('cp02-overwrite', 'strict', 'printf A > a; printf B > b', '', '', ['a', 'b']),
+    ('cp03-into-dir', 'strict', 'printf A > a; mkdir d', '', '', ['a', 'd']),
+    ('cp04-multi-into-dir', 'strict', 'printf A > a; printf B > b; mkdir d', '', '', ['a', 'b', 'd']),
+    ('cp05-multi-verbose', 'strict', 'printf A > a; printf B > b; mkdir d', '', '', ['-v', 'a', 'b', 'd']),
+    ('cp06-missing-src', 'strict', '', '', '', ['nosuch', 'out']),
+    ('cp07-missing-dest', 'strict', 'printf A > a', '', '', ['a']),
+    ('cp08-target-missing', 'strict', 'printf A > a; printf B > b', '', '', ['a', 'b', 'nodir']),
+    ('cp09-three-nondir', 'strict', 'printf A > a; printf B > b; printf C > c', '', '', ['a', 'b', 'c']),
+    ('cp10-t-ok', 'strict', 'printf A > a; printf B > b; mkdir d', '', '', ['-t', 'd', 'a', 'b']),
+    ('cp11-t-missing', 'strict', 'printf A > a', '', '', ['-t', 'nodir', 'a']),
+    ('cp12-t-nondir', 'strict', 'printf A > a; printf B > b', '', '', ['-t', 'b', 'a']),
+    ('cp13-t-and-T', 'strict', 'printf A > a; mkdir d', '', '', ['-t', 'd', '-T', 'a']),
+    ('cp14-T-create', 'strict', 'printf A > a', '', '', ['-T', 'a', 'b']),
+    ('cp15-T-dir', 'strict', 'printf A > a; mkdir d', '', '', ['-T', 'a', 'd']),
+    ('cp16-no-r-dir', 'strict', 'mkdir d', '', '', ['d', 'e']),
+    ('cp17-r-create', 'strict', 'mkdir s; printf A > s/f', '', '', ['-r', 's', 't']),
+    ('cp18-r-existing', 'strict', 'mkdir s d; printf A > s/f', '', '', ['-r', 's', 'd']),
+    ('cp19-r-self', 'strict', 'mkdir s; printf A > s/f', '', '', ['-r', 's', 's']),
+    ('cp20-r-subdir-self', 'strict', 'mkdir -p s/sub', '', '', ['-r', 's', 's/sub']),
+    ('cp21-same-file', 'strict', 'printf A > a', '', '', ['a', 'a']),
+    ('cp22-verbose', 'strict', 'printf A > a', '', '', ['-v', 'a', 'b']),
+    ('cp23-verbose-into-dir', 'strict', 'printf A > a; mkdir d', '', '', ['-v', 'a', 'd']),
+    ('cp24-verbose-recursive', 'strict', 'mkdir s; printf A > s/f', '', '', ['-rv', 's', 't']),
+    ('cp25-vt', 'strict', 'printf A > a; mkdir d', '', '', ['-vt', 'd', 'a']),
+    ('cp26-i-no', 'strict', 'printf A > a; printf B > b', '', 'n', ['-i', 'a', 'b']),
+    ('cp27-i-eof', 'strict', 'printf A > a; printf B > b', '', '', ['-i', 'a', 'b']),
+    ('cp28-i-yes', 'strict', 'printf A > a; printf B > b', '', 'y', ['-i', 'a', 'b']),
+    ('cp29-i-fresh', 'strict', 'printf A > a', '', '', ['-i', 'a', 'b']),
+    ('cp30-i-then-f', 'strict', 'printf A > a; printf B > b', '', 'n', ['-i', '-f', 'a', 'b']),
+    ('cp31-f-then-i', 'strict', 'printf A > a; printf B > b', '', 'n', ['-f', '-i', 'a', 'b']),
+    ('cp32-i-then-n', 'strict', 'printf A > a; printf B > b', '', 'y', ['-v', '-i', '-n', 'a', 'b']),
+    ('cp33-n-then-i', 'strict', 'printf A > a; printf B > b', '', 'y', ['-v', '-n', '-i', 'a', 'b']),
+    ('cp34-n-skip-v', 'strict', 'printf A > a; printf B > b', '', '', ['-nv', 'a', 'b']),
+    ('cp35-n-new', 'strict', 'printf A > a', '', '', ['-n', 'a', 'c']),
+    ('cp36-u-skip', 'strict', 'printf A > a; printf B > b; touch -t 202001010000 a; touch -t 202101010000 b', '', '', ['-uv', 'a', 'b']),
+    ('cp37-u-copy', 'strict', 'printf A > a; printf B > b; touch -t 202201010000 a; touch -t 202101010000 b', '', '', ['-uv', 'a', 'b']),
+    ('cp38-update-none', 'strict', 'printf A > a; printf B > b', '', '', ['--update=none', 'a', 'b']),
+    ('cp39-update-all-after-n', 'strict', 'printf A > a; printf B > b', '', '', ['-nv', '--update=all', 'a', 'b']),
+    ('cp40-update-bad', 'strict', 'printf A > a', '', '', ['--update=bogus', 'a', 'b']),
+    ('cp41-backup', 'strict', 'printf A > a; printf B > b', '', '', ['-b', 'a', 'b']),
+    ('cp42-backup-v', 'strict', 'printf A > a; printf B > b', '', '', ['-vb', 'a', 'b']),
+    ('cp43-backup-suffix', 'strict', 'printf A > a; printf B > b', '', '', ['-b', '-S', '.bak', 'a', 'b']),
+    ('cp44-backup-numbered', 'strict', 'printf A > a; printf B > b', '', '', ['--backup=numbered', 'a', 'b']),
+    ('cp45-backup-invalid', 'strict', 'printf A > a', '', '', ['--backup=bogus', 'a', 'b']),
+    ('cp46-backup-empty', 'strict', 'printf A > a', '', '', ['--backup=', 'a', 'b']),
+    ('cp47-suffix-alone', 'strict', 'printf A > a; printf B > b', '', '', ['-S', '.bak', 'a', 'b']),
+    ('cp48-b-with-arg', 'strict', 'printf A > a; printf B > b', '', '', ['-b', 'numbered', 'a', 'b']),
+    ('cp49-hard-link', 'strict', 'printf A > a', '', '', ['-l', 'a', 'b']),
+    ('cp50-hard-link-exists', 'strict', 'printf A > a; printf B > b', '', '', ['-l', 'a', 'b']),
+    ('cp51-s-l-conflict', 'strict', 'printf A > a', '', '', ['-s', '-l', 'a', 'b']),
+    ('cp52-preserve-bad', 'strict', 'printf A > a', '', '', ['--preserve=bogus', 'a', 'b']),
+    ('cp53-preserve-empty', 'strict', 'printf A > a', '', '', ['--preserve=', 'a', 'b']),
+    ('cp54-sparse-bad', 'strict', 'printf A > a', '', '', ['--sparse=bogus', 'a', 'b']),
+    ('cp55-reflink-bad', 'strict', 'printf A > a', '', '', ['--reflink=bogus', 'a', 'b']),
+    ('cp56-reflink-always', 'strict', 'printf A > a', '', '', ['--reflink=always', 'a', 'b']),
+    ('cp57-reflink-auto', 'strict', 'printf A > a', '', '', ['--reflink=auto', 'a', 'b']),
+    ('cp58-reflink-sparse', 'strict', 'printf A > a', '', '', ['--reflink=always', '--sparse=never', 'a', 'b']),
+    ('cp59-unknown-long', 'strict', 'printf A > a', '', '', ['--bogus', 'a', 'b']),
+    ('cp60-unknown-short', 'strict', 'printf A > a', '', '', ['-Y', 'a', 'b']),
+    ('cp61-empty-src', 'strict', '', '', '', ['@EMPTY@', 'out']),
+    ('cp62-empty-dest', 'strict', 'printf A > a', '', '', ['a', '@EMPTY@']),
+    ('cp63-dot-recursive', 'strict', 'mkdir d; printf A > d/f', '', '', ['-r', '.', 't']),
+    ('cp64-parents', 'strict', 'mkdir -p p/q; printf A > p/q/f; mkdir d', '', '', ['--parents', 'p/q/f', 'd']),
+    ('cp65-parents-v', 'strict', 'mkdir -p p/q; printf A > p/q/f; mkdir d', '', '', ['-v', '--parents', 'p/q/f', 'd']),
+    ('cp66-parents-nondir', 'strict', 'mkdir -p p/q; printf A > p/q/f; printf x > d', '', '', ['--parents', 'p/q/f', 'd']),
+    ('cp67-dest-slash-missing', 'strict', 'printf A > a', '', '', ['a', 'nodir/']),
+    ('cp68-src-trailing-slash', 'strict', 'printf A > a', '', '', ['a/', 'b']),
+    ('cp69-strip-trailing', 'strict', 'printf A > a', '', '', ['--strip-trailing-slashes', 'a/', 'b']),
+    ('cp70-dashdash', 'strict', 'printf A > a', '', '', ['--', 'a', 'b']),
+    ('cp71-r-file', 'strict', 'printf A > a', '', '', ['-r', 'a', 'b']),
+    ('cp72-r-dest-file', 'strict', 'mkdir s; printf A > s/f; printf B > b', '', '', ['-r', 's', 'b']),
+    ('cp73-x', 'strict', 'mkdir s; printf A > s/f', '', '', ['-rx', 's', 't']),
+    ('cp74-copy-contents', 'strict', 'mkdir s; printf A > s/f', '', '', ['-r', '--copy-contents', 's', 't']),
+    ('cp75-attrs-only-v', 'strict', 'printf ABC > a', '', '', ['-v', '--attributes-only', 'a', 'b']),
+    ('cp76-just-created', 'strict', 'mkdir x y d; printf 1 > x/f; printf 2 > y/f', '', '', ['x/f', 'y/f', 'd']),
+    ('cp77-dup-source-v', 'strict', 'printf A > a; mkdir d', '', '', ['-v', 'a', 'a', 'd']),
+    ('cp78-i-multi-decline', 'strict', 'printf A > a; printf B > b; mkdir d; printf X > d/a; printf X > d/b', '', 'n\\nn\\n', ['-iv', 'a', 'b', 'd']),
+    ('cp79-preserve-p-v', 'strict', 'printf A > a', '', '', ['-vp', 'a', 'b']),
+    ('cp80-archive-v', 'strict', 'mkdir s; printf A > s/f', '', '', ['-av', 's', 't']),
+    ('cp81-junction-recursive-v', 'strict', 'mkdir real s; printf A > real/f; if [ "$(uname -s)" = Linux ]; then ln -s ../real s/l; else cmd /c mklink /J \'s\\l\' real; fi', '', '', ['-rv', 's', 't']),
+    ('cp82-junction-cmdline-v', 'strict', 'mkdir real; printf A > real/f; if [ "$(uname -s)" = Linux ]; then ln -s real l; else cmd /c mklink /J l real; fi', '', '', ['-rv', 'l', 'out']),
+    ('cp83-junction-deref-no-r', 'strict', 'mkdir real; if [ "$(uname -s)" = Linux ]; then ln -s real l; else cmd /c mklink /J l real; fi', '', '', ['l', 'out']),
+    ('cp84-junction-L-v', 'strict', 'mkdir real; printf A > real/f; if [ "$(uname -s)" = Linux ]; then ln -s real l; else cmd /c mklink /J l real; fi', '', '', ['-rvL', 'l', 'out']),
+    ('cp85-junction-P-last', 'strict', 'mkdir real s; printf A > real/f; if [ "$(uname -s)" = Linux ]; then ln -s ../real s/l; else cmd /c mklink /J \'s\\l\' real; fi', '', '', ['-rL', '-P', 's', 't']),
+    ('cp86-junction-dangling-d', 'strict', 'if [ "$(uname -s)" = Linux ]; then ln -s nosuch l; else cmd /c mklink /J l nosuch; fi', '', '', ['-dv', 'l', 'out']),
+    ('cp87-junction-archive-v', 'strict', 'mkdir real s; printf A > real/f; if [ "$(uname -s)" = Linux ]; then ln -s ../real s/l; else cmd /c mklink /J \'s\\l\' real; fi', '', '', ['-av', 's', 't']),
+    ('cp88-file-symlink-note', 'note', 'printf A > f; if [ "$(uname -s)" = Linux ]; then ln -s f l; else cmd /c mklink l f >/dev/null 2>&1 || true; fi', '', '', ['-dv', 'l', 'out']),
+    ('cp89-file-symlink-deref-note', 'note', 'printf A > f; if [ "$(uname -s)" = Linux ]; then ln -s f l; else cmd /c mklink l f >/dev/null 2>&1 || true; fi', '', '', ['-v', 'l', 'out']),
+    ('cp90-create-symlink-note', 'note', 'printf A > a', '', '', ['-s', 'a', 'b']),
+    ('cp91-permuted-options', 'strict', 'printf A > a', '', '', ['a', 'b', '-v']),
+    ('cp92-long-abbrev', 'strict', 'printf A > a', '', '', ['--verb', 'a', 'b']),
+    ('cp93-value-abbrev', 'strict', 'printf A > a', '', '', ['--sparse=n', 'a', 'b']),
+    ('cp94-dash-named-operand', 'strict', 'printf A > ./-x', '', '', ['--', '-x', 'out']),
+    ('cp95-t-no-operand', 'strict', '', '', '', ['-t', 'nodir']),
+    ('cp96-t-missing-arg', 'strict', '', '', '', ['-t']),
+    ('cp97-t-multiple', 'strict', 'printf A > a; mkdir d e', '', '', ['-t', 'd', '-t', 'e', 'a']),
+    ('cp98-cyclic-link', 'strict', "mkdir a; printf A > a/f; if [ \"$(uname -s)\" = Linux ]; then ln -s . a/loop; else cmd /c mklink /J 'a\\loop' a; fi", '', '', ['-rL', 'a', 'b']),
+]
+
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -3928,6 +4045,8 @@ def collect():
         ("pinky", pinky_rows),
         # #1488: xargs (findutils 4.9 oracle)
         ("xargs", xargs_rows),
+        # WP-J: cp (rust2 library lane)
+        ("cp", CP_ROWS),
     ]
 
 
