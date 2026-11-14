@@ -107,7 +107,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 None => (long.to_string(), None),
             };
             match name.as_str() {
-                // [GNU] ln.c:505-512: -f and -i are last-wins on the
+                // [GNU] ln.c:506-513: -f and -i are last-wins on the
                 // same two flags — -f sets remove_existing_files and
                 // clears interactive, -i clears remove_existing_files
                 // and sets interactive. getopt_long processes argv in
@@ -170,7 +170,7 @@ pub fn ln_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         while ci < chars.len() {
             let c = chars[ci];
             match c {
-                // [GNU] ln.c:505-512: same last-wins pair as the long
+                // [GNU] ln.c:506-513: same last-wins pair as the long
                 // forms above; short clusters are walked char by char
                 // in order, so -if forces and -fi prompts.
                 'f' => {
@@ -481,8 +481,9 @@ enum RemoveOutcome {
     RemoveFailed(String),
 }
 
-/// Remove an existing destination per -f/-i. GNU: an interactive 'n'
-/// declines SILENTLY (rc stays 0); a plain existing dst without -f is the
+/// Remove an existing destination per -f/-i. GNU ln.c:273-284: an
+/// interactive 'n' declines SILENTLY and fails the command (`if (!yesno ())
+/// return false;` -> rc 1); a plain existing dst without -f is the
 /// File-exists error.
 fn remove_existing(io: &mut Io, ctx: &Ctx, opts: &LnOpts, dst: &str) -> RemoveOutcome {
     let full = resolve(ctx, dst);
@@ -885,7 +886,7 @@ mod tests {
 
     #[test]
     fn interactive_force_last_wins() {
-        // rubash#1651 / GNU ln.c:505-512: -f clears interactive, -i
+        // rubash#1651 / GNU ln.c:506-513: -f clears interactive, -i
         // clears remove_existing_files; getopt order makes the last
         // of the pair govern. Each cell gets a fresh scratch dir so
         // the dst content is an independent witness.
