@@ -179,7 +179,7 @@ fn run_direct(argv: &[std::ffi::OsString]) -> i32 {
 
     let env = ProcessEnv;
     let cwd = std::env::current_dir().unwrap_or_default();
-    let ctx = Ctx { cwd, env: &env };
+    let ctx = Ctx::new(cwd, &env);
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

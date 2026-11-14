@@ -28,7 +28,7 @@ use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
 use crate::winsys;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -72,8 +72,19 @@ fn is_path_var(name: &str) -> bool {
     )
 }
 
-fn unrecognized(io: &mut Io, typed: &str) {
-    let _ = writeln!(io.stderr, "getconf: Unrecognized variable `{typed}'");
+fn unrecognized(io: &mut Io, ctx: &Ctx, typed: &str) {
+    // glibc getconf backtick/apostrophe quoting, byte-matched (getconf.c:
+    // "Unrecognized variable `%s'").
+    let _ = writeln!(
+        io.stderr,
+        "getconf: {}",
+        tr!(
+            ctx,
+            "command.getconf.error.unrecognized_variable",
+            "Unrecognized variable `{var}'",
+            var = typed
+        )
+    );
 }
 
 // glibc getconf --help, verbatim from the WSL oracle (Ubuntu GLIBC
@@ -124,7 +135,16 @@ pub fn getconf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // -v SPEC: accepted, ignored (not applicable on Windows).
 
     if !all && p.positionals.is_empty() {
-        let _ = usage_error(io, "getconf", "no variable specified");
+        // [GNU] glibc probed rc 1 with its own usage text on stderr.
+        let _ = usage_error(
+            io,
+            "getconf",
+            &tr!(
+                ctx,
+                "command.getconf.error.no_variable_specified",
+                "no variable specified"
+            ),
+        );
         return Ok(1);
     }
 
@@ -155,7 +175,7 @@ pub fn getconf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let var = p.positionals[0].to_string_lossy().into_owned();
         let path = p.positionals[1].to_string_lossy().into_owned();
         if !is_path_var(&var) {
-            unrecognized(io, &var);
+            unrecognized(io, ctx, &var);
             return Ok(2);
         }
         if !crate::fsutil::resolve(ctx, &path).exists()
@@ -166,7 +186,16 @@ pub fn getconf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             && winux_core::path::resolve_pseudo_device(&path).is_none()
             && !winux_core::path::is_dos_device_name(&path)
         {
-            let _ = writeln!(io.stderr, "getconf: {path}: No such file or directory");
+            let _ = writeln!(
+                io.stderr,
+                "getconf: {}",
+                tr!(
+                    ctx,
+                    "command.getconf.error.no_such_file",
+                    "{path}: No such file or directory",
+                    path = path
+                )
+            );
             return Ok(1);
         }
         match lookup(&var) {
@@ -175,7 +204,7 @@ pub fn getconf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 Ok(0)
             }
             None => {
-                unrecognized(io, &var);
+                unrecognized(io, ctx, &var);
                 Ok(2)
             }
         }
@@ -189,7 +218,7 @@ pub fn getconf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     writeln!(io.stdout, "{value}")?;
                 }
                 None => {
-                    unrecognized(io, &typed);
+                    unrecognized(io, ctx, &typed);
                     exit_code = 2;
                 }
             }

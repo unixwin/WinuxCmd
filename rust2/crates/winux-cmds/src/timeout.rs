@@ -616,10 +616,7 @@ mod tests {
     fn run_env(env: &MapEnv, args: &[&str]) -> (u32, String, String) {
         let mut io = MemIo::new("");
         let sc = scratch("timeout");
-        let ctx = Ctx {
-            cwd: sc.dir.clone(),
-            env,
-        };
+        let ctx = Ctx::new(sc.dir.clone(), env);
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
         let r = super::timeout_cmd(&owned, &mut io.split(), &ctx).unwrap();
         (r, io.out(), io.err())
@@ -882,10 +879,7 @@ mod tests {
         std::fs::write(&script, "@echo off\r\nexit /b 0\r\n").unwrap();
         let mut env = MapEnv::new();
         env.set("Path", &sc.dir.to_string_lossy());
-        let ctx = Ctx {
-            cwd: sc.dir.clone(),
-            env: &env,
-        };
+        let ctx = Ctx::new(sc.dir.clone(), &env);
         let mut io = MemIo::new("");
         let owned: Vec<OsString> = ["5", "wmarker"].iter().map(Into::into).collect();
         let r = super::timeout_cmd(&owned, &mut io.split(), &ctx).unwrap();
