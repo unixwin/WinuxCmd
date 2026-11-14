@@ -439,6 +439,52 @@ green — the 16 `stream_tests` included):**
   peak flat (hash incrementally over the stream) is a command-impl item,
   not a bridge one.
 
+## tail follow mode (#1488)
+
+`tail -f/-F/--follow[=descriptor|name]/--retry/-s/--pid/--max-unchanged-stats`
+implement GNU coreutils 9.4 follow semantics in the library
+(`crates/winux-cmds/src/tail/follow.rs`; module doc = the rule list).
+Highlights:
+
+* Wording and exit status match GNU, including the double-spaced
+  `'X' has appeared;  following new file` / `has been replaced;
+  following new file`, `has become inaccessible: <reason>`,
+  `X: file truncated`, `no files remaining`. GNU's exit status differs
+  between its inotify path and its polling fallback (e.g. `-F --pid=P
+  missing f` exits 0, `-f --pid=P missing f` exits 1); the port
+  reproduces GNU's path choice for the status.
+* Headers switch only when output switches files, and only with data;
+  the "previous file" starts as the last operand (probed).
+* `-f` ignores a pipe stdin (`printf x | tail -f` exits 0); a
+  regular-file stdin is followed by descriptor.
+* Wake-up is event-driven: FindFirstChangeNotificationW on the parent
+  directories plus the `--pid` process handle in one
+  WaitForMultipleObjects; a 100 ms re-stat tick (<= 64 files) covers
+  writers that keep the file open (directory notifications only fire on
+  close). Idle CPU measured 0.
+* Name mode holds no handle between wakes, so rotation by rename-over
+  works; descriptor mode holds the handle with full sharing (append,
+  truncate, rename-away, delete all work while followed).
+* Output is flushed after every chunk; a stdout write error ends the run
+  (broken pipe -> `Err(CmdError::Io)`, host status 141).
+* Handle red line: the library QUERIES the process stdin handle for
+  `-f` on `-` (GetFileType / GetConsoleMode / GetFinalPathNameByHandleW /
+  current position — the tty.rs tier) and opens the file by path with
+  its own handle; it never reads, duplicates or moves the host's handle.
+
+Gates: 45 terminating follow rows in `gate/cases/tail.tsv` (dead
+`--pid`, "no files remaining", option errors), and the live scenario
+harness
+
+```sh
+bash gate/wire/tail-follow.sh          # 27 scenarios, GNU (WSL, ext4) vs Rust driver
+```
+
+which records `gate/wire/tail-follow.out` (append, partial lines,
+multi-file headers, -q/-v, truncation, descriptor rename/delete, -F
+rotate/replace, --retry delete/missing, --follow=name without retry,
+--pid exit, stdin file/pipe, -c/-n +N, -n 0, -z, -s 0.1, broken pipe).
+
 ## Out of scope for this pilot
 
 * No `chmod`/`chown`/`df` full POSIX semantics. (Wiring into the dispatcher
