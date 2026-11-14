@@ -1,0 +1,209 @@
+# tail-follow.sh results (GNU coreutils 9.4 under WSL vs rust2 driver)
+# STEP=0.5; columns: scenario | rc gnu/rust | stdout | stderr | verdict
+append                     rc 0/0  out:=  err:=  PASS
+append_default_interval    rc 0/0  out:=  err:=  PASS
+multi_headers              rc 0/0  out:=  err:=  PASS
+multi_quiet                rc 0/0  out:=  err:=  PASS
+verbose_single             rc 0/0  out:=  err:=  PASS
+truncate                   rc 0/0  out:=  err:=  PASS
+truncate_rewrite           rc 0/0  out:=  err:=  PASS
+desc_rename                rc 0/0  out:=  err:=  PASS
+desc_delete                rc 0/0  out:=  err:=  PASS
+name_rotate                rc 0/0  out:=  err:=  PASS
+name_replace               rc 0/0  out:=  err:=  PASS
+retry_delete               rc 0/0  out:=  err:=  PASS
+name_noretry_delete        rc 1/1  out:=  err:=  PASS
+name_noretry_multi_reappear rc 0/0  out:=  err:=  PASS
+name_noretry_rename_last   rc 0/0  out:=  err:=  PASS
+retry_missing              rc 1/1  out:=  err:=  PASS
+retry_missing_multi        rc 0/0  out:=  err:=  PASS
+desc_retry_missing         rc 1/1  out:=  err:=  PASS
+pid_exit                   rc 0/0  out:=  err:=  PASS
+stdin_file                 rc 0/0  out:=  err:=  PASS
+stdin_pipe                 rc 0/0  out:=  err:=  PASS
+stdin_pipe_plus_file       rc 0/0  out:=  err:=  PASS
+bytes_from                 rc 0/0  out:=  err:=  PASS
+lines_zero                 rc 0/0  out:=  err:=  PASS
+zero_term                  rc 0/0  out:=  err:=  PASS
+sleep_fraction             rc 0/0  out:=  err:=  PASS
+broken_pipe                rc pipe-death/pipe-death  out:=  err:=  PASS
+# totals: pass=27 fail=0 known-deviation=0
+
+# ---- GNU transcripts (stdout via cat -A, then stderr) ----
+== append (rc 0)
+a$
+b$
+c$
+de$
+-- stderr
+== append_default_interval (rc 0)
+a$
+b$
+c$
+-- stderr
+== multi_headers (rc 0)
+==> f <==$
+f0$
+$
+==> g <==$
+g0$
+g1$
+$
+==> f <==$
+f1$
+f2$
+$
+==> g <==$
+g2$
+-- stderr
+== multi_quiet (rc 0)
+f0$
+g0$
+f1$
+g1$
+f2$
+-- stderr
+== verbose_single (rc 0)
+==> f <==$
+a$
+b$
+c$
+-- stderr
+== truncate (rc 0)
+1$
+2$
+3$
+new$
+more$
+-- stderr
+tail: f: file truncated
+== truncate_rewrite (rc 0)
+a long first line$
+s$
+t$
+-- stderr
+tail: f: file truncated
+== desc_rename (rc 0)
+a$
+more$
+-- stderr
+== desc_delete (rc 0)
+a$
+-- stderr
+== name_rotate (rc 0)
+a$
+new$
+new-more$
+-- stderr
+tail: 'f' has become inaccessible: No such file or directory
+tail: 'f' has appeared;  following new file
+== name_replace (rc 0)
+a$
+g$
+h$
+-- stderr
+tail: 'f' has been replaced;  following new file
+== retry_delete (rc 0)
+a$
+back$
+more$
+-- stderr
+tail: 'f' has become inaccessible: No such file or directory
+tail: 'f' has appeared;  following new file
+== name_noretry_delete (rc 1)
+a$
+-- stderr
+tail: f: No such file or directory
+tail: no files remaining
+== name_noretry_multi_reappear (rc 0)
+==> f <==$
+f0$
+$
+==> g <==$
+g0$
+g1$
+$
+==> f <==$
+f1$
+-- stderr
+tail: g: No such file or directory
+tail: 'g' has appeared;  following new file
+== name_noretry_rename_last (rc 0)
+a$
+new$
+-- stderr
+tail: f: No such file or directory
+tail: 'f' has appeared;  following new file
+== retry_missing (rc 1)
+hi$
+more$
+-- stderr
+tail: cannot open 'f' for reading: No such file or directory
+tail: 'f' has appeared;  following new file
+== retry_missing_multi (rc 0)
+==> f <==$
+f0$
+g0$
+$
+==> f <==$
+f1$
+$
+==> g <==$
+g1$
+-- stderr
+tail: cannot open 'g' for reading: No such file or directory
+tail: 'g' has appeared;  following new file
+== desc_retry_missing (rc 1)
+==> g <==$
+g0$
+$
+==> f <==$
+f0$
+$
+==> g <==$
+g1$
+-- stderr
+tail: warning: --retry only effective for the initial open
+tail: cannot open 'f' for reading: No such file or directory
+tail: 'f' has appeared;  following new file
+== pid_exit (rc 0)
+a$
+-- stderr
+== stdin_file (rc 0)
+a$
+b$
+c$
+d$
+-- stderr
+== stdin_pipe (rc 0)
+p$
+q$
+-- stderr
+== stdin_pipe_plus_file (rc 0)
+==> standard input <==$
+p$
+$
+==> f <==$
+a$
+b$
+c$
+-- stderr
+== bytes_from (rc 0)
+cdef$
+ghij$
+-- stderr
+== lines_zero (rc 0)
+c$
+d$
+-- stderr
+== zero_term (rc 0)
+b^@c^@d^@-- stderr
+== sleep_fraction (rc 0)
+a$
+b$
+c$
+d$
+-- stderr
+== broken_pipe (rc pipe-death)
+a$
+-- stderr
