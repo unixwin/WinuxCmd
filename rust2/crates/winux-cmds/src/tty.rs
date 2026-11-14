@@ -10,6 +10,13 @@
 //! have — recorded divergence, stdout byte-gated on the not-a-tty side
 //! only in the gate).
 //!
+//! Console-ness is INJECTED ([`winux_core::StdioMeta`], the
+//! `tail::StdinMeta` precedent): the library never asks the process for
+//! its stdin handle. The gate driver composes the real class from the
+//! process side (the sanctioned process-IO tier); the registry default is
+//! the pipe class, which is the honest ABI shape (a captured stdin buffer
+//! is never a terminal).
+//!
 //! Exit status: 0 when stdin is a terminal, 1 when it is not, 2 usage
 //! error (probed: `tty extra` -> rc 2), 3 write failure on stdout (GNU
 //! documents 3 for "write error"; the driver maps a broken stdout handle
@@ -20,7 +27,7 @@ use std::ffi::OsString;
 
 use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{CmdResult, Ctx, Io, StdioMeta};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -46,32 +53,13 @@ Print the file name of the terminal connected to standard input.
 
 "#;
 
-/// True when the injected stdin handle is a console (tty.c's isatty(0)).
+/// `tty_cmd` with the host's stdio classification injected.
 ///
-/// The process-console probe is the one piece of state the Io bundle
-/// cannot carry (a `dyn Read` has no handle identity), so this reads the
-/// CRT stdin handle directly — exactly the tier the 1.x C++ applet uses
-/// (tty.cpp GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE))). In the gate
-/// the driver's stdin is redirected on every side, so every gate row
-/// observes the not-a-tty branch.
-#[cfg(windows)]
-fn stdin_is_console() -> bool {
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetStdHandle(which: u32) -> *mut core::ffi::c_void;
-        fn GetConsoleMode(handle: *mut core::ffi::c_void, mode: *mut u32) -> i32;
-    }
-    const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6u32 as u32;
-    let mut mode: u32 = 0;
-    unsafe { GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mut mode) != 0 }
-}
-
-#[cfg(not(windows))]
-fn stdin_is_console() -> bool {
-    false
-}
-
-pub fn tty_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+/// `stdio.is_tty(0)` is tty.c's `isatty(STDIN_FILENO)`. In the gate the
+/// driver's stdin is redirected on every side, so every gate row observes
+/// the not-a-tty branch; the interactive face is exercised by the driver
+/// composition and the unit tests' injected console class.
+pub fn tty_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdio: &StdioMeta) -> CmdResult {
     let p = match argopt::parse("tty", args, OPTS, io, ctx, 2) {
         Ok(p) => p,
         Err(s) => return Ok(s),
@@ -116,7 +104,7 @@ pub fn tty_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
 
     let silent = p.has("silent") || p.has("quiet");
-    let is_tty = stdin_is_console();
+    let is_tty = stdio.is_tty(0);
     if silent {
         return Ok(if is_tty { 0 } else { 1 });
     }
@@ -129,23 +117,34 @@ pub fn tty_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
 }
 
+/// Registry entry: no host stdin class is known, so the ABI-honest pipe
+/// class applies (a captured stdin buffer is never a terminal).
+pub fn tty_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
+    tty_with_meta(args, io, ctx, &StdioMeta::pipe())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use winux_core::test_support::{MemIo, ScratchCtx};
 
     fn run(args: &[&str], stdin: &str) -> (u32, String, String) {
+        run_meta(args, stdin, &StdioMeta::pipe())
+    }
+
+    fn run_meta(args: &[&str], stdin: &str, meta: &StdioMeta) -> (u32, String, String) {
         let sc = ScratchCtx::new("tty");
         let mut io = MemIo::new(stdin);
         let ctx = sc.ctx();
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
-        let r = tty_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        let r = tty_with_meta(&owned, &mut io.split(), &ctx, meta).unwrap();
         (r, io.out(), io.err())
     }
 
-    // The unit-test process's stdin is never a console (cargo test pipes
-    // it), so the not-a-tty branch is deterministic here — the same branch
-    // every gate row observes.
+    // The registry default is the pipe class (the unit-test process's
+    // stdin is never a console either), so the not-a-tty branch is
+    // deterministic here — the same branch every gate row observes. The
+    // console class is injected explicitly below.
 
     #[test]
     fn not_a_tty_default_and_status() {
@@ -225,6 +224,46 @@ mod tests {
         let (r, out, _) = run(&["--help", "extra"], "");
         assert_eq!(r, 0);
         assert!(out.starts_with("Usage: tty"));
+    }
+
+    #[test]
+    fn injected_console_stdin_prints_con() {
+        // The 1.x C++ applet's console name; GNU would print the tty
+        // device path (a recorded Windows divergence).
+        let console = StdioMeta::with_tty([true, false, false]);
+        let (r, out, err) = run_meta(&[], "", &console);
+        assert_eq!(r, 0);
+        assert_eq!(out, "con\n");
+        assert!(err.is_empty());
+        // -s is rc-only in the console class too.
+        let (r, out, _) = run_meta(&["-s"], "", &console);
+        assert_eq!(r, 0);
+        assert_eq!(out, "");
+        let (r, out, _) = run_meta(&["--silent"], "", &console);
+        assert_eq!(r, 0);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn only_fd0_decides_the_tty_class() {
+        // stdout/stderr console-ness is irrelevant to `tty` (GNU isatty(0)).
+        let out_console = StdioMeta::with_tty([false, true, true]);
+        let (r, out, _) = run_meta(&[], "", &out_console);
+        assert_eq!(r, 1);
+        assert_eq!(out, "not a tty\n");
+    }
+
+    #[test]
+    fn console_class_survives_all_args_before_dispatch() {
+        // Usage errors still win over the console branch (tty extra -> rc 2).
+        let console = StdioMeta::with_tty([true, false, false]);
+        let (r, out, err) = run_meta(&["extra"], "", &console);
+        assert_eq!(r, 2);
+        assert!(out.is_empty());
+        assert!(err.contains("extra operand 'extra'"));
+        let (r, out, _) = run_meta(&["--help"], "", &console);
+        assert_eq!(r, 0);
+        assert!(out.starts_with("Usage: tty [OPTION]...\n"));
     }
 
     #[test]

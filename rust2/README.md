@@ -352,6 +352,28 @@ exists precisely to convert process handles into the explicit-buffer
 protocol (the #1487/#727 root cause was exactly a load-time CRT stdio
 binding across the boundary; the streaming ABI adds no new binding).
 
+`isatty` facts and the stdout-retime face follow the same rule:
+
+* `winux-core::StdioMeta { tty: [bool; 3] }` is the injected `isatty` of
+  fd 0/1/2. `tty_with_meta` (`tty`) and `test_with_meta` /
+  `bracket_with_meta` (`test -t FD`) consume it; the registry entries use
+  `StdioMeta::pipe()` (an ABI stdin/stdout/stderr buffer is never a
+  terminal), and the gate driver composes the real classes from the
+  process handles. No `GetStdHandle`/`GetConsoleMode` remains in the
+  library.
+* `touch -` retimes stdout (GNU touch.c:127-128). The library takes an
+  injected `touch::StdoutTimes` capability instead of `GetStdHandle`;
+  `touch_cmd`'s `None` is the ABI shape (a capture buffer has no settable
+  times -> GNU's `setting times of '-': Invalid argument`, rc 1) and the
+  driver supplies the real stdout handle. Unit tests pin the injected
+  console/capability classes; the differential gate's redirected stdio
+  keeps every gate row on the not-a-tty/untimable face, matching GNU.
+
+Process-self facts that are not IO (a child's inherited stdio, `nice`'s
+priority class, `nproc`'s affinity mask, the `--pid` liveness handle) are
+the command's own process/handles created from explicit arguments, not
+caller-stdio queries; they stay documented per command.
+
 ### Output side
 
 stdout/stderr keep the v1 shape: Rust-owned `CBuf`s the host drains after

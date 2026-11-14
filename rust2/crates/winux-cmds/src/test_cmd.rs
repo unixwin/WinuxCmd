@@ -14,11 +14,19 @@
 //! the std::fs snapshot that rejects device names: GNU /dev/null is a 666
 //! character special (-e/-r/-w/-c true; -b/-s false; device identity
 //! decides -ef).
+//!
+//! `-t FD` is `isatty(FD)`. The library never asks the process for its
+//! stdio handles (#1487 red line): the fd classes arrive as injected
+//! [`winux_core::StdioMeta`] (the `tail::StdinMeta` precedent), composed
+//! by the driver from the process side. The registry default is the pipe
+//! class, the honest ABI shape (captured stdin/stdout/stderr buffers are
+//! not terminals), so `test -t 0/1/2` is false there exactly when the
+//! handles are not consoles.
 
 use std::ffi::OsString;
 
 use crate::fsutil::resolve;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{CmdResult, Ctx, Io, StdioMeta};
 
 const UNOPS: &[&str] = &[
     "-n", "-z", "-e", "-f", "-d", "-s", "-r", "-w", "-x", "-L", "-h", "-b", "-c", "-p", "-S", "-t",
@@ -41,14 +49,35 @@ fn err(msg: String) -> TestError {
 }
 
 pub fn test_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
-    eval_args(args, false, io, ctx)
+    eval_args(args, false, io, ctx, &StdioMeta::pipe())
 }
 
 pub fn bracket_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
-    eval_args(args, true, io, ctx)
+    eval_args(args, true, io, ctx, &StdioMeta::pipe())
 }
 
-fn eval_args(args: &[OsString], bracket: bool, io: &mut Io, ctx: &Ctx) -> CmdResult {
+/// `test` with the host's fd classes injected (`-t FD`).
+pub fn test_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdio: &StdioMeta) -> CmdResult {
+    eval_args(args, false, io, ctx, stdio)
+}
+
+/// `[` with the host's fd classes injected (`-t FD`).
+pub fn bracket_with_meta(
+    args: &[OsString],
+    io: &mut Io,
+    ctx: &Ctx,
+    stdio: &StdioMeta,
+) -> CmdResult {
+    eval_args(args, true, io, ctx, stdio)
+}
+
+fn eval_args(
+    args: &[OsString],
+    bracket: bool,
+    io: &mut Io,
+    ctx: &Ctx,
+    stdio: &StdioMeta,
+) -> CmdResult {
     let prog = if bracket { "[" } else { "test" };
     let mut argv: Vec<String> = args
         .iter()
@@ -67,7 +96,7 @@ fn eval_args(args: &[OsString], bracket: bool, io: &mut Io, ctx: &Ctx) -> CmdRes
     let result = if bracket && argv.is_empty() {
         Ok(false) // `[ ]` -> test of empty string -> false
     } else {
-        posix_test(&argv, ctx, bracket)
+        posix_test(&argv, ctx, bracket, stdio)
     };
 
     match result {
@@ -81,15 +110,20 @@ fn eval_args(args: &[OsString], bracket: bool, io: &mut Io, ctx: &Ctx) -> CmdRes
 
 /// GNU-style dispatch: small nargs have dedicated behaviors (distinct error
 /// messages), longer expressions use the general and/or grammar.
-fn posix_test(argv: &[String], ctx: &Ctx, bracket: bool) -> Result<bool, TestError> {
+fn posix_test(
+    argv: &[String],
+    ctx: &Ctx,
+    bracket: bool,
+    stdio: &StdioMeta,
+) -> Result<bool, TestError> {
     let n = argv.len();
     match n {
         0 => Ok(false),
         1 => Ok(!argv[0].is_empty()),
-        2 => two_arguments(argv, ctx),
-        3 => three_arguments(argv, ctx),
+        2 => two_arguments(argv, ctx, stdio),
+        3 => three_arguments(argv, ctx, stdio),
         _ => {
-            let mut parser = Parser::new(argv, ctx);
+            let mut parser = Parser::new(argv, ctx, stdio);
             let v = parser.parse_expr()?;
             if parser.pos < argv.len() {
                 if bracket {
@@ -111,12 +145,12 @@ fn q(s: &str) -> String {
     format!("'{s}'")
 }
 
-fn two_arguments(argv: &[String], ctx: &Ctx) -> Result<bool, TestError> {
+fn two_arguments(argv: &[String], ctx: &Ctx, stdio: &StdioMeta) -> Result<bool, TestError> {
     if argv[0] == "!" {
         return Ok(!one_argument(&argv[1]));
     }
     if is_unop(&argv[0]) {
-        return unary_operator(&argv[0], &argv[1], ctx);
+        return unary_operator(&argv[0], &argv[1], ctx, stdio);
     }
     if is_binop(&argv[1]) {
         // e.g. `test 1 =` -> missing rhs
@@ -134,7 +168,7 @@ fn two_arguments(argv: &[String], ctx: &Ctx) -> Result<bool, TestError> {
     Err(err(format!("missing argument after {}", q(&argv[1]))))
 }
 
-fn three_arguments(argv: &[String], ctx: &Ctx) -> Result<bool, TestError> {
+fn three_arguments(argv: &[String], ctx: &Ctx, stdio: &StdioMeta) -> Result<bool, TestError> {
     if is_binop(&argv[1]) {
         return binary_operator(&argv[0], &argv[1], &argv[2], ctx);
     }
@@ -143,10 +177,10 @@ fn three_arguments(argv: &[String], ctx: &Ctx) -> Result<bool, TestError> {
     }
     if argv[0] == "!" {
         // `test ! -z ''` -> negate the two-argument form (GNU probes)
-        return Ok(!two_arguments(&argv[1..], ctx)?);
+        return Ok(!two_arguments(&argv[1..], ctx, stdio)?);
     }
     if is_unop(&argv[0]) {
-        return unary_operator(&argv[0], &argv[1], ctx);
+        return unary_operator(&argv[0], &argv[1], ctx, stdio);
     }
     Err(err(format!("{}: binary operator expected", q(&argv[1]))))
 }
@@ -174,11 +208,17 @@ struct Parser<'a> {
     argv: &'a [String],
     pos: usize,
     ctx: &'a Ctx<'a>,
+    stdio: &'a StdioMeta,
 }
 
 impl<'a> Parser<'a> {
-    fn new(argv: &'a [String], ctx: &'a Ctx<'a>) -> Self {
-        Parser { argv, pos: 0, ctx }
+    fn new(argv: &'a [String], ctx: &'a Ctx<'a>, stdio: &'a StdioMeta) -> Self {
+        Parser {
+            argv,
+            pos: 0,
+            ctx,
+            stdio,
+        }
     }
 
     fn cur(&self) -> Option<&str> {
@@ -245,7 +285,7 @@ impl<'a> Parser<'a> {
                 Some(a) => a.clone(),
                 None => return Err(err(format!("missing argument after {}", q(&tok)))),
             };
-            let v = unary_operator(&tok, &arg, self.ctx)?;
+            let v = unary_operator(&tok, &arg, self.ctx, self.stdio)?;
             self.pos += 2;
             return Ok(v);
         }
@@ -354,13 +394,13 @@ fn same_file(ctx: &Ctx, a: &str, b: &str) -> bool {
     }
 }
 
-fn unary_operator(op: &str, arg: &str, ctx: &Ctx) -> Result<bool, TestError> {
+fn unary_operator(op: &str, arg: &str, ctx: &Ctx, stdio: &StdioMeta) -> Result<bool, TestError> {
     match op {
         "-n" => Ok(!arg.is_empty()),
         "-z" => Ok(arg.is_empty()),
         "-t" => {
             let fd = parse_integer(arg)?; // GNU: `test -t x` -> invalid integer
-            Ok(is_console_fd(fd))
+            Ok(stdio.is_tty(fd))
         }
         // DOS device operands (winux-core device probing, the stat
         // #1570/#1579 precedent, 1.x native_path.cppm #276): /dev/null,
@@ -494,40 +534,6 @@ fn is_fifo_marker(ctx: &Ctx, name: &str) -> bool {
     }
 }
 
-fn is_console_fd(fd: i128) -> bool {
-    if !(0..=2).contains(&fd) {
-        return false;
-    }
-    #[cfg(windows)]
-    {
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetStdHandle(n_std_handle: u32) -> *mut core::ffi::c_void;
-            fn GetConsoleMode(h_console_handle: *mut core::ffi::c_void, lp_mode: *mut u32) -> i32;
-        }
-        const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;
-        const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
-        const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4;
-        let which = match fd {
-            0 => STD_INPUT_HANDLE,
-            1 => STD_OUTPUT_HANDLE,
-            _ => STD_ERROR_HANDLE,
-        };
-        unsafe {
-            let h = GetStdHandle(which);
-            let mut mode: u32 = 0;
-            !h.is_null() && GetConsoleMode(h, &mut mode) != 0
-        }
-    }
-    #[cfg(unix)]
-    {
-        extern "C" {
-            fn isatty(fd: i32) -> i32;
-        }
-        unsafe { isatty(fd as i32) == 1 }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,7 +543,7 @@ mod tests {
         let mut io = MemIo::new("");
         let ctx = sc.ctx();
         let owned: Vec<OsString> = args.iter().map(|s| s.into()).collect();
-        let r = eval_args(&owned, false, &mut io.split(), &ctx).unwrap();
+        let r = eval_args(&owned, false, &mut io.split(), &ctx, &StdioMeta::pipe()).unwrap();
         (r, io.out(), io.err())
     }
 
@@ -546,7 +552,7 @@ mod tests {
         v.push("]".into());
         let mut io = MemIo::new("");
         let ctx = sc.ctx();
-        let r = eval_args(&v, true, &mut io.split(), &ctx).unwrap();
+        let r = eval_args(&v, true, &mut io.split(), &ctx, &StdioMeta::pipe()).unwrap();
         (r, io.out(), io.err())
     }
 
@@ -595,8 +601,64 @@ mod tests {
         let mut io = MemIo::new("");
         let ctx = sc.ctx();
         let owned: Vec<OsString> = vec!["1".into()];
-        let r = eval_args(&owned, true, &mut io.split(), &ctx).unwrap();
+        let r = eval_args(&owned, true, &mut io.split(), &ctx, &StdioMeta::pipe()).unwrap();
         assert_eq!(r, 2);
+    }
+
+    fn run_t_meta(args: &[&str], meta: &StdioMeta, bracket: bool) -> u32 {
+        let sc = ScratchCtx::new("test-t");
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let mut owned: Vec<OsString> = args.iter().map(Into::into).collect();
+        if bracket {
+            owned.push("]".into());
+        }
+        let r = if bracket {
+            bracket_with_meta(&owned, &mut io.split(), &ctx, meta)
+        } else {
+            test_with_meta(&owned, &mut io.split(), &ctx, meta)
+        }
+        .unwrap();
+        r
+    }
+
+    #[test]
+    fn t_test_reads_injected_fd_classes() {
+        // GNU `test -t FD` is isatty(FD). The classes are injected, never
+        // read from the process (the #1487 red line).
+        let none = StdioMeta::pipe();
+        for fd in ["0", "1", "2"] {
+            assert_eq!(run_t_meta(&["-t", fd], &none, false), 1, "fd {fd} pipe");
+        }
+        let all = StdioMeta::with_tty([true, true, true]);
+        for fd in ["0", "1", "2"] {
+            assert_eq!(run_t_meta(&["-t", fd], &all, false), 0, "fd {fd} console");
+            assert_eq!(run_t_meta(&["-t", fd], &all, true), 0, "[ fd {fd} console");
+        }
+        // fd-selective class: only fd 1 is a terminal.
+        let out_only = StdioMeta::with_tty([false, true, false]);
+        assert_eq!(run_t_meta(&["-t", "0"], &out_only, false), 1);
+        assert_eq!(run_t_meta(&["-t", "1"], &out_only, false), 0);
+        assert_eq!(run_t_meta(&["-t", "2"], &out_only, false), 1);
+        // out-of-range fds are never terminals.
+        assert_eq!(run_t_meta(&["-t", "3"], &all, false), 1);
+        assert_eq!(run_t_meta(&["-t", "-1"], &all, false), 1);
+        assert_eq!(run_t_meta(&["-t", "99"], &all, false), 1);
+        // GNU integer diagnostics are unaffected by the class.
+        assert_eq!(run_t_meta(&["-t", "x"], &all, false), 2);
+    }
+
+    #[test]
+    fn t_test_injected_class_reaches_the_general_parser() {
+        // The 5-argument form takes Parser::parse_primary, not the small-n
+        // shortcut: the class must reach every unary_operator call.
+        let all = StdioMeta::with_tty([true, true, true]);
+        assert_eq!(run_t_meta(&["-t", "0", "-a", "-t", "1"], &all, false), 0);
+        assert_eq!(run_t_meta(&["-t", "0", "-o", "-t", "9"], &all, false), 0);
+        let none = StdioMeta::pipe();
+        assert_eq!(run_t_meta(&["-t", "0", "-a", "-t", "1"], &none, false), 1);
+        assert_eq!(run_t_meta(&["!", "-t", "0"], &none, false), 0);
+        assert_eq!(run_t_meta(&["(", "-t", "1", ")"], &all, false), 0);
     }
 
     #[test]
