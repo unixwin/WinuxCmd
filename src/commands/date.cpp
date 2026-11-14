@@ -998,9 +998,23 @@ auto iso_year_week(const SYSTEMTIME &st) -> std::pair<long, int> {
   return {iso_year, week};
 }
 
-auto format_time(const TimeValue &tv, const std::string &format)
-    -> std::string {
+auto format_time(const TimeValue &tv, const std::string &format,
+                 bool ascii_names = false) -> std::string {
   const SYSTEMTIME &st = tv.display;
+  // [POSIX] %a/%A/%b/%B/%p/%r/%x/%X/%c come from the LC_TIME value model the
+  // running locale selects (Windows NLS data projected onto POSIX semantics,
+  // DOCS/2.0-locale-database-design.md), not from built-in C-locale literals.
+  // `ascii_names` forces the C values: -R/--rfc-email is RFC 5322 protocol
+  // output, which GNU keeps in English even under a non-English locale.
+  const auto &time_values =
+      ascii_names ? winux::locale_db::c_locale().time
+                  : winux::locale_db::for_category("LC_TIME").time;
+  auto meridiem = [&time_values](int hour) -> std::string {
+    const auto separator = time_values.am_pm.find(';');
+    if (separator == std::string::npos) return time_values.am_pm;
+    return hour < 12 ? time_values.am_pm.substr(0, separator)
+                     : time_values.am_pm.substr(separator + 1);
+  };
   int zone_minutes = timezone_offset_minutes(tv.utc, tv.utc_display);
   std::string result;
   result.reserve(format.size() * 2);
@@ -1121,7 +1135,7 @@ auto format_time(const TimeValue &tv, const std::string &format)
           break;
         }
         case 'p': {
-          std::string text = st.wHour < 12 ? "AM" : "PM";
+          std::string text = meridiem(st.wHour);
           // [GNU] %#p prints the meridiem in lower case.
           if (change_case) {
             to_uppcase = false;
@@ -1132,80 +1146,76 @@ auto format_time(const TimeValue &tv, const std::string &format)
         }
         case 'P': {
           // [GNU] %P always prints lower case; to_lowcase wins over '^'.
-          std::string text = st.wHour < 12 ? "AM" : "PM";
+          std::string text = meridiem(st.wHour);
           to_lowcase = true;
           result += apply_case(std::move(text), to_uppcase, to_lowcase);
           break;
         }
         case 'a':
         case 'A': {
-          static const char *weekday_names[] = {
-              "Sunday",   "Monday", "Tuesday", "Wednesday",
-              "Thursday", "Friday", "Saturday"};
-          static const char *weekday_abbr[] = {"Sun", "Mon", "Tue", "Wed",
-                                               "Thu", "Fri", "Sat"};
           int day_of_week = st.wDayOfWeek;
           // [GNU] %^a/%#a both force upper case.
           if (change_case) {
             to_uppcase = true;
             to_lowcase = false;
           }
-          std::string text = (spec == 'a') ? weekday_abbr[day_of_week]
-                                           : weekday_names[day_of_week];
+          std::string text = (spec == 'a') ? time_values.abday[day_of_week]
+                                           : time_values.day[day_of_week];
           result += apply_case(std::move(text), to_uppcase, to_lowcase);
           break;
         }
         case 'b':
         case 'h':
         case 'B': {
-          static const char *month_names[] = {
-              "January",   "February", "March",    "April",
-              "May",       "June",     "July",     "August",
-              "September", "October",  "November", "December"};
-          static const char *month_abbr[] = {"Jan", "Feb", "Mar", "Apr",
-                                             "May", "Jun", "Jul", "Aug",
-                                             "Sep", "Oct", "Nov", "Dec"};
           // [GNU] %^b/%#b both force upper case.
           if (change_case) {
             to_uppcase = true;
             to_lowcase = false;
           }
-          std::string text = (spec == 'b') ? month_abbr[st.wMonth - 1]
-                                           : month_names[st.wMonth - 1];
+          std::string text = (spec == 'b' || spec == 'h')
+                                 ? time_values.abmon[st.wMonth - 1]
+                                 : time_values.mon[st.wMonth - 1];
           result += apply_case(std::move(text), to_uppcase, to_lowcase);
           break;
         }
         case 'F':
-          result +=
-              apply_case(format_time(tv, "%Y-%m-%d"), to_uppcase, to_lowcase);
-          break;
-        case 'D':
-          result +=
-              apply_case(format_time(tv, "%m/%d/%y"), to_uppcase, to_lowcase);
-          break;
-        case 'T':
-          result +=
-              apply_case(format_time(tv, "%H:%M:%S"), to_uppcase, to_lowcase);
-          break;
-        case 'R':
-          result +=
-              apply_case(format_time(tv, "%H:%M"), to_uppcase, to_lowcase);
-          break;
-        case 'r':
-          result += apply_case(format_time(tv, "%I:%M:%S %p"), to_uppcase,
-                               to_lowcase);
-          break;
-        case 'c':
-          result += apply_case(format_time(tv, "%a %b %e %H:%M:%S %Y"),
+          result += apply_case(format_time(tv, "%Y-%m-%d", ascii_names),
                                to_uppcase, to_lowcase);
           break;
+        case 'D':
+          result += apply_case(format_time(tv, "%m/%d/%y", ascii_names),
+                               to_uppcase, to_lowcase);
+          break;
+        case 'T':
+          result += apply_case(format_time(tv, "%H:%M:%S", ascii_names),
+                               to_uppcase, to_lowcase);
+          break;
+        case 'R':
+          result += apply_case(format_time(tv, "%H:%M", ascii_names),
+                               to_uppcase, to_lowcase);
+          break;
+        case 'r': {
+          // [POSIX] %r is the locale's 12-hour time; when the locale defines
+          // no meridiem form WinuxCmd keeps the C-locale shape.
+          const std::string pattern =
+              time_values.t_fmt_ampm.empty() ? "%I:%M:%S %p"
+                                             : time_values.t_fmt_ampm;
+          result += apply_case(format_time(tv, pattern, ascii_names),
+                               to_uppcase, to_lowcase);
+          break;
+        }
+        case 'c':
+          result += apply_case(
+              format_time(tv, time_values.d_t_fmt, ascii_names), to_uppcase,
+              to_lowcase);
+          break;
         case 'x':
-          result +=
-              apply_case(format_time(tv, "%m/%d/%y"), to_uppcase, to_lowcase);
+          result += apply_case(format_time(tv, time_values.d_fmt, ascii_names),
+                               to_uppcase, to_lowcase);
           break;
         case 'X':
-          result +=
-              apply_case(format_time(tv, "%H:%M:%S"), to_uppcase, to_lowcase);
+          result += apply_case(format_time(tv, time_values.t_fmt, ascii_names),
+                               to_uppcase, to_lowcase);
           break;
         case 'j': {
           const int doy = day_of_year(st);
@@ -2472,7 +2482,7 @@ REGISTER_COMMAND(
     }
     auto tv = make_time_value(*parsed, use_utc);
     if (tv) {
-      safePrintLn(format_time(*tv, format));
+      safePrintLn(format_time(*tv, format, rfc2822));
     }
     return exit_code;
   }
@@ -2570,7 +2580,7 @@ REGISTER_COMMAND(
       safeErrorPrintLn("date: output format: '" + format + "'");
     }
     auto tv = make_time_value(utc_ft, use_utc);
-    if (tv) safePrintLn(format_time(*tv, format));
+    if (tv) safePrintLn(format_time(*tv, format, rfc2822));
     return exit_code;
   }
 
@@ -2655,7 +2665,7 @@ REGISTER_COMMAND(
       if (debug) {
         safeErrorPrintLn("date: output format: '" + format + "'");
       }
-      safePrint(format_time(*file_tv, format));
+      safePrint(format_time(*file_tv, format, rfc2822));
       safePrint("\n");
     }
     return ok ? 0 : 1;
@@ -2666,7 +2676,7 @@ REGISTER_COMMAND(
   if (debug) {
     safeErrorPrintLn("date: output format: '" + format + "'");
   }
-  std::string output = format_time(*tv, format);
+  std::string output = format_time(*tv, format, rfc2822);
   safePrintLn(output);
 
   return 0;

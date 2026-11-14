@@ -693,6 +693,9 @@ TEST(date, date_case_flags_match_gnu) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
+  // %a/%A/%b/%B/%p are LC_TIME values now; pin the C locale so the
+  // expectation does not depend on the machine's Windows locale.
+  p.set_env(L"LC_ALL", L"C");
   p.add(L"date.exe",
         {L"-u", L"--date", L"@0",
          L"+%a|%#a|%^a|%A|%#A|%b|%#b|%B|%#B|%p|%#p|%^p|%P|%#P|%^P|%Z|%#Z|%^Z"});
@@ -713,6 +716,7 @@ TEST(date, date_case_flags_composites) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
+  p.set_env(L"LC_ALL", L"C");
   p.add(L"date.exe",
         {L"-u", L"--date", L"@0", L"+%c|%#c|%^c|%r|%#r|%^r|%x|%#x|%^x"});
 
@@ -725,6 +729,48 @@ TEST(date, date_case_flags_composites) {
             "THU JAN  1 00:00:00 1970|"
             "12:00:00 AM|12:00:00 AM|12:00:00 AM|"
             "01/01/70|01/01/70|01/01/70\n");
+}
+
+// [POSIX] %a/%A/%b/%B/%p/%x/%X/%c/%r read the LC_TIME value model, which is
+// acquired from the Windows NLS database and projected onto POSIX semantics
+// (#1549). en_US is pinned because every Windows installation resolves it.
+TEST(date, date_time_formats_follow_the_locale_database) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"LC_ALL", L"en_US.UTF-8");
+  p.add(L"date.exe",
+        {L"-u", L"--date", L"@0", L"+%a|%A|%b|%h|%B|%p|%x|%X|%c|%r"});
+
+  auto r = p.run();
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("date locale database stdout", r.stdout_text);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text,
+            "Thu|Thursday|Jan|Jan|January|AM|01/01/1970|12:00:00 AM|"
+            "01/01/1970 12:00:00 AM|12:00:00 AM\n");
+}
+
+// [POSIX] Each category follows its own environment variable: LC_TIME selects
+// the date/time values while LANG stays C for the rest.
+TEST(date, date_uses_lc_time_not_only_lang) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.set_env(L"LC_ALL", L"");
+  p.set_env(L"LANG", L"C");
+  p.set_env(L"LC_TIME", L"de_DE.UTF-8");
+  p.add(L"date.exe", {L"-u", L"--date", L"@0", L"+%b|%B|%p|%x|%X"});
+
+  auto r = p.run();
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("date LC_TIME precedence stdout", r.stdout_text);
+  EXPECT_EQ(r.exit_code, 0);
+  // de-DE has no meridiem strings, so %p expands to nothing (glibc's de_DE
+  // am_pm is ";" for the same reason).
+  EXPECT_EQ(r.stdout_text, "Jan|Januar||01.01.1970|00:00:00\n");
 }
 
 // [GNU] a dangling '%' with flags is emitted verbatim, and unknown
@@ -751,6 +797,7 @@ TEST(date, date_eo_modifiers_fall_back_to_base_conversion) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
+  p.set_env(L"LC_ALL", L"C");
   p.add(L"date.exe",
         {L"-u", L"--date", L"@0", L"+%EY|%Oy|%Od|%Om|%Ec|%OH|%OM|%OS"});
 
