@@ -30,6 +30,7 @@ pub mod du;
 pub mod echo;
 pub mod expand;
 pub mod factor;
+pub mod find;
 
 pub mod fmt;
 pub mod fold;
@@ -201,6 +202,8 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("date", date::date_cmd),
         ("du", du::du_cmd),
         ("pinky", pinky::pinky_cmd),
+        // #1488 find lane: GNU findutils 4.9 find
+        ("find", find::find_cmd),
     ]
 }
 

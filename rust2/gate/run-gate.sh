@@ -8,13 +8,17 @@
 #
 # Case table: gate/cases/<cmd>.tsv, TAB-separated columns:
 #   id | mode | setup | env | stdin | arg1 | arg2 | ...
-#   mode : strict | exit | win | posix | posix-exit   (see below)
+#   mode : strict | sorted | exit | win | posix | posix-exit   (see below)
 #   setup: POSIX sh snippet run inside the per-side scratch dir (may be empty)
 #   env  : comma-separated K=V assignments (may be empty)
 #   stdin: literal bytes for stdin (no newlines in cases; may be empty)
 #
 # Modes:
 #   strict     : stdout bytes AND exit status must equal GNU; C++ equality recorded
+#   sorted     : strict, but stdout LINES compare after LC_ALL=C sort on both
+#                sides — for directory walks whose order is the filesystem's
+#                enumeration order (GNU find prints ext4 readdir/hash order,
+#                NTFS enumerates in B-tree order; #1488 find lane)
 #   exit       : exit status must equal GNU; stdout is platform-form-bound (recorded)
 #   win        : no GNU comparison (platform-inherent output); Rust vs C++ status
 #   posix      : strict comparison, but a failure counts as PENDING, not FAIL —
@@ -248,7 +252,8 @@ posix_setup_is_applet_list() {
 run_posix_win_side() {
     local side="$1" scase="$2" prog="$3" setup="$4" envstr="$5" stdin="$6"
     shift 6
-    local args=("$@")
+    local -a args
+    args=("$@") # NOT `local args=("$@")`: the msys bash 5.3 on the gate host strips backslashes from a compound local assignment (measured: a\*b -> a*b), which silently rewrote every backslash-bearing case argument
     local sdir="$scase.$side"
     mkdir -p "$sdir"
     local exe
@@ -330,7 +335,8 @@ run_posix_win_side() {
 run_case() {
     local cmd="$1" id="$2" mode="$3" setup="$4" envstr="$5" stdin="$6"
     shift 6
-    local args=("$@")
+    local -a args
+    args=("$@") # NOT `local args=("$@")`: the msys bash 5.3 on the gate host strips backslashes from a compound local assignment (measured: a\*b -> a*b), which silently rewrote every backslash-bearing case argument
 
     local scase="$ART/scratch/$id"
     rm -rf "$scase" "$scase.rust" "$scase.cpp" "$scase.gnu.sh" "$GNU_MIRROR/$id"
@@ -502,6 +508,8 @@ run_case() {
     local ok=0 note=""
     case "$mode" in
         strict)     [ "$r_out" = "$g_out" ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
+        sorted)     [ "$(printf '%s' "$r_out" | LC_ALL=C sort)" = "$(printf '%s' "$g_out" | LC_ALL=C sort)" ] \
+                        && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         exit)       [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         win)        [ "$r_rc" = "$c_rc" ] && ok=1 ;;
         posix)      [ "$r_out" = "$g_out" ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
@@ -513,6 +521,8 @@ run_case() {
     local cpp_match=no gnu_out_match=no gnu_rc_match=no
     { [ "$r_out" = "$c_out" ] && [ "$r_rc" = "$c_rc" ]; } && cpp_match=yes
     [ "$r_out" = "$g_out" ] && gnu_out_match=yes
+    # sorted rows: the order-insensitive equality IS the stdout verdict
+    [ "$mode" = sorted ] && [ "$ok" -eq 1 ] && gnu_out_match=yes
     [ "$r_rc" = "$g_rc" ] && gnu_rc_match=yes
 
     if [ -n "$g_err" ] && [ "$mode" != win ]; then
