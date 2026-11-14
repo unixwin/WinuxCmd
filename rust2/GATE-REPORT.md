@@ -1118,3 +1118,105 @@ Rust i18n runtime (no tr! macro, no catalog plumbing in winux-core, no
 Rust recognition in the extractor) — that infra belongs to the
 unmerged stream-abi lane; Rust output drains through the bridge's raw
 writers without catalog lookup. Recorded as a dependency, not skipped.
+
+## Wave-W4 wiring — mkfifo / mknod, the device/FIFO family (#1488, 2026-11-14)
+
+Both applets are wired to the rust2 staticlib (`src/commands/<cmd>.cpp` is
+the `REGISTER_COMMAND` shell + one `winux::rust2::run_command` call; the
+C++ mode evaluator, `--context` pre-scan, MAJOR/MINOR parse, quotef helper
+and `create_winux_fifo_w` pipeline are deleted). CMake union gained
+`mkfifo;mknod`.
+
+Oracle: WSL coreutils 9.4, probed from a script file
+(`rust2/target/probe/w4-mkfifo-mknod.sh`, 685 lines of rc/stdout/stderr+
+on-disk node type). The GNU side runs as root on ext4 and creates REAL
+fifos and device nodes (`stat` rdev=1:3 et al.); the Windows sides create
+the #1038 `!<fifo>` marker or report EPERM for device types — that is why
+the device rows are `win`, never `strict`.
+
+| command | cases | strict | exit | win | note | GNU-gated result | C++ parity (rc+stdout) |
+|---|---|---|---|---|---|---|---|
+| mkfifo | 33 | 31 | 0 | 2 | 0 | GREEN (59 GNU-gated rows both tables) | 32/33 |
+| mknod | 38 | 28 | 0 | 10 | 0 | GREEN | 37/38 |
+
+Table growth (24 -> 33/38) is all probed: empty NAME (ENOENT, not "the
+cwd"), `--context=` (empty PRESENT optarg warns) vs bare `--context`
+(silent), getopt_long abbreviation `--con=`/`--c`, `-m` last-wins,
+`--mode=`, combined symbolic mode, empty `-m` value, empty MAJOR/MINOR
+(`invalid ... ''`), `+1`/`0x1`/`0o` device numbers, exists-directory,
+TYPE-first-character (`pz`/`pp` fifo, `bz` block) and the operand-count
+before TYPE-validation order.
+`mf20/mf21`/`mn20/mn21` are `win` because the wired product answers sole
+`--help`/`--version` with the WinuxCmd-branded dispatcher surface (wave6
+convention); the GNU help bodies stay pinned by the rust2 unit test
+`help_version_surface`.
+
+**Gate a** (`RUST_BIN=build-vs/winuxcmd.exe`, CPP_BIN=pre-wire exe): 59
+GNU-gated rows PASS / 0 FAIL, 12 win rows PASS. Ledger `r=c:no`: one row,
+`mf17-Z-attached-invalid` (1.x accepted `-Zctx2` silently rc 0; GNU and
+the wired body answer `invalid option -- 'c'` rc 1) — the inherited 1.x
+deviation the wire fixes.
+
+**Gate c** (old exe vs new exe, rc+stdout+stderr; `gate/wire/cmd-matrix.sh`
+blocks added for both commands): mkfifo 33 rows — rc 32/33, stdout 33/33,
+stderr 31/33; mknod 36 rows — rc 36/36, stdout 36/36, stderr 26/36.
+Every delta is the new side moving to GNU, none regress:
+
+* mkfifo `--context=` — 1.x silent, GNU/new warn (and still create).
+* mkfifo `-Zctx2` — 1.x rc 0 silent, GNU/new `invalid option -- 'c'` rc 1.
+* mkfifo `-m 1777`/`4755`/bogus and empty NAME — byte-equal already.
+* mknod `nodir/x p`, device types `c/b/u/0x/0o`/`bz` — 1.x wrapped the
+  name in quotes unconditionally; GNU quotef leaves plain names unquoted
+  (`mknod: w4c1: Operation not permitted`); new matches GNU's shape.
+* mknod empty MAJOR/MINOR — 1.x `missing major device number`; GNU/new
+  `invalid major device number ''` (xstrtoumax on "" fails, it is not a
+  missing operand).
+* mknod two-operand bogus TYPE (`mknod w4t2 x`) — 1.x validated the type
+  first (`invalid device type 'x'`); GNU checks the operand count first
+  (`missing operand after 'x'` + special-files note); new matches GNU.
+  The same check order means TYPE is classified by its FIRST character
+  (`pz`/`pp` are fifos, `bz`/`cx`/`uz` special files) — the wave5 Rust
+  port's exact-match was a regression against both GNU and the 1.x body,
+  fixed in this wire.
+* The matrix GNU side runs on DrvFs (device rows answer ENOTSUP there);
+  GNU's root-creation semantics come from the ext4 run-gate oracle, which
+  is why those rows are win.
+
+**Gate b**: full ctest failing set is IDENTICAL to the pre-wire baseline
+(26 = 22 Failed + 4 rust2-stream Not Run); the 35 C++ mkfifo/mknod unit
+tests pass (23 mkfifo + 12 mknod), including the #1038 bridge family
+(`md5sum_hashes_writer_bytes`, `reader_without_writer_blocks_like_gnu`,
+`wc_c_counts_bridged_bytes_not_marker_size`, `paste_joins_two_fifos`,
+`od_reads_fifo_payload_not_marker_bytes`, `hexdump_dumps_fifo_payload`)
+and the #1235 drive-dialect rows. One ctest was **re-pinned** to the GNU
+contract: `mknod.mknod_invalid_type_fails` used the two-operand shape
+(`mknod node1 x`), where GNU reports "missing operand after 'x'" first;
+it now uses NAME TYPE MAJOR MINOR, and
+`mknod_bogus_type_two_operands_is_missing_operand` +
+`mknod_type_trailing_characters_are_ignored` pin the probed order and
+first-character rule. Differential runner: mkfifo 3/3 PASS, mknod 2/2
+PASS.
+
+**#1038 bridge status (honest).** The marker format is unchanged and
+byte/attr-compatible. The bridge exists in TWO places: the C++ `file_io`
+layer (all 1.x applets) and `rust2/crates/winux-cmds/src/fs_win.rs`
+(`open_fifo_read`/`open_fifo_write`, the wired commands that open operand
+files: digestsum, paste, tee, stat, find). Cross-side rendezvous was
+measured in all four directions (`bash gate/wire/fifo-bridge-check.sh`,
+4/4 PASS with `CPP_BIN` = the pre-wire exe; 4/4 PASS again with both sides
+on the local build-vs tree): Rust-created marker -> C++ reader/writer,
+C++-created marker -> Rust md5sum reader + Rust tee writer, Rust/Rust,
+C++ reader + Rust writer.
+Remaining gap, explicit: there is no transparent interception below the
+command layer, so any NEW wired command that opens operand files must call
+the fs_win helpers (a plain `std::fs` open reads the 7 marker bytes and
+strands the writer); non-WinuxCmd tools always see a 7-byte marker file,
+not a pipe. mkfifo/mknod themselves only create.
+
+**I18N**: 15 new stable keys (mkfifo 4, mknod 11: `error.*` + `warning.*`),
+12 orphan `legacy.<fnv>` keys from the deleted C++ bodies; patch in
+`catalog/w4-mkfifo-mknod-*.json`, `i18n_batch.py validate` = `valid`
+(placeholders equal, option tokens untouched). Registration
+description/option/synopsis keys are unchanged.
+
+Builds: default and full editions build clean (see the wiring report).

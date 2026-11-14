@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "locale": "en-US",
+  "messages": {
+    "command.mkfifo.error.cannot_create_fifo": "cannot create fifo '{name}': {reason}",
+    "command.mkfifo.error.invalid_mode": "invalid mode",
+    "command.mkfifo.error.mode_not_permission_bits": "mode must specify only file permission bits",
+    "command.mkfifo.warning.ignoring_context": "warning: ignoring --context; it requires an SELinux/SMACK-enabled kernel",
+    "command.mknod.error.cannot_create": "{name}: {reason}",
+    "command.mknod.error.device_not_permitted": "{name}: Operation not permitted",
+    "command.mknod.error.fifos_no_device_numbers": "Fifos do not have major and minor device numbers.",
+    "command.mknod.error.file_exists": "{name}: File exists",
+    "command.mknod.error.invalid_device_type": "invalid device type '{node_type}'",
+    "command.mknod.error.invalid_major": "invalid major device number '{number}'",
+    "command.mknod.error.invalid_minor": "invalid minor device number '{number}'",
+    "command.mknod.error.invalid_mode": "invalid mode",
+    "command.mknod.error.mode_not_permission_bits": "mode must specify only file permission bits",
+    "command.mknod.error.special_files_need_numbers": "Special files require major and minor device numbers.",
+    "command.mknod.warning.ignoring_context": "warning: ignoring --context; it requires an SELinux/SMACK-enabled kernel"
+  }
+}

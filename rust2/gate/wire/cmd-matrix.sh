@@ -154,6 +154,16 @@ setup_fixture() {
       printf 'foo sub2\n' > gdir/gsub2/s2.txt
       printf 'foo skipped\n' > gdir/gskip/s.txt
       printf 'bin\000foo\n' > gdir/gbin.bin ;;
+    # wave-W4 (#1488): every node name is w4-prefixed so the fixture reset
+    # is one glob; the pre-existing operands the exists rows need (a
+    # regular file, a directory) are recreated every case.
+    mkfifo)
+      rm -rf w4* nodir
+      rm -f -- '--context=x'
+      printf x > w4reg; mkdir w4dir ;;
+    mknod)
+      rm -rf w4* nodir
+      printf x > w4reg; mkdir w4dir ;;
 
     *) : ;;
   esac
@@ -1274,6 +1284,87 @@ TABLE
 58|||-y:-i:FOO:gt.txt
 59|||-l:-c:foo:gt.txt:gsub.txt
 60|||-r:-l:foo:gdir
+TABLE
+      ;;
+    # wave-W4 (#1488): mkfifo/mknod old-exe byte matrix. The GNU side
+    # creates REAL fifos/device nodes; the exe sides create the #1038
+    # marker (or report EPERM for device types), so the matrix is the
+    # old-vs-new comparison (recipe gate c), GNU rc recorded alongside.
+    mkfifo)
+      cat <<'TABLE'
+01|||w4p1
+02|||-m:600:w4p2
+03|||-m600:w4p3
+04|||-m:000:w4p4
+05|||-m:ug=r:w4p5
+06|||-m:bogus:w4p6
+07|||-m:1777:w4p7
+08|||-m:4755:w4p8
+09|||-m
+10|||nodir/w4p
+11|||
+12|||-Z:w4p10
+13|||-Z:w4ctx:w4p11
+14|||--context=cval:w4p12
+15|||--context:w4p13
+16|||--context=:w4p14
+17|||-Zctx2:w4p15
+18|||--:--context=x
+19|||-m:600:--:w4p16
+20|||-m:@EMPTY@:w4p17
+21|||-m:600:-m:640:w4p18
+22|||--mode=644:w4p19
+23|||--con=cval:w4p20
+24|||--bogus
+25|||-q
+26|||-m:600
+27|||-m:bogus
+28|||w4ok:nodir/bad:w4ok2
+29|||@EMPTY@
+30|||w4reg
+31|||w4dir
+32|||--help
+33|||--version
+TABLE
+      ;;
+    mknod)
+      cat <<'TABLE'
+01|||w4a:p
+02|||-m:600:w4b:p
+03|||w4reg:p
+04|||w4dir:p
+05|||-m:bogus:w4c:p
+06|||-m
+07|||nodir/x:p
+08|||
+09|||onlyname
+10|||w4n:c
+11|||w4n:c:1
+12|||w4f:p:1:3
+13|||w4x:x:1:3
+14|||w4e:c:1:3:extra
+15|||w4c1:c:1:3
+16|||w4b1:b:7:0
+17|||w4u1:u:1:5
+18|||w4h:c:0x1:0x3
+19|||w4o:c:01:03
+20|||w4j:c:1x:3
+21|||w4j2:c:1:zz
+22|||w4j3:c:1:99999999999999999999
+23|||--context=c:w4pf:p
+24|||-Z:w4pz:p
+25|||--help
+26|||--version
+27|||--bogus
+28|||-m:@EMPTY@:w4n2:p
+29|||w4m4:c:@EMPTY@:3
+30|||w4m5:c:1:@EMPTY@
+31|||--con=c:w4pf2:p
+32|||w4dir:p
+33|||@EMPTY@:p
+34|||w4tz:pz
+35|||w4tb:bz:1:2
+36|||w4t2:x
 TABLE
       ;;
     *)
