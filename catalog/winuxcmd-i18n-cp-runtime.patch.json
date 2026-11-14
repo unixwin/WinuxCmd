@@ -37,6 +37,7 @@
     "command.cp.error.parents_needs_directory": "使用 --parents 时，目标必须是目录",
     "command.cp.error.read": "读取 {src} 时出错",
     "command.cp.error.reflink_needs_sparse_auto": "--reflink 只能与 --sparse=auto 一起使用",
+    "command.cp.error.relative_symlink_outside_cwd": "{dst}：只能在当前目录中创建相对符号链接",
     "command.cp.error.same_file": "{src} 与 {dst} 是同一个文件",
     "command.cp.error.short_requires_argument": "选项需要参数 -- '{option}'",
     "command.cp.error.target": "目标 {operand}：{reason}",

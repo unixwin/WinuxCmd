@@ -41,9 +41,14 @@ pub const FILE_ATTRIBUTE_ARCHIVE: DWORD = 0x20;
 pub const FILE_ATTRIBUTE_NORMAL: DWORD = 0x80;
 pub const FILE_ATTRIBUTE_REPARSE_POINT: DWORD = 0x400;
 pub const FILE_ATTRIBUTE_SPARSE_FILE: DWORD = 0x200;
+pub const FILE_ATTRIBUTE_DEVICE: DWORD = 0x40;
 
 pub const IO_REPARSE_TAG_MOUNT_POINT: DWORD = 0xA000_0003;
 pub const IO_REPARSE_TAG_SYMLINK: DWORD = 0xA000_000C;
+/// WSL DrvFs POSIX symlink (ntifs.h `IO_REPARSE_TAG_LX_SYMLINK`). Windows
+/// has no reader for the tag, so every dereference resolves the stored POSIX
+/// target in user space (#1647/#1656, the C++ #1732 rule).
+pub const IO_REPARSE_TAG_LX_SYMLINK: DWORD = 0xA000_001D;
 
 /// One metadata snapshot of a path.
 #[derive(Clone, Debug, Default)]
@@ -309,6 +314,9 @@ mod imp {
     /// `GetFileAttributesW`: the link's own attributes (no follow), and the
     /// existence probe for dangling links.
     pub fn attributes(path: &str) -> Option<DWORD> {
+        if winux_core::path::resolve_pseudo_device(path).is_some() {
+            return Some(FILE_ATTRIBUTE_DEVICE);
+        }
         let w = wide(path);
         let a = unsafe { GetFileAttributesW(w.as_ptr()) };
         if a == INVALID_FILE_ATTRIBUTES {
@@ -349,6 +357,15 @@ mod imp {
     /// (lstat). The handle open is the authority for identity/times; the
     /// enumeration record supplies the reparse tag.
     pub fn meta(path: &str, follow: bool) -> Result<Meta, DWORD> {
+        // Pseudo-devices (/dev/null -> NUL, /dev/std*) are character
+        // devices with no filesystem record; GNU stat(2) reports a
+        // character special file and cp reads/writes through the device.
+        if winux_core::path::resolve_pseudo_device(path).is_some() {
+            let mut m = Meta::default();
+            m.attrs = FILE_ATTRIBUTE_DEVICE;
+            m.ino = 1;
+            return Ok(m);
+        }
         let mut flags = FILE_FLAG_BACKUP_SEMANTICS;
         if !follow {
             flags |= FILE_FLAG_OPEN_REPARSE_POINT;
@@ -439,6 +456,26 @@ mod imp {
                 u16::from_le_bytes([buf[off], buf[off + 1]])
             }
         };
+        // IO_REPARSE_TAG_LX_SYMLINK: u32 version then the UTF-8 POSIX
+        // target (no terminator, no UTF-16 substitution/print pair).  The
+        // directory bit of the link's own attributes is the only type
+        // information the tag carries (#1732).
+        if tag == IO_REPARSE_TAG_LX_SYMLINK {
+            let data_len = u16at(4) as usize;
+            if data_len < 4 || 8 + data_len > buf.len() {
+                return Err(ERROR_DIRECTORY);
+            }
+            let raw = &buf[12..8 + data_len];
+            let target = String::from_utf8_lossy(raw);
+            let target = target.trim_end_matches('\0');
+            if target.is_empty() {
+                return Err(ERROR_DIRECTORY);
+            }
+            let is_dir = attributes(path)
+                .map(|a| a & FILE_ATTRIBUTE_DIRECTORY != 0)
+                .unwrap_or(false);
+            return Ok((target.to_string(), is_dir));
+        }
         let substitute_off = u16at(8) as usize;
         let substitute_len = u16at(10) as usize;
         let print_off = u16at(12) as usize;
@@ -471,6 +508,60 @@ mod imp {
                 && buf.len() >= 20
                 && DWORD::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]) & 1 != 0);
         Ok((target, is_dir))
+    }
+
+    /// The stored POSIX target of a WSL DrvFs LX symlink, or `None` for any
+    /// other reparse point / ordinary path.  This is the reader every
+    /// dereference needs before it can resolve the chain itself (#1647).
+    pub fn lx_target(path: &str) -> Option<String> {
+        let attrs = attributes(path)?;
+        if attrs & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+            return None;
+        }
+        let h = open_handle(
+            path,
+            0,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        )
+        .ok()?;
+        let mut buf = vec![0u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+        let mut returned: DWORD = 0;
+        let ok = unsafe {
+            DeviceIoControl(
+                h,
+                FSCTL_GET_REPARSE_POINT,
+                std::ptr::null(),
+                0,
+                buf.as_mut_ptr() as *mut c_void,
+                buf.len() as DWORD,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        unsafe { CloseHandle(h) };
+        if ok == 0 {
+            return None;
+        }
+        let len = (returned as usize).min(buf.len());
+        if len < 12 {
+            return None;
+        }
+        let tag = DWORD::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        if tag != IO_REPARSE_TAG_LX_SYMLINK {
+            return None;
+        }
+        let data_len = u16::from_le_bytes([buf[4], buf[5]]) as usize;
+        if data_len < 4 || 8 + data_len > len {
+            return None;
+        }
+        let raw = &buf[12..8 + data_len];
+        let target = String::from_utf8_lossy(raw);
+        let target = target.trim_end_matches('\0');
+        if target.is_empty() {
+            None
+        } else {
+            Some(target.to_string())
+        }
     }
 
     pub fn create_symlink(link: &str, target: &str, dir: bool) -> Result<(), DWORD> {
@@ -740,13 +831,20 @@ mod imp {
     /// truncated in place so its attributes survive, matching `open(O_TRUNC)`.
     pub fn open_write(path: &str) -> Result<File, DWORD> {
         let w = wide(path);
+        // A pseudo-device (NUL, CONOUT$) exists already and refuses
+        // OPEN_ALWAYS; GNU's open(O_WRONLY) on the device is OPEN_EXISTING.
+        let disposition = if winux_core::path::resolve_pseudo_device(path).is_some() {
+            OPEN_EXISTING
+        } else {
+            OPEN_ALWAYS
+        };
         let h = unsafe {
             CreateFileW(
                 w.as_ptr(),
                 GENERIC_WRITE,
                 FILE_SHARE_ALL,
                 std::ptr::null_mut(),
-                OPEN_ALWAYS,
+                disposition,
                 FILE_ATTRIBUTE_NORMAL,
                 std::ptr::null_mut(),
             )
@@ -754,8 +852,12 @@ mod imp {
         if h == INVALID_HANDLE_VALUE || h.is_null() {
             return Err(last_error());
         }
-        if unsafe { SetFilePointerEx(h, 0, std::ptr::null_mut(), 0) } == 0
-            || unsafe { SetEndOfFile(h) } == 0
+        // A device has no file pointer/EOF to truncate; SetFilePointerEx
+        // fails with ERROR_INVALID_FUNCTION there (GNU writes without a
+        // ftruncate on character devices).
+        if disposition != OPEN_EXISTING
+            && (unsafe { SetFilePointerEx(h, 0, std::ptr::null_mut(), 0) } == 0
+                || unsafe { SetEndOfFile(h) } == 0)
         {
             let e = last_error();
             unsafe { CloseHandle(h) };
@@ -877,6 +979,9 @@ mod imp {
     pub fn set_times(_path: &str, _b: i64, _a: i64, _m: i64) -> Result<(), DWORD> {
         Err(5)
     }
+    pub fn lx_target(_path: &str) -> Option<String> {
+        None
+    }
     pub fn hard_link(_existing: &str, _link: &str) -> Result<(), DWORD> {
         Err(1)
     }
@@ -901,3 +1006,109 @@ mod imp {
 }
 
 pub use imp::*;
+
+/// Win32 MAX_PATH escape: an absolute API path longer than the legacy
+/// limit is handed to the OS in the `\\?\` verbatim form (and `\\?\UNC\`
+/// for UNC), exactly like the 1.x `native_path::make_api_path_operand`
+/// that every cp file operation used.  Device names and already-extended
+/// paths pass through untouched.  Relative and short paths keep the plain
+/// spelling so the OS-level trailing-separator and reparse semantics the
+/// gate measures stay intact.  Without this, `cp <310-char source> dest`
+/// failed with ENOENT on a host with LongPathsEnabled=0 while the 1.x
+/// exe copied it (the >MAX_PATH matrix row).
+pub fn extended_path(path: &str) -> String {
+    if path.is_empty()
+        || path.starts_with(r"\\?\")
+        || winux_core::path::resolve_pseudo_device(path).is_some()
+        || path.len() < 240
+    {
+        return path.to_string();
+    }
+    if !std::path::Path::new(path).is_absolute() {
+        return path.to_string();
+    }
+    let mut text = path.replace('/', "\\");
+    // `\\?\` disables the Win32 normalizer, so fold `.`/`..` lexically
+    // before crossing the boundary.
+    let mut parts: Vec<&str> = Vec::new();
+    for comp in text.split('\\') {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    text = parts.join("\\");
+    if let Some(rest) = text.strip_prefix(r"\\") {
+        format!(r"\\?\UNC\{rest}")
+    } else {
+        format!(r"\\?\{text}")
+    }
+}
+
+/// Resolve every WSL/LX symlink in the path's prefix chain into the target
+/// Win32 can open, keeping the caller's spelling for diagnostics.  GNU's
+/// stat/open walk resolves the whole chain; Win32 leaves the LX tag
+/// unresolved, so `cp -r -H link/f` (and every child of a followed LX
+/// directory link) has to be expanded here before the handle open (#1732).
+pub fn expand_lx(ctx: &winux_core::Ctx, path: &str) -> String {
+    use std::path::{Component, Path, PathBuf};
+    // A trailing separator is semantically load-bearing (stat("a/") is
+    // ENOTDIR, open("nodir/") must not create a file); Path components drop
+    // it, so restore it on the way out.
+    let trailing = path.ends_with('/') || path.ends_with('\\');
+    let mut out = PathBuf::new();
+    let mut hops = 0u32;
+    for comp in Path::new(path).components() {
+        out.push(comp.as_os_str());
+        if matches!(
+            comp,
+            Component::Prefix(_) | Component::RootDir | Component::CurDir
+        ) {
+            continue;
+        }
+        loop {
+            if hops >= crate::fs_win::MAX_SYMLINK_FOLLOW {
+                break;
+            }
+            let shown = out.to_string_lossy().into_owned();
+            let Some(target) = lx_target(&shown) else {
+                break;
+            };
+            hops += 1;
+            let resolved = crate::fs_win::resolve_symlink_target(ctx, &shown, &target);
+            out = PathBuf::from(resolved);
+        }
+    }
+    let mut text = out.to_string_lossy().into_owned();
+    if trailing && !text.ends_with(['/', '\\']) && !text.is_empty() {
+        text.push(std::path::MAIN_SEPARATOR);
+    }
+    text
+}
+
+/// `stat(2)` through the LX reader: expand the chain, then snapshot the
+/// target.  `lstat` callers keep `meta(..., false)` and see the link.
+pub fn meta_follow(ctx: &winux_core::Ctx, path: &str) -> Result<Meta, DWORD> {
+    let expanded = expand_lx(ctx, path);
+    meta(&expanded, true)
+}
+
+/// Expand LX links in the parent chain only, keeping the final component
+/// as spelled: the lstat view of `linkdir/child` still has to traverse
+/// `linkdir` (#1732).
+pub fn expand_lx_parent(ctx: &winux_core::Ctx, path: &str) -> String {
+    let p = std::path::Path::new(path);
+    match (p.parent(), p.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+            let expanded = expand_lx(ctx, &parent.to_string_lossy());
+            std::path::Path::new(&expanded)
+                .join(name)
+                .to_string_lossy()
+                .into_owned()
+        }
+        _ => path.to_string(),
+    }
+}

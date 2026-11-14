@@ -67,3 +67,25 @@ CJK text contains no literal braces, so no `{{`/`}}` escaping is required.
 
 Catalog size: 3821 → 3855 messages. `VERSION` **must** be bumped in the same
 commit (`catalogs/` change gate), 0.6.35 → 0.6.36.
+
+---
+
+## cp wire lane — runtime catalog patch (#1488, 2026-11-14)
+
+`catalog/winuxcmd-i18n-cp-runtime.patch.json` carries the **47**
+`command.cp.{error,prompt,warning}.*` runtime keys of the rust2 cp port
+(the `make-cp-patch.py` source of truth). The `command.cp.option.*` /
+synopsis / description keys are unchanged: they come from the C++
+`REGISTER_COMMAND` metadata, which the wire keeps byte-identical.
+
+* English fallbacks live in `rust2/crates/winux-cmds/src/cp/{copy,opts}.rs`
+  and `cp.rs` (`tr!`); extraction discovers them through
+  `scripts/i18n_rust.py` (3806 keys in `rust2/target/i18n/en-US.json`).
+* `python catalog/make-cp-patch.py` regenerates the patch, the filtered
+  English base (`rust2/target/i18n/cp-en-US-runtime.json`) and runs
+  `scripts/i18n_batch.py validate --base ... --translated ...` → `valid`.
+* `command.cp.error.relative_symlink_outside_cwd` is the one key added by
+  the wiring wave (GNU's `-s` relative-link restriction); the other 46 came
+  with the library port (#1715).
+* The separate `unixwin/winuxcmd-i18n` repository still needs this patch
+  applied plus a `VERSION` bump; this lane did not touch it.

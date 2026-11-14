@@ -56,6 +56,7 @@ ZH = {
     "command.cp.error.cannot_backup": "无法为目标创建备份",
     "command.cp.error.cannot_remove": "无法删除 {dst}：{reason}",
     "command.cp.error.cannot_hard_link": "无法创建硬链接 {dst} 指向 {src}：{reason}",
+    "command.cp.error.relative_symlink_outside_cwd": "{dst}：只能在当前目录中创建相对符号链接",
     "command.cp.error.cannot_create_symlink": "无法创建符号链接 {dst} 指向 {src}：{reason}",
     "command.cp.error.cannot_create_symlink_exists": "无法创建符号链接 {dst} 指向 {src}：文件已存在",
     "command.cp.error.cannot_read_symlink": "无法读取符号链接 {src}：{reason}",

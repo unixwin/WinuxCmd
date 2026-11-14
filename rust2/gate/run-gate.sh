@@ -76,6 +76,14 @@ invocation_name() {
 # exists. Detected by pattern because the setup is an opaque sh snippet.
 setup_needs_symlink() {
     case "$1" in
+        # `wsl.exe ln -s` materialises a WSL DrvFs LX reparse point, which
+        # needs no SeCreateSymbolicLinkPrivilege (#1732); the kernel-side
+        # `ln -s` in the same conditional only builds the GNU fixture.
+        *'wsl.exe ln'*) return 1 ;;
+        # A directory junction is the unprivileged directory-link form on
+        # Windows (mklink /J), so a row whose exe branch creates one runs
+        # even when the host has no Developer Mode.
+        *'mklink /J'*|*'mklink /j'*) return 1 ;;
         *'ln -s'*|*'ln --symbolic'*|*'mklink'*) return 0 ;;
         *) return 1 ;;
     esac

@@ -171,6 +171,35 @@ setup_fixture() {
       rm -rf md; mkdir -p md ;;
     nice)
       : ;;
+    cp)
+      # wave-cp fixture (#1488 cp wire): files/dirs, a live + a dangling
+      # junction (unprivileged Windows directory link), WSL/LX links, and a
+      # >MAX_PATH tree (6 x 50-char components; operand plus cwd > 260).
+      cmd /c "rmdir cpjunc" >/dev/null 2>&1 || true
+      cmd /c "rmdir cpdangle" >/dev/null 2>&1 || true
+      cmd /c "rmdir out" >/dev/null 2>&1 || true
+      # An LX link is not a Win32 symlink: MSYS `rm` resolves it and cannot
+      # unlink the reparse point, so a stale cplxdir makes the next `ln -s`
+      # create cplxdir/cpreal inside the target.  WSL's rm unlinks the tag
+      # itself (the GNU side falls back to plain rm below).
+      wsl.exe rm -f cplx cplxdir cplxdang >/dev/null 2>&1 || true
+      rm -rf cpa cpb cpc cpd cps cpreal cplx cplxdir cplxdang cpjunc \
+             cpdangle dst out outdir cphard cpjunc2
+      rm -rf "$(printf 'a%.0s' $(seq 1 50))/$(printf 'b%.0s' $(seq 1 50))"
+      printf 'A\n' > cpa; printf 'B\n' > cpb; printf 'C\n' > cpc
+      printf 'OLD\n' > dst
+      mkdir -p cpd cps/sub cpreal outdir
+      printf 'S\n' > cps/f; printf 'R\n' > cpreal/f
+      printf 'OLD\n' > cpd/cpa
+      touch -t 202001010000 cpa; touch -t 202101010000 dst
+      cmd /c "mklink /J cpjunc cpreal" >/dev/null 2>&1 || ln -s cpreal cpjunc
+      cmd /c "mklink /J cpdangle nosuch" >/dev/null 2>&1 || ln -s nosuch cpdangle
+      wsl.exe ln -s cpa cplx >/dev/null 2>&1 || ln -s cpa cplx
+      wsl.exe ln -s cpreal cplxdir >/dev/null 2>&1 || ln -s cpreal cplxdir
+      wsl.exe ln -s missing cplxdang >/dev/null 2>&1 || ln -s missing cplxdang
+      L1=$(printf 'a%.0s' $(seq 1 50)); L2=$(printf 'b%.0s' $(seq 1 50))
+      LONGREL="$L1/$L2/$L1/$L2/$L1/$L2"
+      mkdir -p "$LONGREL"; printf 'LONG' > "$LONGREL/f.txt" ;;
     grep|egrep|fgrep)
       # Shared grep-family fixture (#1488 wire matrix): text files, a
       # pattern file, an empty pattern file, a NUL-carrying binary, and a
@@ -1397,6 +1426,70 @@ TABLE
 26|||--tmpdir=
 27|||XXXXXX
 28|||x.XXXXXXXXXX
+TABLE
+      ;;
+    cp)
+      cat <<'TABLE'
+01|||cpa:out
+02|||cpa:cpb
+03|||cpa:cpd
+04|||cpa:cpb:cpd
+05|||-v:cpa:out
+06||n|-i:cpa:dst
+07||y|-i:cpa:dst
+08|||-i:cpa:dst
+09|||-n:cpa:dst
+10|||-n:cpa:new
+11|||-u:cpa:dst
+12|||-u:cpb:dst
+13|||-r:cps:outdir
+14|||-a:cps:outdir
+15|||-rv:cps:outdir
+16|||-L:cpjunc:out
+17|||-rvL:cpjunc:out
+18|||-rH:cpjunc:out
+19|||-r:cpjunc:out
+20|||-P:cpjunc:out
+21|||-b:cpa:dst
+22|||-vb:cpa:dst
+23|||-S:.bak:cpa:cpb
+24|||--backup=numbered:cpa:dst
+25|||-l:cpa:cphard
+26|||-t:cpd:cpa:cpb
+27|||--parents:cps/f:cpd
+28|||-v:--parents:cps/f:cpd
+29|||cpa/:out
+30|||--strip-trailing-slashes:cpa/:out
+31|||nosuch:out
+32|||cpa:cpa
+33|||-r:cps:cps
+34|||cpa:cpjunc
+35|||cpdangle:out
+36|||-d:cpdangle:out
+37|||cplx:out
+38|||-L:cplx:out
+39|||-rH:cplxdir:out
+40|||cplxdang:out
+41|||-rL:cplxdir:out
+42|||--force:--backup:cpa:cpa
+43|||--reflink=auto:cpa:out
+44|||--reflink=always:cpa:out
+45|||--sparse=always:cpa:out
+46|||--attributes-only:cpa:out
+47|||-v:--attributes-only:cpa:out
+48|||--copy-contents:/dev/null:out
+49|||cpa:NUL
+50|||aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/f.txt:out
+51|||-T:cpa:outdir
+52|||-t:cpd:-T:cpa
+53|||--update=none:cpa:dst
+54|||-x:-r:cps:outdir
+55|||cpb:cpa:cpc
+56||n|-i:-n:cpa:dst
+57||y|-n:-i:cpa:dst
+58|||-p:cpa:out
+59|||--preserve=timestamps:cpa:out
+60|||-r:cps:cpd/cps
 TABLE
       ;;
     nice)

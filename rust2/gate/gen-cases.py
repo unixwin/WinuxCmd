@@ -4804,6 +4804,19 @@ CP_ROWS = [
     ('cp96-t-missing-arg', 'strict', '', '', '', ['-t']),
     ('cp97-t-multiple', 'strict', 'printf A > a; mkdir d e', '', '', ['-t', 'd', '-t', 'e', 'a']),
     ('cp98-cyclic-link', 'strict', "mkdir a; printf A > a/f; if [ \"$(uname -s)\" = Linux ]; then ln -s . a/loop; else cmd /c mklink /J 'a\\loop' a; fi", '', '', ['-rL', 'a', 'b']),
+    # #1700 / #1732 regressions on the Rust path (probed against WSL
+    # coreutils 9.4, LC_ALL=C.UTF-8, 2026-11-14).  Junction rows use the
+    # unprivileged Windows directory-link form; LX rows build the genuine
+    # WSL DrvFs reparse tag with `wsl.exe ln -s` on the exe side.
+    ('cp99-junction-dangling-deref', 'strict', "if [ \"$(uname -s)\" = Linux ]; then ln -s nosuch l; else cmd /c mklink /J l nosuch; fi", '', '', ['l', 'out']),
+    ('cp100-junction-into-itself', 'strict', "mkdir real; printf A > real/f; if [ \"$(uname -s)\" = Linux ]; then ln -s real dirlink; else cmd /c mklink /J dirlink real; fi", '', '', ['-r', 'real', 'dirlink']),
+    ('cp101-junction-H-cmdline', 'strict', "mkdir real; printf A > real/f; if [ \"$(uname -s)\" = Linux ]; then ln -s real l; else cmd /c mklink /J l real; fi", '', '', ['-rH', 'l', 'out']),
+    ('cp102-junction-H-nested-v', 'strict', "mkdir real s; printf A > real/f; if [ \"$(uname -s)\" = Linux ]; then ln -s ../real s/l; else cmd /c mklink /J 's\\l' real; fi", '', '', ['-rvH', 's', 't']),
+    ('cp103-junction-H-verbose', 'strict', "mkdir real; printf A > real/f; if [ \"$(uname -s)\" = Linux ]; then ln -s real l; else cmd /c mklink /J l real; fi", '', '', ['-rvH', 'l', 'out']),
+    ('cp104-lx-file-deref', 'strict', "printf A > a; if [ \"$(uname -s)\" = Linux ]; then ln -s a l; else wsl.exe ln -s a l; fi", '', '', ['l', 'out']),
+    ('cp105-lx-dangling', 'strict', "if [ \"$(uname -s)\" = Linux ]; then ln -s missing l; else wsl.exe ln -s missing l; fi", '', '', ['l', 'out']),
+    ('cp106-lx-H-dirlink', 'strict', "mkdir real; printf A > real/f; if [ \"$(uname -s)\" = Linux ]; then ln -s real l; else wsl.exe ln -s real l; fi", '', '', ['-rH', 'l', 'out']),
+    ('cp107-lx-L-nested', 'strict', "mkdir real; printf D > real/a; if [ \"$(uname -s)\" = Linux ]; then ln -s a real/l; ln -s real l; else wsl.exe ln -s a real/l; wsl.exe ln -s real l; fi", '', '', ['-rL', 'l', 'out']),
 ]
 FIND_FX = ("mkdir -p t/a/b t/d; printf hello > t/a/f5; printf %3000s x > t/a/b/big; "
            ": > t/e; : > t/d/.hid; : > t/a/x.rs; : > t/a/b/y.rs; "
