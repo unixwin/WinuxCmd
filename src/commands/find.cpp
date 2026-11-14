@@ -5548,14 +5548,36 @@ REGISTER_COMMAND(find, "find", "find [path...] [expression]",
   using namespace find_pipeline;
 
   // [GNU] -help/-version/-context act where they appear on the command
-  // line, so honor whichever comes first (a "--" ends option processing).
+  // line, so honor whichever comes first. #1617: findutils registers
+  // BOTH spellings with the same parser (--help is the synonym of -help,
+  // --version of -version; probed GNU findutils 4.9: `find --help` and
+  // `find . --version` print to stdout, rc 0), so the double-dash forms
+  // match here too. This loop's "--" break stays the product's own
+  // end-of-options boundary (GNU's documented -- handling "does not
+  // really work" for find; keeping ours scoped to this issue's fix).
+  bool in_exec_body = false;
   for (const auto& arg : ctx.raw_args) {
+    if (in_exec_body) {
+      // [GNU] the -exec/-execdir/-ok/-okdir parsers consume the body up
+      // to the terminator: a help/version spelling inside the body
+      // belongs to the executed command, not to find (#1303, probed GNU:
+      // `find . -name a -exec echo --help \;` prints echo's usage).
+      if (arg == ";" || arg == "+") {
+        in_exec_body = false;
+      }
+      continue;
+    }
     if (arg == "--") break;
-    if (arg == "-help") {
+    if (arg == "-exec" || arg == "-execdir" || arg == "-ok" ||
+        arg == "-okdir") {
+      in_exec_body = true;
+      continue;
+    }
+    if (arg == "-help" || arg == "--help") {
       cmd::meta::Registry::print_help("find");
       return 0;
     }
-    if (arg == "-version") {
+    if (arg == "-version" || arg == "--version") {
       safePrintLn("find (WinuxCmd) " + std::string(WinuxCmd::VERSION_STRING));
       return 0;
     }
