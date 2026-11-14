@@ -714,8 +714,23 @@ fn walk(
     // only links LISTED ON THE COMMAND LINE, i.e. the depth-0 operand
     // (#1656: `du -H dirlink` descends into the target's subtree).
     let follow = (cfg.deref_all || (cfg.deref_args && depth == 0)) && is_symlink;
+    // [#1748] Win32 follows native symlinks/junctions inside the kernel,
+    // but a DrvFs LX link (the shape `ln -s` writes on a /mnt volume) is
+    // opaque to it: depending on the build, `metadata()` reports the link
+    // itself and `read_dir()` cannot enumerate it, so `du -L` printed just
+    // the link's own row (or a 0-byte row) instead of the target subtree.
+    // Resolve the stored target once and walk THAT path; `display` keeps
+    // the operand spelling, exactly like GNU's dereference.
+    let lx_follow = if follow {
+        followed_lx_dir_target(ctx, path)
+    } else {
+        None
+    };
+    let walk_path = lx_follow.as_deref().unwrap_or(path);
     let is_dir = if follow {
-        std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
+        std::fs::metadata(walk_path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
     } else {
         meta.is_dir() && !is_symlink
     };
@@ -735,7 +750,7 @@ fn walk(
     if is_dir {
         // -x: skip subtrees on other volumes
         if cfg.one_fs {
-            let root = drive_root(&path.to_string_lossy());
+            let root = drive_root(&walk_path.to_string_lossy());
             match volume_root {
                 None => *volume_root = Some(root),
                 Some(v) if *v != root => {
@@ -750,14 +765,14 @@ fn walk(
         let mut total = if cfg.inodes {
             1
         } else {
-            entry_size(cfg, path, true)
+            entry_size(cfg, walk_path, true)
         };
         let mut latest = if cfg.show_time {
-            entry_time(cfg, path)
+            entry_time(cfg, walk_path)
         } else {
             None
         };
-        let read = match std::fs::read_dir(path) {
+        let read = match std::fs::read_dir(walk_path) {
             Ok(r) => r,
             Err(_) => {
                 return Walked {
@@ -790,11 +805,14 @@ fn walk(
             // resolves to a directory is walked too. The pre-wiring
             // expression negated the dereference test, so -L skipped every
             // real subdirectory (`du -L dir` printed one row).
+            // [#1748] `metadata()` follows native symlinks/junctions but
+            // not a DrvFs LX link, so fall back to the stored target.
             let child_is_dir = if child_is_symlink {
                 cfg.deref_all
-                    && std::fs::metadata(&child)
+                    && (std::fs::metadata(&child)
                         .map(|m| m.is_dir())
                         .unwrap_or(false)
+                        || followed_lx_dir_target(ctx, &child).is_some())
             } else {
                 child_meta.is_dir()
             };
@@ -1019,6 +1037,21 @@ fn lexical_dir_key(path: &Path) -> String {
         }
     }
     parts.join("\\").to_uppercase()
+}
+
+/// The directory a DrvFs LX link points at, resolved from its stored target
+/// (#1748). Win32 follows native symlinks and junctions for `metadata()`,
+/// but an LX reparse point (what WSL `ln -s` writes on /mnt) is opaque to
+/// the kernel and to `read_dir()`, so `-L` must descend on this path.
+/// `None` for native links, dangling links and non-directory targets.
+fn followed_lx_dir_target(ctx: &Ctx, path: &Path) -> Option<PathBuf> {
+    let text = path.to_string_lossy().into_owned();
+    let target = crate::fs_win::read_lx_symlink_target(&text)?;
+    let resolved = PathBuf::from(crate::fs_win::resolve_symlink_target(ctx, &text, &target));
+    std::fs::metadata(&resolved)
+        .ok()
+        .filter(|m| m.is_dir())
+        .map(|_| resolved)
 }
 
 /// Identity key of the directory a FOLLOWED path names (#1670, GNU du.c
@@ -1605,9 +1638,11 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             && !cfg.deref_all
             && !cfg.deref_args;
         let operand_is_dir = !operand_is_unfollowed_link
-            && std::fs::metadata(&walk_path)
+            && (std::fs::metadata(&walk_path)
                 .map(|m| m.is_dir())
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || ((cfg.deref_all || cfg.deref_args)
+                    && followed_lx_dir_target(ctx, &path).is_some()));
         if !cfg.count_links {
             if operand_is_dir {
                 let key = visited_dir_key(ctx, &walk_path, cfg.deref_all || cfg.deref_args);
@@ -2118,6 +2153,51 @@ mod files0_from_tests {
             assert!(out.contains("dirlink/f.txt\n"), "{flag}: {out}");
             assert!(out.ends_with("\tdirlink\n"), "{flag}: {out}");
         }
+    }
+
+    #[test]
+    fn dereference_lx_directory_link_operand_walks_target_1748() {
+        // #1748: an LX directory link (WSL `ln -s` on /mnt, no privilege
+        // needed) as the OPERAND. Pre-fix the walk could see a directory
+        // in metadata() but fail read_dir(), printing only the total row.
+        let sc = ScratchCtx::new("du-1748-operand");
+        std::fs::create_dir_all(sc.path("d1")).unwrap();
+        std::fs::write(sc.path("d1/f"), "ab").unwrap();
+        #[cfg(windows)]
+        if !create_lx_symlink(&sc.path("dirlink"), "d1") {
+            eprintln!("SKIP: LX reparse ioctl unavailable");
+            return;
+        }
+        #[cfg(not(windows))]
+        std::os::unix::fs::symlink("d1", sc.path("dirlink")).unwrap();
+        for flag in ["-L", "-H"] {
+            let (r, out, err) = run(&sc, &["-a", "-b", flag, "dirlink"]);
+            assert_eq!(r, 0, "{flag}: {err}");
+            assert!(err.is_empty(), "{flag}: {err}");
+            assert_eq!(out, "2\tdirlink/f\n2\tdirlink\n", "{flag}: {out}");
+        }
+    }
+
+    #[test]
+    fn dereference_lx_child_dir_link_walks_target_1748() {
+        // #1748: a directory link INSIDE a walked tree. Win32 follows
+        // native links but a DrvFs LX link is opaque to `read_dir()`; the
+        // pre-fix row was `0 tree/rel` and the subtree never appeared.
+        let sc = ScratchCtx::new("du-1748-child");
+        std::fs::create_dir_all(sc.path("d1")).unwrap();
+        std::fs::write(sc.path("d1/f"), "ab").unwrap();
+        std::fs::create_dir_all(sc.path("tree")).unwrap();
+        #[cfg(windows)]
+        if !create_lx_symlink(&sc.path("tree/rel"), "../d1") {
+            eprintln!("SKIP: LX reparse ioctl unavailable");
+            return;
+        }
+        #[cfg(not(windows))]
+        std::os::unix::fs::symlink("../d1", sc.path("tree/rel")).unwrap();
+        let (r, out, err) = run(&sc, &["-a", "-b", "-L", "tree"]);
+        assert_eq!(r, 0, "{err}");
+        assert!(err.is_empty(), "{err}");
+        assert_eq!(out, "2\ttree/rel/f\n2\ttree/rel\n2\ttree\n");
     }
 
     #[test]

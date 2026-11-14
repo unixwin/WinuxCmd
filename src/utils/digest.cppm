@@ -32,10 +32,7 @@ enum class HashAlgorithm {
   Sha384,
   Sha512,
   Blake2b,
-  Sm3,
-  // [GNU] cksum -a crc32b (coreutils 9.x): the reflected CRC-32 used by
-  // zlib, rendered through the digest output machinery.
-  Crc32b
+  Sm3
 };
 
 struct PosixCksumResult {
@@ -1099,30 +1096,6 @@ auto hash_file_hex(HashAlgorithm algorithm, const std::string& filename,
   }
 
   switch (algorithm) {
-    case HashAlgorithm::Crc32b: {
-      // [GNU] crc32b_sum_stream: reflected CRC-32 (poly 0xEDB88320),
-      // init/final 0xFFFFFFFF, digest is the 4 bytes big-endian.
-      constexpr uint32_t kCrc32bPoly = 0xEDB88320u;
-      uint32_t crc = 0xFFFFFFFFu;
-      std::array<char, 8192> buffer{};
-      uint64_t length = 0;
-      while (input->read(buffer.data(), buffer.size()) || input->gcount() > 0) {
-        const std::streamsize got = input->gcount();
-        length += static_cast<uint64_t>(got);
-        for (std::streamsize i = 0; i < got; ++i) {
-          crc ^= static_cast<uint32_t>(
-              static_cast<unsigned char>(buffer[static_cast<size_t>(i)]));
-          for (int bit = 0; bit < 8; ++bit) {
-            crc = (crc >> 1) ^ (0u - (crc & 1u) & kCrc32bPoly);
-          }
-        }
-      }
-      crc ^= 0xFFFFFFFFu;
-      const std::array<uint8_t, 4> digest = {
-          static_cast<uint8_t>(crc >> 24), static_cast<uint8_t>(crc >> 16),
-          static_cast<uint8_t>(crc >> 8), static_cast<uint8_t>(crc)};
-      return detail::to_hex(std::span<const uint8_t>(digest));
-    }
     case HashAlgorithm::Md5: {
       auto hasher = detail::Md5();
       return detail::hash_stream_to_hex(*input, hasher);
@@ -1360,11 +1333,34 @@ auto sum_all_hex(std::string_view s) -> bool {
   });
 }
 
+// GNU isbase64() (digest.c): the standard alphabet only, no URL-safe form.
+auto sum_is_base64(unsigned char c) -> bool {
+  return std::isalnum(c) != 0 || c == '+' || c == '/';
+}
+
+// GNU valid_digits() base64 branch (digest.c:634-653): the text must be
+// BASE64_LENGTH(bytes) long, the trailing padding must be '=' and every
+// other character must be a base64 digit. Only cksum's tagged lines opt in
+// (-a/--base64 round trip, #1752); md5sum/sha*sum stay hex-only.
+auto sum_valid_base64(std::string_view digest, size_t bytes) -> bool {
+  const size_t base64_len = (bytes + 2) / 3 * 4;
+  const size_t pad = (3 - bytes % 3) % 3;
+  if (digest.size() != base64_len) return false;
+  for (size_t i = 0; i < base64_len - pad; ++i) {
+    if (!sum_is_base64(static_cast<unsigned char>(digest[i]))) return false;
+  }
+  for (size_t i = base64_len - pad; i < base64_len; ++i) {
+    if (digest[i] != '=') return false;
+  }
+  return true;
+}
+
 // GNU bsd_split_3(): S is the part after "TAG ("; find the last ')', take
 // everything before it as the file name, then require blanks, '=', blanks
 // and a valid digest.
 auto sum_bsd_split(std::string_view s, size_t digest_hex_bytes,
-                   bool escaped_filename) -> std::optional<SumCheckLine> {
+                   bool escaped_filename, bool allow_base64 = false)
+    -> std::optional<SumCheckLine> {
   if (s.empty()) return std::nullopt;
 
   size_t i = s.size() - 1;
@@ -1379,21 +1375,29 @@ auto sum_bsd_split(std::string_view s, size_t digest_hex_bytes,
   while (i < s.size() && sum_is_blank(s[i])) ++i;
 
   std::string_view digest = s.substr(i);
-  const size_t hex_len =
-      digest_hex_bytes != 0 ? digest_hex_bytes : digest.size();
-  if (digest.size() != hex_len || !sum_all_hex(digest)) return std::nullopt;
-  if (digest_hex_bytes == 0 &&
-      (digest.size() % 2 != 0 || digest.size() > 128)) {
+  size_t digest_bytes = 0;
+  if (digest_hex_bytes == 0) {
+    // b2sum auto-length: even hex only, up to 512 bits.
+    if (digest.size() % 2 != 0 || digest.size() > 128 ||
+        !sum_all_hex(digest)) {
+      return std::nullopt;
+    }
+    digest_bytes = digest.size() / 2;
+  } else if (digest.size() == digest_hex_bytes && sum_all_hex(digest)) {
+    digest_bytes = digest_hex_bytes / 2;
+  } else if (allow_base64 &&
+             sum_valid_base64(digest, digest_hex_bytes / 2)) {
+    digest_bytes = digest_hex_bytes / 2;
+  } else {
     return std::nullopt;
   }
 
   if (escaped_filename) {
     auto unescaped = sum_unescape_filename(filename);
     if (!unescaped) return std::nullopt;
-    return SumCheckLine{std::string(digest), *unescaped, digest.size() / 2};
+    return SumCheckLine{std::string(digest), *unescaped, digest_bytes};
   }
-  return SumCheckLine{std::string(digest), std::string(filename),
-                      digest.size() / 2};
+  return SumCheckLine{std::string(digest), std::string(filename), digest_bytes};
 }
 
 }  // namespace detail
@@ -1402,9 +1406,12 @@ auto sum_bsd_split(std::string_view s, size_t digest_hex_bytes,
 // digest_hex_bytes == 0 to auto-detect any even hex length <= 128 (the b2sum
 // behaviour).  bsd_reversed is GNU's format-consistency latch (-1 initial,
 // then 0 or 1) shared across all check files of one invocation.
+// allow_base64 enables the base64 digest form GNU accepts for cksum tagged
+// lines only (#1752); every other reader leaves it false.
 inline auto sum_parse_check_line(std::string_view line,
                                  std::string_view algo_tag,
-                                 size_t digest_hex_bytes, int& bsd_reversed)
+                                 size_t digest_hex_bytes, int& bsd_reversed,
+                                 bool allow_base64 = false)
     -> std::optional<SumCheckLine> {
   size_t i = 0;
   while (i < line.size() && detail::sum_is_blank(line[i])) ++i;
@@ -1442,7 +1449,7 @@ inline auto sum_parse_check_line(std::string_view line,
     if (j < line.size() && line[j] == ' ') ++j;
     if (j < line.size() && line[j] == '(') {
       return detail::sum_bsd_split(line.substr(j + 1), tag_hex_bytes,
-                                   escaped_filename);
+                                   escaped_filename, allow_base64);
     }
     i = parse_offset;
   }

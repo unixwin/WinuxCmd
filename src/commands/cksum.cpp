@@ -745,7 +745,8 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
       const size_t hex_bytes =
           entry->algo == Algorithm::BLAKE2B ? 0 : entry->bits / 4;
       parsed = portable_digest::sum_parse_check_line(line, entry->tag,
-                                                     hex_bytes, bsd_reversed);
+                                                     hex_bytes, bsd_reversed,
+                                                     /*allow_base64=*/true);
     }
 
     if (!parsed || (is_stdin && parsed->filename == "-")) {
@@ -790,13 +791,22 @@ auto check_one_file(const std::string& checkfile_name, const Config& cfg,
           to_hash_algorithm(entry->algo), parsed->filename, false, out_bytes);
       if (hash_result) {
         read_ok = true;
-        match =
-            hash_result->size() == parsed->expected_hash.size() &&
-            std::equal(hash_result->begin(), hash_result->end(),
-                       parsed->expected_hash.begin(), [](char a, char b) {
-                         return std::tolower(static_cast<unsigned char>(a)) ==
-                                std::tolower(static_cast<unsigned char>(b));
-                       });
+        // [GNU] digest.c:1243-1248: a digest shorter than the algorithm's
+        // hex width is the base64 form and compares byte-for-byte against
+        // the re-encoded digest (case-sensitive, padding included); hex
+        // keeps the case-insensitive compare (#1752).
+        const size_t hex_len = parsed->digest_bytes * 2;
+        if (parsed->expected_hash.size() < hex_len) {
+          match =
+              to_base64(hex_to_bytes(*hash_result)) == parsed->expected_hash;
+        } else if (parsed->expected_hash.size() == hex_len) {
+          match = std::equal(
+              hash_result->begin(), hash_result->end(),
+              parsed->expected_hash.begin(), [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) ==
+                       std::tolower(static_cast<unsigned char>(b));
+              });
+        }
       }
     }
     if (!read_ok) {

@@ -967,6 +967,22 @@ mod tests {
     }
 
     #[test]
+    fn check_base64_roundtrip_issue1752() {
+        // [--base64 output must verify]: GNU 9.4 accepts a tagged line
+        // whose digest is base64 (probed ck46).
+        let sc = ScratchCtx::new("cksum-check-b64");
+        std::fs::write(sc.path("ck9"), "123456789").unwrap();
+        let (r, out, _) = run_in(&sc, &["--base64", "-a", "sha256", "ck9"], "");
+        assert_eq!(r, 0);
+        assert!(out.contains("SHA256 (ck9) = FeKw08M4keuw8e9gnsQZQgwg4yDOlMZfvIwzEkSOsiU="));
+        make_list(&sc, "b64.lst", &out);
+        let (r, out, err) = run_in(&sc, &["-c", "b64.lst"], "");
+        assert_eq!(r, 0, "{err}");
+        assert_eq!(out, "ck9: OK\n");
+        assert!(err.is_empty(), "{err}");
+    }
+
+    #[test]
     fn check_crc_and_untagged_rejected() {
         // probed k22/case-7/case-8: legacy formats never parse
         let sc = ScratchCtx::new("cksum-check2");
