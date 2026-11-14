@@ -49,7 +49,8 @@ repository release tags.
   multicall binary (`winuxcmd kill ...`); `echo`, `printf`, `pwd` keep their
   entries. A `wpm links rebuild` on a default-edition install also sweeps
   stale hardlinks of these names left by a 1.1.x install. The name list is
-  defined once in `src/core/package_edition.h`; `WINUXCMD_PACKAGE_EDITION=full`
+  defined once in the `winux_edition` namespace of
+  `src/core/dispatcher.cppm`; `WINUXCMD_PACKAGE_EDITION=full`
   builds the full edition, which materializes all 178 entries under the
   `-full` asset names (`WinuxCmd-<version>-win-<arch>-full.*`) and is not
   distributed through wpm.

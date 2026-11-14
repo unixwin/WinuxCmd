@@ -83,15 +83,17 @@ WinuxCmd ships in two editions built from the same source:
 | wpm index | yes | **not indexed** — standalone download only |
 
 **Full-only commands:** the default edition does not create entry links for
-**`[`** · **`env`** · **`false`** · **`kill`** · **`test`** · **`time`** ·
+**`[`** · **`false`** · **`kill`** · **`test`** · **`time`** ·
 **`true`**. These commands' user-facing semantics are defined by your host
 shell's builtins, so an `kill.exe`-style entry on `PATH` advertises a
 dispatch the builtin actually owns. The commands remain fully implemented in
 the multicall binary — `winuxcmd kill -9 <pid>` works in both editions.
-`echo`, `printf` and `pwd` deliberately keep their entries. The full edition
-materializes every entry link; its asset name always carries the `-full`
-qualifier, and the definition of the split lives in one place
-([`src/core/package_edition.h`](src/core/package_edition.h)).
+`echo`, `printf`, `pwd` and `env` deliberately keep their entries (`env` is
+not a shell builtin: `#!/usr/bin/env bash` scripts need `env.exe` on `PATH`).
+The full edition materializes every entry link; its asset name always carries
+the `-full` qualifier, and the definition of the split lives in one place
+(the `winux_edition` namespace in
+[`src/core/dispatcher.cppm`](src/core/dispatcher.cppm)).
 
 ## 🚀 Why WinuxCmd
 

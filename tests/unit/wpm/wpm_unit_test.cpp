@@ -582,6 +582,34 @@ TEST(wpm, wpm_links_rebuild_creates_env_hardlink_in_default_edition) {
   EXPECT_FALSE(std::filesystem::exists(canonical_exe(tmp.path, L"true.exe")));
 }
 
+TEST(wpm, wpm_links_rebuild_folds_a_bin_directory_to_the_root) {
+  // The archive's documented first-run step is "cd usr\bin; .\create_links.ps1",
+  // and that wrapper used to pass the bin directory itself as --root because
+  // Get-Location returns a PathInfo (no .Name/.Parent), so the test never
+  // fired. wpm then created usr\bin *inside* usr\bin: all 172 entry links
+  // landed one level too deep and nothing was on PATH. --root must accept the
+  // shapes default_root() already folds (…\usr\bin, …\usr\local\bin, …\bin).
+  TempDir tmp;
+  auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");
+  std::filesystem::create_directories(root_exe.parent_path());
+  std::filesystem::copy_file(build_winuxcmd_path(), root_exe,
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"wpm", L"links", L"rebuild", L"--root",
+                          canonical_bin_dir(tmp.path).wstring()});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // The links belong in <root>\usr\bin ...
+  auto wpm_exe = canonical_exe(tmp.path, L"wpm.exe");
+  EXPECT_TRUE(std::filesystem::exists(wpm_exe));
+  EXPECT_TRUE(same_file(root_exe, wpm_exe));
+  // ... and no second install tree may be nested inside it.
+  EXPECT_FALSE(std::filesystem::exists(canonical_bin_dir(tmp.path) /
+                                       L"usr" / L"bin"));
+}
+
 TEST(wpm, wpm_links_rebuild_removes_legacy_jq_hardlink) {
   TempDir tmp;
   auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");

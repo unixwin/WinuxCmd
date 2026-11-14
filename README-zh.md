@@ -77,13 +77,15 @@ WinuxCmd 由同一份源码构建出两个版本形态：
 | 入口链接 | 全部命令，**除**下述 Full-only 名单 | 全部 178 个入口 |
 | wpm 索引 | 收录 | **不收录** —— 仅独立下载 |
 
-**Full-only 命令：** 默认版不为 **`[`**、**`env`**、**`false`**、**`kill`**、
+**Full-only 命令：** 默认版不为 **`[`**、**`false`**、**`kill`**、
 **`test`**、**`time`**、**`true`** 生成入口链接——这些命令面向用户的语义由
 宿主 shell 的内建机制定义，PATH 上的同名 exe 入口声称的分流实际由内建所有。
 命令本体在多合一二进制中完整保留，两个版本里 `winuxcmd kill -9 <pid>` 均可
-使用。`echo`、`printf`、`pwd` 按裁定保留入口。Full 版落实全部入口链接；资产
-名恒带 `-full` 限定；该划分的定义只存在于
-[`src/core/package_edition.h`](src/core/package_edition.h) 一处。
+使用。`echo`、`printf`、`pwd` 与 `env` 按裁定保留入口（`env` 不是 shell 内建，
+`#!/usr/bin/env bash` 脚本依赖 PATH 上的 `env.exe`）。Full 版落实全部入口链接；
+资产名恒带 `-full` 限定；该划分的定义只存在于
+[`src/core/dispatcher.cppm`](src/core/dispatcher.cppm) 的 `winux_edition`
+命名空间一处。
 
 ## 🚀 为什么选 WinuxCmd
 

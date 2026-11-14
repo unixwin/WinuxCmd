@@ -9,8 +9,21 @@ on:
   # Manual re-runs: push events occasionally fail to fan out (observed on
   # PR #1547, where a second push produced no runs at all), and this
   # workflow carries the i18n-drift gate that a branch update must be able
-  # to re-verify without a no-op commit.
+  # to re-verify without a no-op commit. `version` exists for the
+  # wpm-source index job: after a tag whose release pipeline went red, or
+  # after an index that was merged wrong, the index must be repairable
+  # without cutting a new tag.
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to (re)index in unixwin/wpm-source (e.g. 2.0.0); empty = tag ref"
+        required: false
+        default: ""
+      dry_run:
+        description: "Recompute the index entry and print it without pushing"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -29,12 +42,12 @@ jobs:
       fail-fast: false
       matrix:
         # Two editions per architecture (#1438): `default` strips the
-        # shell-builtin shadow entry links (kill/test/[/true/false/env/time,
-        # see src/core/package_edition.h), `full` materializes every
-        # registered entry under a "-full" asset name and is NOT indexed in
-        # wpm. Tests and PGO run on the default x64 job only - the editions
-        # share the command implementations, and the full job exists for the
-        # entry-set difference.
+        # shell-builtin shadow entry links ([/false/kill/test/time/true,
+        # see the winux_edition namespace in src/core/dispatcher.cppm), `full`
+        # materializes every registered entry under a "-full" asset name and
+        # is NOT indexed in wpm. Tests and PGO run on the default x64 job only
+        # - the editions share the command implementations, and the full job
+        # exists for the entry-set difference.
         include:
           - arch: x64
             vcvars_arg: x64
@@ -189,14 +202,28 @@ jobs:
           $triple = if ($arch -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
           $lib = "build-$arch/rust2-target/$triple/release/winuxcmd_ffi.lib"
           if (-not (Test-Path $lib)) {
-            Write-Host "::error::WINUXCMD_ENABLE_RUST2 surface missing ($lib). CI builds must carry the rust2 command library; the replaced commands (true;false) do not exist without it."
+            Write-Host "::error::WINUXCMD_ENABLE_RUST2 surface missing ($lib). CI builds must carry the rust2 command library; the replaced commands do not exist without it."
+            exit 1
+          }
+          # The command list is emitted by CMake from WINUXCMD_RUST2_COMMANDS.
+          # It used to be hand-copied here ("true;false"), so the marker and the
+          # log line understated the surface by 48 commands and the cross-arch
+          # equality check below compared two stale strings.
+          $cmdFile = "build-$arch/rust2-commands.txt"
+          if (-not (Test-Path $cmdFile)) {
+            Write-Host "::error::$cmdFile is missing; CMake must write the rust2 command list (WINUXCMD_RUST2_COMMANDS)."
+            exit 1
+          }
+          $commands = (Get-Content -Path $cmdFile -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($commands)) {
+            Write-Host "::error::$cmdFile is empty; the rust2 command list cannot be verified."
             exit 1
           }
           $rustc = (& "$env:USERPROFILE\.cargo\bin\rustc.exe" --version).Trim()
-          Write-Host "RUST2_STATUS=ON (true;false) arch=$arch triple=$triple toolchain=${{ env.RUST2_TOOLCHAIN }} $rustc"
+          Write-Host "RUST2_STATUS=ON ($commands) arch=$arch triple=$triple toolchain=${{ env.RUST2_TOOLCHAIN }} $rustc"
           @(
             "rust2=ON",
-            "commands=true;false",
+            "commands=$commands",
             "arch=$arch",
             "triple=$triple",
             "toolchain=${{ env.RUST2_TOOLCHAIN }}",
@@ -732,7 +759,7 @@ jobs:
             - **ARM64**: Windows ARM64 (cross-compiled)
             
             ### Full-only commands (edition split, #1438):
-            The default edition does not create entry links for **`[`**, **`env`**, **`false`**, **`kill`**, **`test`**, **`time`**, **`true`** — these commands' user-facing semantics are defined by your host shell's builtins (`winuxcmd <name> ...` still works). The full edition materializes every entry and ships under the `-full` asset names; it is **not** distributed through wpm:
+            The default edition does not create entry links for **`[`**, **`false`**, **`kill`**, **`test`**, **`time`**, **`true`** — these commands' user-facing semantics are defined by your host shell's builtins (`winuxcmd <name> ...` still works). `env` is **not** a builtin and keeps its entry in the default edition. The full edition materializes every entry and ships under the `-full` asset names; it is **not** distributed through wpm:
             - WinuxCmd-${{ steps.final_version.outputs.version }}-win-x64-full.7z / .zip / .tar.gz
             - WinuxCmd-${{ steps.final_version.outputs.version }}-win-arm64-full.7z / .zip / .tar.gz
             
@@ -871,13 +898,66 @@ jobs:
     # standalone asset family ("-full" names) and must never enter the wpm
     # index. Entry links are not listed here either - `wpm links rebuild`
     # derives them from the shipped binary itself, so the index, the niu
-    # bundle pin and the binary share the one edition definition in
-    # src/core/package_edition.h.
+    # bundle pin and the binary share the one edition definition in the
+    # winux_edition namespace of src/core/dispatcher.cppm.
+    #
+    # Why this job used to be SKIPPED (and why it is no longer):
+    #   * `needs: release` + `if: ref_type == 'tag'` meant the job inherited
+    #     every upstream skip. On main/PR runs that is by design, but on a
+    #     TAG it made one red build leg (release skipped) silently skip the
+    #     index too - v1.2.0 run 41336205152 did exactly that, and nothing
+    #     said the index was stale.
+    #   * `needs.release.outputs.version` was the only version source, so a
+    #     skipped release also produced an empty --Version.
+    #   * `workflow_dispatch` exists on the workflow, but the `if:` required
+    #     ref_type == 'tag', which a manual run never is - so there was no
+    #     repair path short of cutting a new tag.
+    # The job now always runs on tag/dispatch, resolves the version itself,
+    # and turns an unusable upstream into a RED job with an actionable
+    # message instead of a silent skip.
     runs-on: ubuntu-latest
-    needs: release
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    needs:
+      - build-windows
+      - release
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')))
 
     steps:
+      - name: Report upstream state and gate on it
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "build-windows=${{ needs.build-windows.result }} release=${{ needs.release.result }}"
+          if [ "${{ needs.build-windows.result }}" != "success" ]; then
+            echo "::error::build-windows did not succeed, so there is no package to index. Re-run the failed build leg(s), then run this job again from the Actions tab."
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] &&
+             [ "${{ needs.release.result }}" != "success" ]; then
+            echo "::error::the release job did not publish the assets for ${GITHUB_REF_NAME}. Repair the release, then run this workflow with workflow_dispatch + version=${GITHUB_REF_NAME#v}."
+            exit 1
+          fi
+
+      - name: Resolve version
+        id: resolve_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] &&
+             [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF#refs/tags/v}"
+          fi
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::cannot resolve a release version (got '${version}'); pass workflow_dispatch input 'version'."
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "### wpm-source index target: WinuxCmd ${version}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Verify wpm-source token
         shell: bash
         env:
@@ -901,39 +981,93 @@ jobs:
           path: wpm-source
           fetch-depth: 1
 
-      - name: Download x64 Packages
+      # Artifact path (normal tag release): the bytes that were just built and
+      # attached to the release in this very run.
+      - name: Download x64 Packages (tag run artifacts)
+        if: github.event_name != 'workflow_dispatch' || inputs.version == ''
         uses: actions/download-artifact@v8
         with:
-          name: WinuxCmd-${{ needs.release.outputs.version }}-x64
+          name: WinuxCmd-${{ steps.resolve_version.outputs.version }}-x64
           path: artifacts/x64
 
-      - name: Download ARM64 Packages
+      - name: Download ARM64 Packages (tag run artifacts)
+        if: github.event_name != 'workflow_dispatch' || inputs.version == ''
         uses: actions/download-artifact@v8
         with:
-          name: WinuxCmd-${{ needs.release.outputs.version }}-arm64
+          name: WinuxCmd-${{ steps.resolve_version.outputs.version }}-arm64
           path: artifacts/arm64
+
+      # Repair path (workflow_dispatch + version): the bytes the RELEASE
+      # publishes. Re-indexing a shipped version must describe the shipped
+      # assets, not whatever the current main builds.
+      - name: Download x64 Packages (published release)
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WPM_SOURCE_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/x64
+          gh release download "v${{ steps.resolve_version.outputs.version }}" \
+            --repo unixwin/WinuxCmd \
+            --pattern "WinuxCmd-${{ steps.resolve_version.outputs.version }}-win-x64.zip" \
+            --dir artifacts/x64 --clobber
+
+      - name: Download ARM64 Packages (published release)
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WPM_SOURCE_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/arm64
+          gh release download "v${{ steps.resolve_version.outputs.version }}" \
+            --repo unixwin/WinuxCmd \
+            --pattern "WinuxCmd-${{ steps.resolve_version.outputs.version }}-win-arm64.zip" \
+            --dir artifacts/arm64 --clobber
 
       - name: Update WPM source index
         shell: pwsh
         run: |
           ./.github/scripts/update-wpm-source-index.ps1 `
             -IndexPath "wpm-source/index.json" `
-            -Version "${{ needs.release.outputs.version }}" `
-            -X64ZipPath "artifacts/x64/WinuxCmd-${{ needs.release.outputs.version }}-win-x64.zip" `
-            -Arm64ZipPath "artifacts/arm64/WinuxCmd-${{ needs.release.outputs.version }}-win-arm64.zip" `
-            -ReleaseTag "${{ github.ref_name }}"
+            -Version "${{ steps.resolve_version.outputs.version }}" `
+            -X64ZipPath "artifacts/x64/WinuxCmd-${{ steps.resolve_version.outputs.version }}-win-x64.zip" `
+            -Arm64ZipPath "artifacts/arm64/WinuxCmd-${{ steps.resolve_version.outputs.version }}-win-arm64.zip" `
+            -ReleaseTag "v${{ steps.resolve_version.outputs.version }}"
+
+      - name: Show computed index entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("wpm-source/index.json", encoding="utf-8"))
+          p = next(x for x in d["packages"] if x["name"] == "winuxcmd")
+          print(f'### wpm-source: winuxcmd {p["version"]}')
+          print("| arch | sha256 | size | url |")
+          print("|---|---|---:|---|")
+          for arch, a in p["artifacts"].items():
+              print(f'| {arch} | `{a["sha256"]}` | {a["size"]} | {a["urls"][0]} |')
+          PY
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] &&
+             [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "::notice::dry_run=true - index recomputed, nothing pushed."
+            git -C wpm-source checkout -- index.json
+            exit 0
+          fi
 
       - name: Create and merge wpm-source PR
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.WPM_SOURCE_TOKEN }}
-          VERSION: ${{ needs.release.outputs.version }}
+          VERSION: ${{ steps.resolve_version.outputs.version }}
         run: |
           set -euo pipefail
 
           cd wpm-source
           if git diff --quiet -- index.json; then
-            echo "wpm-source index already matches WinuxCmd ${VERSION}."
+            echo "wpm-source index already matches WinuxCmd ${VERSION}." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -948,13 +1082,37 @@ jobs:
           git commit -m "${title}"
           git push --force-with-lease origin "${branch}"
 
-          pr_url="$(gh pr list --repo unixwin/wpm-source --head "${branch}" --state open --json url --jq '.[0].url')"
-          if [ -z "${pr_url}" ]; then
-            pr_url="$(gh pr create --repo unixwin/wpm-source --base main --head "${branch}" --title "${title}" --body "${body}")"
-          fi
+          # `--jq '.[0].url'` prints the string "null" for an empty list, so
+          # the old `-z` test could be false with no PR in hand and the merge
+          # then ran against the literal name "null". Require a real URL.
+          pr_url="$(gh pr list --repo unixwin/wpm-source --head "${branch}" \
+            --state open --json url --jq '.[0].url // empty')"
+          case "${pr_url}" in
+            https://github.com/unixwin/wpm-source/pull/*) ;;
+            *)
+              pr_url="$(gh pr create --repo unixwin/wpm-source --base main \
+                --head "${branch}" --title "${title}" --body "${body}")"
+              ;;
+          esac
+          case "${pr_url}" in
+            https://github.com/unixwin/wpm-source/pull/*) ;;
+            *)
+              echo "::error::could not obtain a wpm-source PR URL (got '${pr_url}')"
+              exit 1
+              ;;
+          esac
 
           gh pr merge "${pr_url}" --repo unixwin/wpm-source --squash --delete-branch ||
             gh pr merge "${pr_url}" --repo unixwin/wpm-source --squash --delete-branch --auto
+
+          state="$(gh pr view "${pr_url}" --repo unixwin/wpm-source --json state --jq '.state')"
+          case "${state}" in
+            MERGED) echo "wpm-source index updated: ${pr_url}" >> "$GITHUB_STEP_SUMMARY" ;;
+            *)
+              echo "::error::wpm-source PR ${pr_url} is '${state}', not MERGED - the index was NOT updated."
+              exit 1
+              ;;
+          esac
 
   cache-and-notify:
     runs-on: windows-2025
