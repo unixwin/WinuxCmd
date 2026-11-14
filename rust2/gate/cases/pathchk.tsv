@@ -26,8 +26,9 @@ pk23-trailing-slash	strict				a/b/
 pk24-dot	strict				.
 pk25-dotdot	strict				..
 pk26-P-dash-only	strict				-P	-
-pk27-help	strict				--help
-pk28-version	strict				--version
+pk27-help	win				--help
+pk28-version	win				--version
 pk29-two-one-bad	strict	touch regfile; mkdir -p missingdir/inner			okname	regfile/file
 pk30-reserved-stem	win				con.txt
 pk31-short-h-rejected	strict				-h
+pk32-portability-leading-dash	strict				--portability	a/-b

@@ -314,6 +314,10 @@ TEST(shuf, shuf_random_seed_conflicts_with_random_source) {
       std::string::npos);
 }
 
+// #1488 wave-W1 re-pin: the 1.x C++ body wrapped the open failure in
+// "cannot open '<file>' for reading". GNU shuf (coreutils 9.4, probed)
+// reports the bare `<operand>: <reason>` shape, which the rust2 body
+// follows.
 TEST(shuf, shuf_missing_input_reports_no_such_file) {
   TempDir tmp;
 
@@ -324,11 +328,12 @@ TEST(shuf, shuf_missing_input_reports_no_such_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "shuf: cannot open 'missing.txt' for reading: No such file "
-                  "or directory") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("shuf: missing.txt: No such file or directory") !=
+              std::string::npos);
 }
 
+// GNU opens the directory successfully and dies in the read loop:
+// "shuf: read error: Is a directory" rc 1 (probed coreutils 9.4).
 TEST(shuf, shuf_directory_input_reports_is_a_directory) {
   TempDir tmp;
   tmp.mkdir("indir");
@@ -340,8 +345,7 @@ TEST(shuf, shuf_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "shuf: cannot open 'indir' for reading: Is a directory") !=
+  EXPECT_TRUE(r.stderr_text.find("shuf: read error: Is a directory") !=
               std::string::npos);
 }
 

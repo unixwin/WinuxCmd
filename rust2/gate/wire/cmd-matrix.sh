@@ -127,16 +127,46 @@ setup_fixture() {
     sha224sum)
       printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  mf\n' > ck
       printf '0000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
-      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  no-such-file-xyz\n' > ck.missing
+      printf '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7  no-such-file-xyz\n' > ck.missing ;;
     sha384sum)
       printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  mf\n' > ck
       printf '000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000  mf\n' > ck.bad
-      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  no-such-file-xyz\n' > ck.missing
+      printf 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7  no-such-file-xyz\n' > ck.missing ;;
     tac)
       rm -f tf; printf 'a\nb\nc\n' > tf ;;
     truncate)
       rm -f trf; printf 0123456789ABCDEF > trf ;;
 
+    # wave-W1 wiring (#1488): factor/shuf/ptx/csplit/pathchk fixtures.
+    factor) : ;;
+    shuf)
+      rm -rf f5.txt d.txt seed.bin one.bin 4l.txt empty.txt
+      printf 'a\nb\nc\nd\ne\n' > f5.txt
+      printf 'a\na\nb\n' > d.txt
+      printf 'abc' > seed.bin
+      printf '\001' > one.bin
+      printf '1\n2\n3\n4\n' > 4l.txt
+      : > empty.txt ;;
+    ptx)
+      rm -rf hw.txt o.txt empty.txt ig.txt on.txt ab.txt ptxdir
+      printf 'hello world\n' > hw.txt
+      printf 'one\n' > o.txt
+      printf 'hello' > ig.txt
+      printf 'hello' > on.txt
+      printf 'aaa bbb ccc ddd\n' > ab.txt
+      : > empty.txt
+      mkdir -p ptxdir ;;
+    csplit)
+      rm -rf f.txt g.txt w.txt
+      printf 'a\nb\n--\nc\nd\n--\ne\n' > f.txt
+      printf 'Header\nl1\nl2\nFooter\nl3\nHeader\nl4\n' > g.txt
+      printf 'x\r\n--\r\ny\r\n' > w.txt ;;
+    pathchk)
+      rm -rf regfile missingdir okname
+      printf x > regfile; mkdir -p missingdir/inner; : > okname ;;
+    who)
+      rm -f utmp.file; printf 'garbage' > utmp.file ;;
+    arch|groups|pinky) : ;;
     *) : ;;
   esac
 }
@@ -1178,6 +1208,274 @@ TABLE
 20|||-w
 21|||-w:30:fpara:fpre:fpara
 22|||-d
+TABLE
+      ;;
+    # ===== wave-W1 wiring (#1488): pure read/pure compute applets =====
+    arch)
+      cat <<'TABLE'
+01|||
+02|||--help
+03|||--version
+04|||--ver
+05|||--hel
+06|||foo
+07|||a:b
+08|||foo:--help
+09|||-x
+10|||-h
+11|||-V
+12|||--bogus
+13|||--
+14|||--:--help
+15|||--:foo
+16|||-
+17|||@EMPTY@
+18|||--bogus=1
+19|||--version:extra
+20|||--help:extra
+21|||--help:--version
+22|||--version:--help
+TABLE
+      ;;
+    groups)
+      cat <<'TABLE'
+01|||
+02|||--
+03|||nosuchuser123
+04|||@EMPTY@
+05|||nosuch1:nosuch2
+06|||Administrator
+07|||Administrator:cmx
+08|||--help
+09|||--version
+10|||--version:--help
+11|||-x
+12|||-h
+13|||--bogus
+14|||--:nosuch123
+15|||--bogus=1
+16|||-
+17|||cmx:nosuch123
+18|||NOSUCH123
+19|||
+20|||--help:x
+21|||--version:x
+22|||12345
+TABLE
+      ;;
+    who)
+      cat <<'TABLE'
+01|||
+02|||who-nosuch-utmp
+03|||-q
+04|||-H
+05|||-H:-u
+06|||-u
+07|||-w
+08|||-T
+09|||am:i
+10|||-m
+11|||a:b:c
+12|||--bogus
+13|||-a
+14|||--all
+15|||-b
+16|||--runlevel
+17|||--writable
+18|||--lookup
+19|||-h
+20|||--help
+21|||--version
+22|||utmp.file
+23|||-s
+24|||--message
+25|||-H:-q
+26|||-H:who-nosuch-utmp
+27|||a:b
+TABLE
+      ;;
+    pinky)
+      cat <<'TABLE'
+01|||
+02|||-f
+03|||-w
+04|||-i
+05|||-q
+06|||-s
+07|||-l
+08|||-l:cmx
+09|||-l:nosuchuser99
+10|||-l:-b:cmx
+11|||-l:-s:cmx
+12|||-s:-l:cmx
+13|||-h
+14|||-p
+15|||-b
+16|||--help
+17|||--version
+18|||--lookup
+19|||-Z
+20|||cmx
+21|||nosuchuser99
+22|||-f:cmx
+23|||-l:@EMPTY@
+24|||-l:-q:cmx
+TABLE
+      ;;
+    factor)
+      cat <<'TABLE'
+01|||12
+02|||0
+03|||1
+04|||1000003
+05|||2147483647:4294967291
+06|||18446744073709551615
+07|||123456789012345678
+08|||18446744073709551616
+09|||xyz
+10|||xyz:6
+11|||@EMPTY@
+12|||12x
+13|||12 
+14||| 12
+15|||+12
+16|||010
+17|||-h:12
+18|||--exponents:8
+19|||--:12
+20|||--:-5
+21||18|
+22||12 18|
+23|||--help
+24|||--version
+25|||-e:8
+26|||--bogus:12
+27|||-q:12
+TABLE
+      ;;
+    shuf)
+      cat <<'TABLE'
+01|||--random-source=seed.bin:f5.txt
+02|||--random-source=seed.bin:-n:2:f5.txt
+03|||--random-source=seed.bin:-i:1-10
+04|||--random-source=seed.bin:-i:0-9:-n:3
+05|||--random-source=seed.bin:-r:-n:6:-e:a:b:c
+06|||--random-source=seed.bin:-z:-i:1-5
+07|||--random-source=seed.bin:-o:out.txt:-i:1-5
+08|||--random-source=seed.bin:-n:100:-i:1-3
+09|||--random-source=seed.bin:d.txt
+10|||--random-source=seed.bin:empty.txt
+11|||-i:5-1
+12|||-i:abc
+13|||-i:1-99999999999999999999999
+14|||-e:-i:1-3
+15|||-i:1-3:extra
+16|||-n:xyz:-i:1-5
+17|||-n:0:-i:1-5
+18|||-i:1-2:-i:3-4
+19|||-o:a:-o:b:-i:1-2
+20|||nosuch-shuf-file
+21|||--random-source=nosuch.bin:-i:1-3
+22|||--random-seed=abc:f5.txt
+23|||--random-seed=abc:-n:3:f5.txt
+24|||-r:-n:2:empty.txt
+25|||--help
+26|||--version
+27|||-h
+28|||--bogus:-i:1-2
+29|||--random-seed=abc:--random-source=seed.bin:-i:1-2
+TABLE
+      ;;
+    ptx)
+      cat <<'TABLE'
+01|||hw.txt
+02|||o.txt
+03|||-O:hw.txt
+04|||-T:hw.txt
+05|||-C
+06|||--format=r:hw.txt
+07|||--format=t:hw.txt
+08|||--format=bad:hw.txt
+09|||-w:xyz:hw.txt
+10|||-g:0:hw.txt
+11|||empty.txt
+12|||nofile.txt
+13|||ptxdir
+14||x y|
+15|||-A:o.txt
+16|||-R:-A:hw.txt
+17|||-G:hw.txt
+18|||-w:40:ab.txt
+19|||-f:hw.txt
+20|||-i:ig.txt:hw.txt
+21|||-o:on.txt:hw.txt
+22|||--help
+23|||--version
+24|||-h
+25|||--bogus
+26|||.:.
+TABLE
+      ;;
+    csplit)
+      cat <<'TABLE'
+01|||f.txt:/--/
+02|||f.txt:2:4
+03|||g.txt:/Header/
+04|||g.txt:%Header%
+05|||g.txt:/Header/:{*}
+06|||f.txt:/--/:{1}
+07|||--suppress-matched:g.txt:/Header/
+08|||-z:g.txt:/nomatch/:/Header/
+09|||-f:ch:-n:3:-s:f.txt:/--/
+10|||-b:%02d:f.txt:/--/
+11|||g.txt:/l1/:/Header/+1
+12|||g.txt:/l1/:/Header/-1
+13|||f.txt:/zzz/
+14|||f.txt:99
+15|||f.txt:0
+16|||f.txt:4:2
+17|||f.txt:2:2
+18|||f.txt:/--/:{1
+19|||f.txt:/[a/
+20|||
+21|||f.txt
+22|||nosuch.txt:1
+23|||f.txt:@EMPTY@
+24|||-k:f.txt:/zzz/
+25|||-q:f.txt:/--/
+26|||-h
+27|||--help
+28|||--version
+TABLE
+      ;;
+    pathchk)
+      cat <<'TABLE'
+01|||ok.txt
+02|||nosuch/name.txt
+03|||regfile/file
+04|||missingdir/inner/x
+05|||@EMPTY@
+06|||-p:@EMPTY@
+07|||-P:@EMPTY@
+08|||-P:--:-x
+09|||-P:a/-b
+10|||-p:a:b
+11|||-p:a9._-b/c
+12|||
+13|||CON
+14|||-p:CON
+15|||a*b
+16|||--portability:x?:@EMPTY@
+17|||a/b/
+18|||.
+19|||..
+20|||-P:-
+21|||--help
+22|||--version
+23|||okname:regfile/file
+24|||con.txt
+25|||-h
+26|||a b
 TABLE
       ;;
     *)

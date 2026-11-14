@@ -51,7 +51,7 @@ use crate::argopt::{self, OptSpec};
 use crate::bre;
 use crate::fsutil;
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -154,7 +154,7 @@ struct BoundPattern {
 }
 
 /// parse_offset: an unsigned offset is a positive one ("/re/5" == "/re/+5").
-fn parse_offset(text: &str) -> Result<i64, String> {
+fn parse_offset(ctx: &Ctx, text: &str) -> Result<i64, String> {
     if text.is_empty() {
         return Ok(0);
     }
@@ -164,32 +164,59 @@ fn parse_offset(text: &str) -> Result<i64, String> {
         _ => (1i64, text),
     };
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("invalid pattern offset".to_string());
+        return Err(tr!(
+            ctx,
+            "command.csplit.error.invalid_pattern_offset",
+            "invalid pattern offset"
+        ));
     }
-    digits
-        .parse::<i64>()
-        .map(|v| sign * v)
-        .map_err(|_| "invalid pattern offset".to_string())
+    digits.parse::<i64>().map(|v| sign * v).map_err(|_| {
+        tr!(
+            ctx,
+            "command.csplit.error.invalid_pattern_offset",
+            "invalid pattern offset"
+        )
+    })
 }
 
 fn compile_pattern_regex(text: &str) -> Result<bre::Regex, String> {
-    bre::Regex::compile(text).map_err(|e| format!("invalid regular expression: {e}"))
+    bre::Regex::compile(text).map_err(|e| e.to_string())
 }
 
-fn parse_pattern(text: &str) -> Result<ParsedPattern, String> {
+fn parse_pattern(ctx: &Ctx, text: &str) -> Result<ParsedPattern, String> {
     if text.is_empty() {
-        return Err("invalid pattern".to_string());
+        return Err(tr!(
+            ctx,
+            "command.csplit.error.invalid_pattern",
+            "invalid pattern"
+        ));
     }
     let first = text.as_bytes()[0];
     if first == b'/' || first == b'%' {
         // The LAST delimiter closes the pattern: /a/b/ is the regexp "a/b".
         let close = match text.rfind(first as char) {
-            Some(0) | None => return Err("missing pattern delimiter".to_string()),
+            Some(0) | None => {
+                return Err(tr!(
+                    ctx,
+                    "command.csplit.error.missing_pattern_delimiter",
+                    "missing pattern delimiter"
+                ))
+            }
             Some(c) => c,
         };
-        let offset = parse_offset(&text[close + 1..])?;
+        let offset = parse_offset(ctx, &text[close + 1..])?;
         let regex_text = &text[1..close];
-        let regex = compile_pattern_regex(regex_text)?;
+        // GNU csplit quotes the WHOLE pattern and appends the regcomp
+        // reason (csplit.c: the pattern text precedes the quote-suffix).
+        let regex = compile_pattern_regex(regex_text).map_err(|reason| {
+            tr!(
+                ctx,
+                "command.csplit.error.invalid_regex",
+                "'{pattern}': invalid regular expression: {reason}",
+                pattern = text,
+                reason = reason
+            )
+        })?;
         return Ok(ParsedPattern {
             kind: PatternKind::Regex { regex, offset },
             skip: first == b'%',
@@ -199,13 +226,25 @@ fn parse_pattern(text: &str) -> Result<ParsedPattern, String> {
     // diagnostic.
     let digits = text.strip_prefix('+').unwrap_or(text);
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("invalid pattern".to_string());
+        return Err(tr!(
+            ctx,
+            "command.csplit.error.invalid_pattern",
+            "invalid pattern"
+        ));
     }
-    let line_number = digits
-        .parse::<usize>()
-        .map_err(|_| "invalid line number".to_string())?;
+    let line_number = digits.parse::<usize>().map_err(|_| {
+        tr!(
+            ctx,
+            "command.csplit.error.invalid_line_number",
+            "invalid line number"
+        )
+    })?;
     if line_number == 0 {
-        return Err("0: line number must be greater than zero".to_string());
+        return Err(tr!(
+            ctx,
+            "command.csplit.error.zero_line_number",
+            "0: line number must be greater than zero"
+        ));
     }
     Ok(ParsedPattern {
         kind: PatternKind::LineNumber(line_number),
@@ -213,13 +252,18 @@ fn parse_pattern(text: &str) -> Result<ParsedPattern, String> {
     })
 }
 
-fn parse_repeat(text: &str) -> Result<RepeatSpec, String> {
+fn parse_repeat(ctx: &Ctx, text: &str) -> Result<RepeatSpec, String> {
     let mut repeat = RepeatSpec::default();
     if text.is_empty() || !text.starts_with('{') {
         return Ok(repeat);
     }
     if text.len() < 3 || !text.ends_with('}') {
-        return Err(format!("{text}: '}}' is required in repeat count"));
+        return Err(tr!(
+            ctx,
+            "command.csplit.error.repeat_brace_required",
+            "{pattern}: '}}' is required in repeat count",
+            pattern = text
+        ));
     }
     repeat.has_repeat = true;
     let inner = &text[1..text.len() - 1];
@@ -228,11 +272,21 @@ fn parse_repeat(text: &str) -> Result<RepeatSpec, String> {
         return Ok(repeat);
     }
     if inner.is_empty() || !inner.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("invalid repeat count".to_string());
+        return Err(tr!(
+            ctx,
+            "command.csplit.error.invalid_repeat_count",
+            "invalid repeat count"
+        ));
     }
     match inner.parse::<usize>() {
         Ok(n) => repeat.count = n,
-        Err(_) => return Err("invalid repeat count".to_string()),
+        Err(_) => {
+            return Err(tr!(
+                ctx,
+                "command.csplit.error.invalid_repeat_count",
+                "invalid repeat count"
+            ))
+        }
     }
     Ok(repeat)
 }
@@ -241,8 +295,11 @@ fn parse_repeat(text: &str) -> Result<RepeatSpec, String> {
 // Suffix format (sprintf subset: one diuoxX conversion)
 // ---------------------------------------------------------------------------
 
+/// Render one validated suffix. The format was validated when the option was
+/// parsed (`-b` is checked before any input is read, GNU check_format_conv_
+/// type), so this path never diagnoses; `render_validated` re-checks and
+/// returns the same plain wording as a last-resort guard.
 fn render_suffix_format(fmt: &str, value: usize) -> Result<String, String> {
-    validate_suffix_format(fmt)?;
     render_validated(fmt, value)
 }
 
@@ -250,7 +307,7 @@ fn render_suffix_format(fmt: &str, value: usize) -> Result<String, String> {
 /// type), so an invalid format dies before any input is read or a file is
 /// created. Exactly one conversion in diuoxX; the flag span is
 /// `-+ #'0123456789.`; `#` only with o/x/X and `'` only with d/i/u.
-fn validate_suffix_format(fmt: &str) -> Result<(), String> {
+fn validate_suffix_format(ctx: &Ctx, fmt: &str) -> Result<(), String> {
     let b = fmt.as_bytes();
     let mut conversions = 0usize;
     let mut i = 0usize;
@@ -279,23 +336,32 @@ fn validate_suffix_format(fmt: &str) -> Result<(), String> {
             j += 1;
         }
         if j >= b.len() || !"diuoxX".contains(b[j] as char) {
-            return Err("invalid suffix format".to_string());
-        }
-        let conv = b[j] as char;
-        if matches!(conv, 'd' | 'i' | 'u') && alt {
-            return Err(format!(
-                "invalid flags in conversion specification: %{flags}{conv}"
+            return Err(tr!(
+                ctx,
+                "command.csplit.error.invalid_suffix_format",
+                "invalid suffix format"
             ));
         }
-        if matches!(conv, 'o' | 'x' | 'X') && thousands {
-            return Err(format!(
-                "invalid flags in conversion specification: %{flags}{conv}"
+        let conv = b[j] as char;
+        if (matches!(conv, 'd' | 'i' | 'u') && alt)
+            || (matches!(conv, 'o' | 'x' | 'X') && thousands)
+        {
+            return Err(tr!(
+                ctx,
+                "command.csplit.error.invalid_suffix_flags",
+                "invalid flags in conversion specification: %{flags}{conversion}",
+                flags = flags,
+                conversion = conv
             ));
         }
         i = j + 1;
     }
     if conversions != 1 {
-        return Err("invalid suffix format".to_string());
+        return Err(tr!(
+            ctx,
+            "command.csplit.error.invalid_suffix_format",
+            "invalid suffix format"
+        ));
     }
     Ok(())
 }
@@ -471,6 +537,7 @@ fn line_for_regex(line: &str) -> &[u8] {
 }
 
 fn apply_pattern(
+    ctx: &Ctx,
     lines: &[String],
     pattern: &ParsedPattern,
     pattern_text: &str,
@@ -481,11 +548,22 @@ fn apply_pattern(
     repetition: usize,
 ) -> Result<PatternApplication, String> {
     let out_of_range = || -> String {
-        let mut message = format!("'{pattern_text}': line number out of range");
         if repetition > 0 {
-            message += &format!(" on repetition {repetition}");
+            tr!(
+                ctx,
+                "command.csplit.error.line_out_of_range_repetition",
+                "'{pattern}': line number out of range on repetition {repetition}",
+                pattern = pattern_text,
+                repetition = repetition
+            )
+        } else {
+            tr!(
+                ctx,
+                "command.csplit.error.line_out_of_range",
+                "'{pattern}': line number out of range",
+                pattern = pattern_text
+            )
         }
-        message
     };
 
     let mut result = PatternApplication {
@@ -548,19 +626,24 @@ fn apply_pattern(
 /// The streaming output writer: one finalized segment -> one file, size
 /// line to stdout unless quiet; created files removed on failure unless
 /// -k (mirrors the C++ OutputWriter / GNU streaming).
-struct OutputWriter {
+struct OutputWriter<'a> {
     prefix: String,
     suffix_format: Option<String>,
     digits: usize,
     quiet: bool,
     elide_empty: bool,
     keep_files: bool,
-    cwd: PathBuf,
+    /// Invocation context: the output name goes through the same
+    /// shell-namespace operand mapper as an input operand, so a POSIX
+    /// dialect prefix (`-f /d/dir/seg-`, `-f /usr/x/seg-`) lands on the
+    /// spelling the mapper resolves instead of a literal cwd join. The
+    /// 1.x C++ body carried the same resolution (#1276).
+    ctx: &'a Ctx<'a>,
     created: Vec<String>,
     file_count: usize,
 }
 
-impl OutputWriter {
+impl OutputWriter<'_> {
     /// Write one finalized segment. Returns Ok(true) when written or
     /// elided. `lines`/`suppress` come from the caller so the suppress
     /// marks stay in one owner.
@@ -594,7 +677,7 @@ impl OutputWriter {
             }
             content.extend_from_slice(lines[i].as_bytes());
         }
-        let full = fsutil::join_lex(&self.cwd, &filename);
+        let full = fsutil::resolve(self.ctx, &filename);
         std::fs::write(&full, &content).map_err(|_| format!("cannot create '{filename}'"))?;
         self.created.push(filename);
         if !self.quiet {
@@ -609,7 +692,7 @@ impl OutputWriter {
             return;
         }
         for file in &self.created {
-            let _ = std::fs::remove_file(fsutil::join_lex(&self.cwd, file));
+            let _ = std::fs::remove_file(fsutil::resolve(self.ctx, file));
         }
     }
 }
@@ -662,7 +745,7 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
     if let Some(fmt) = &suffix_format {
-        if let Err(message) = validate_suffix_format(fmt) {
+        if let Err(message) = validate_suffix_format(ctx, fmt) {
             let _ = writeln!(io.stderr, "csplit: {message}");
             return Ok(1);
         }
@@ -672,7 +755,16 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Some(text) => match text.trim_end().parse::<usize>() {
             Ok(v) if text.trim_end() == text || !text.ends_with(['+', '-']) => v,
             _ => {
-                let _ = writeln!(io.stderr, "csplit: invalid number: '{text}'");
+                let _ = writeln!(
+                    io.stderr,
+                    "csplit: {}",
+                    tr!(
+                        ctx,
+                        "command.csplit.error.invalid_number",
+                        "invalid number: '{value}'",
+                        value = text
+                    )
+                );
                 let _ = writeln!(io.stderr, "Try 'csplit --help' for more information.");
                 return Ok(1);
             }
@@ -680,13 +772,29 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     };
 
     if p.positionals.is_empty() {
-        let _ = writeln!(io.stderr, "csplit: missing operand");
+        let _ = writeln!(
+            io.stderr,
+            "csplit: {}",
+            tr!(
+                ctx,
+                "command.csplit.error.missing_operand",
+                "missing operand"
+            )
+        );
         let _ = writeln!(io.stderr, "Try 'csplit --help' for more information.");
         return Ok(1);
     }
     let input_file = p.positionals[0].to_string_lossy().into_owned();
     if input_file.is_empty() {
-        let _ = writeln!(io.stderr, "csplit: missing operand");
+        let _ = writeln!(
+            io.stderr,
+            "csplit: {}",
+            tr!(
+                ctx,
+                "command.csplit.error.missing_operand",
+                "missing operand"
+            )
+        );
         let _ = writeln!(io.stderr, "Try 'csplit --help' for more information.");
         return Ok(1);
     }
@@ -695,7 +803,16 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     if patterns.is_empty() {
-        let _ = writeln!(io.stderr, "csplit: missing operand after '{input_file}'");
+        let _ = writeln!(
+            io.stderr,
+            "csplit: {}",
+            tr!(
+                ctx,
+                "command.csplit.error.missing_operand_after",
+                "missing operand after '{file}'",
+                file = input_file
+            )
+        );
         let _ = writeln!(io.stderr, "Try 'csplit --help' for more information.");
         return Ok(1);
     }
@@ -713,7 +830,13 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 // diagnostic; the gate's missing-file rows use ENOENT.
                 let _ = writeln!(
                     io.stderr,
-                    "csplit: cannot open '{input_file}' for reading: No such file or directory"
+                    "csplit: {}",
+                    tr!(
+                        ctx,
+                        "command.csplit.error.cannot_open",
+                        "cannot open '{file}' for reading: No such file or directory",
+                        file = input_file
+                    )
                 );
                 return Ok(1);
             }
@@ -746,7 +869,7 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let mut i = 0usize;
         while i < patterns.len() {
             let text = &patterns[i];
-            let parsed = match parse_pattern(text) {
+            let parsed = match parse_pattern(ctx, text) {
                 Ok(v) => v,
                 Err(message) => {
                     let _ = writeln!(io.stderr, "csplit: {message}");
@@ -758,14 +881,27 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     if *n < prev {
                         let _ = writeln!(
                             io.stderr,
-                            "csplit: line number '{n}' is smaller than preceding line number, {prev}"
+                            "csplit: {}",
+                            tr!(
+                                ctx,
+                                "command.csplit.error.line_number_decreasing",
+                                "line number '{number}' is smaller than preceding line number, {previous}",
+                                number = n,
+                                previous = prev
+                            )
                         );
                         return Ok(1);
                     }
                     if *n == prev {
-                        let _ = write!(
+                        let _ = writeln!(
                             io.stderr,
-                            "csplit: warning: line number '{n}' is the same as preceding line number\n"
+                            "csplit: {}",
+                            tr!(
+                                ctx,
+                                "command.csplit.warning.line_number_same",
+                                "warning: line number '{number}' is the same as preceding line number",
+                                number = n
+                            )
                         );
                     }
                 }
@@ -773,7 +909,7 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             let mut repeat = RepeatSpec::default();
             if i + 1 < patterns.len() {
-                match parse_repeat(&patterns[i + 1]) {
+                match parse_repeat(ctx, &patterns[i + 1]) {
                     Ok(r) => repeat = r,
                     Err(message) => {
                         let _ = writeln!(io.stderr, "csplit: {message}");
@@ -801,7 +937,7 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         quiet,
         elide_empty,
         keep_files,
-        cwd: ctx.cwd.clone(),
+        ctx,
         created: Vec::new(),
         file_count: 0,
     };
@@ -828,6 +964,7 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let mut application = 0usize;
         loop {
             let applied = apply_pattern(
+                ctx,
                 &lines,
                 &bound.pattern,
                 &bound.text,
@@ -855,7 +992,11 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             end: if stream_to_file { lines.len() } else { current },
                         };
                         if writer.write_segment(&seg, &lines, &suppress, out).is_err() {
-                            finish_error!("cannot create output file");
+                            finish_error!(tr!(
+                                ctx,
+                                "command.csplit.error.cannot_create_output_file",
+                                "cannot create output file"
+                            ));
                         }
                     }
                     finish_error!(message);
@@ -873,7 +1014,11 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             end: lines.len(),
                         };
                         if writer.write_segment(&seg, &lines, &suppress, out).is_err() {
-                            finish_error!("cannot create output file");
+                            finish_error!(tr!(
+                                ctx,
+                                "command.csplit.error.cannot_create_output_file",
+                                "cannot create output file"
+                            ));
                         }
                     }
                     return Ok(0);
@@ -884,13 +1029,29 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         end: lines.len(),
                     };
                     if writer.write_segment(&seg, &lines, &suppress, out).is_err() {
-                        finish_error!("cannot create output file");
+                        finish_error!(tr!(
+                            ctx,
+                            "command.csplit.error.cannot_create_output_file",
+                            "cannot create output file"
+                        ));
                     }
                 }
-                let mut message = format!("'{}': match not found", bound.text);
-                if application > 0 {
-                    message += &format!(" on repetition {application}");
-                }
+                let message = if application > 0 {
+                    tr!(
+                        ctx,
+                        "command.csplit.error.match_not_found_repetition",
+                        "'{pattern}': match not found on repetition {repetition}",
+                        pattern = bound.text,
+                        repetition = application
+                    )
+                } else {
+                    tr!(
+                        ctx,
+                        "command.csplit.error.match_not_found",
+                        "'{pattern}': match not found",
+                        pattern = bound.text
+                    )
+                };
                 finish_error!(message);
             }
             // --suppress-matched drops the line at the split boundary.
@@ -902,7 +1063,11 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     .write_segment(&applied.output, &lines, &suppress, out)
                     .is_err()
                 {
-                    finish_error!("cannot create output file");
+                    finish_error!(tr!(
+                        ctx,
+                        "command.csplit.error.cannot_create_output_file",
+                        "cannot create output file"
+                    ));
                 }
             }
             current = applied.next_start;
@@ -920,7 +1085,11 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         end: lines.len(),
     };
     if writer.write_segment(&seg, &lines, &suppress, out).is_err() {
-        finish_error!("cannot create output file");
+        finish_error!(tr!(
+            ctx,
+            "command.csplit.error.cannot_create_output_file",
+            "cannot create output file"
+        ));
     }
     Ok(0)
 }

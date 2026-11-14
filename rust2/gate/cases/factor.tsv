@@ -30,10 +30,13 @@ fa27-exponents-prime	strict				-h	7
 fa28-exponents-two	strict				-h	4	9
 fa29-stdin-one-line	strict			18	-h
 fa30-stdin-plain	strict			8
-fa31-help	strict				--help
-fa32-version	strict				--version
-fa33-help-extra	strict				--help	extra
-fa34-version-extra	strict				--version	extra
+fa31-help	win				--help
+fa32-version	win				--version
+fa33-help-extra	win				--help	extra
+fa34-version-extra	win				--version	extra
 fa35-exponents-inline-value	exit				--exponents=8	12
 fa36-bogus-short	exit				-q	12
 fa37-bogus-long	exit				--bogus	12
+fa38-e-retired	strict				-e	8
+fa39-stdin-multi	strict			12 18
+fa40-stdin-h-mixed	strict			  24   36 xyz 48  	-h

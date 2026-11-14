@@ -53,7 +53,7 @@ use std::io::{Read as _, Write as _};
 use crate::argopt::{self, OptSpec};
 use crate::fsutil;
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -211,7 +211,7 @@ const KECCAK_RC: [u64; 24] = [
     0x0000000000000088,
     0x0000000080008009,
     0x000000008000000A,
-    0x800000008000808B,
+    0x000000008000808B,
     0x800000000000008B,
     0x8000000000008089,
     0x8000000000008003,
@@ -506,21 +506,30 @@ fn parse_unsigned_number(text: &str) -> UnsignedNumber {
     }
 }
 
-fn range_error(value: &str, overflow: bool) -> String {
-    let mut message = format!("invalid input range: '{value}'");
+fn range_error(ctx: &Ctx, value: &str, overflow: bool) -> String {
     if overflow {
-        message += ": Value too large for defined data type";
+        return tr!(
+            ctx,
+            "command.shuf.error.invalid_input_range_overflow",
+            "invalid input range: '{range}': Value too large for defined data type",
+            range = value
+        );
     }
-    message
+    tr!(
+        ctx,
+        "command.shuf.error.invalid_input_range",
+        "invalid input range: '{range}'",
+        range = value
+    )
 }
 
 /// Mirrors GNU shuf: the range splits on the FIRST '-', both endpoints must
 /// be non-negative decimals, lo <= hi.
-fn split_range(range: &str) -> Result<(u64, u64), String> {
+fn split_range(ctx: &Ctx, range: &str) -> Result<(u64, u64), String> {
     let dash = match range.find('-') {
         None => {
             let whole = parse_unsigned_number(range);
-            return Err(range_error(range, whole.overflow));
+            return Err(range_error(ctx, range, whole.overflow));
         }
         Some(d) => d,
     };
@@ -528,14 +537,14 @@ fn split_range(range: &str) -> Result<(u64, u64), String> {
     let hi_text = &range[dash + 1..];
     let lo = parse_unsigned_number(lo_text);
     if !lo.ok {
-        return Err(range_error(range, lo.overflow));
+        return Err(range_error(ctx, range, lo.overflow));
     }
     let hi = parse_unsigned_number(hi_text);
     if !hi.ok {
-        return Err(range_error(range, hi.overflow));
+        return Err(range_error(ctx, range, hi.overflow));
     }
     if lo.value > hi.value {
-        return Err(range_error(range, false));
+        return Err(range_error(ctx, range, false));
     }
     Ok((lo.value, hi.value))
 }
@@ -609,11 +618,19 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .map(|(_, v)| v.as_str())
         .collect();
     if range_values.len() > 1 {
-        let _ = writeln!(io.stderr, "shuf: multiple -i options specified");
+        let _ = writeln!(
+            io.stderr,
+            "shuf: {}",
+            tr!(
+                ctx,
+                "command.shuf.error.multiple_input_range",
+                "multiple -i options specified"
+            )
+        );
         return Ok(1);
     }
     if let Some(value) = range_values.first() {
-        match split_range(value) {
+        match split_range(ctx, value) {
             Ok(r) => range = Some(r),
             Err(message) => {
                 let _ = writeln!(io.stderr, "shuf: {message}");
@@ -632,7 +649,16 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     for value in count_values {
         let count = parse_unsigned_number(value);
         if !count.ok && !count.overflow {
-            let _ = writeln!(io.stderr, "shuf: invalid line count: '{value}'");
+            let _ = writeln!(
+                io.stderr,
+                "shuf: {}",
+                tr!(
+                    ctx,
+                    "command.shuf.error.invalid_line_count",
+                    "invalid line count: '{value}'",
+                    value = value
+                )
+            );
             return Ok(1);
         }
         if count.overflow {
@@ -654,7 +680,15 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .collect();
     if let Some(first) = outputs.first() {
         if outputs.iter().any(|v| *v != *first) {
-            let _ = writeln!(io.stderr, "shuf: multiple output files specified");
+            let _ = writeln!(
+                io.stderr,
+                "shuf: {}",
+                tr!(
+                    ctx,
+                    "command.shuf.error.multiple_output_files",
+                    "multiple output files specified"
+                )
+            );
             return Ok(1);
         }
     }
@@ -666,29 +700,55 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .collect();
     if let Some(first) = sources.first() {
         if sources.iter().any(|v| *v != *first) {
-            let _ = writeln!(io.stderr, "shuf: multiple random sources specified");
+            let _ = writeln!(
+                io.stderr,
+                "shuf: {}",
+                tr!(
+                    ctx,
+                    "command.shuf.error.multiple_random_sources",
+                    "multiple random sources specified"
+                )
+            );
             return Ok(1);
         }
     }
     if random_seed.is_some() && random_source.is_some() {
         let _ = writeln!(
             io.stderr,
-            "shuf: the arguments '--random-seed <STRING>' and '--random-source <FILE>' are mutually exclusive"
+            "shuf: {}",
+            tr!(
+                ctx,
+                "command.shuf.error.seed_source_exclusive",
+                "the arguments '--random-seed <STRING>' and '--random-source <FILE>' are mutually exclusive"
+            )
         );
         return Ok(1);
     }
 
     // Usage block (GNU: message + Try line, rc 1).
     if echo_mode && range.is_some() {
-        let _ = writeln!(io.stderr, "shuf: cannot combine -e and -i options");
+        let _ = writeln!(
+            io.stderr,
+            "shuf: {}",
+            tr!(
+                ctx,
+                "command.shuf.error.echo_range_conflict",
+                "cannot combine -e and -i options"
+            )
+        );
         let _ = writeln!(io.stderr, "Try 'shuf --help' for more information.");
         return Ok(1);
     }
     if range.is_some() && !p.positionals.is_empty() {
         let _ = writeln!(
             io.stderr,
-            "shuf: extra operand '{}'",
-            p.positionals[0].to_string_lossy()
+            "shuf: {}",
+            tr!(
+                ctx,
+                "command.shuf.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = p.positionals[0].to_string_lossy()
+            )
         );
         let _ = writeln!(io.stderr, "Try 'shuf --help' for more information.");
         return Ok(1);
@@ -696,8 +756,13 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if !echo_mode && range.is_none() && p.positionals.len() > 1 {
         let _ = writeln!(
             io.stderr,
-            "shuf: extra operand '{}'",
-            p.positionals[1].to_string_lossy()
+            "shuf: {}",
+            tr!(
+                ctx,
+                "command.shuf.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = p.positionals[1].to_string_lossy()
+            )
         );
         let _ = writeln!(io.stderr, "Try 'shuf --help' for more information.");
         return Ok(1);
@@ -748,10 +813,44 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             buf
         } else {
             let full = fsutil::resolve(ctx, &operand);
+            // Windows reports EISDIR differently from POSIX (a directory
+            // Metadata read succeeds, the read call fails with an
+            // OS-specific kind), so the directory verdict is resolved from
+            // the metadata; GNU's wording is the read-loop diagnostic.
+            if full.is_dir() {
+                let _ = writeln!(
+                    io.stderr,
+                    "shuf: {}",
+                    tr!(
+                        ctx,
+                        "command.shuf.error.read_is_a_directory",
+                        "read error: Is a directory"
+                    )
+                );
+                return Ok(1);
+            }
             match std::fs::read(&full) {
                 Ok(b) => b,
-                Err(_) => {
-                    let _ = writeln!(io.stderr, "shuf: {operand}: No such file or directory");
+                Err(e) => {
+                    // GNU shuf opens the FILE and dies in the read loop for a
+                    // directory ("shuf: read error: Is a directory", probed
+                    // coreutils 9.4); every other open failure is the
+                    // `<operand>: <reason>` shape.
+                    let message = if e.kind() == std::io::ErrorKind::IsADirectory {
+                        tr!(
+                            ctx,
+                            "command.shuf.error.read_is_a_directory",
+                            "read error: Is a directory"
+                        )
+                    } else {
+                        tr!(
+                            ctx,
+                            "command.shuf.error.no_such_file",
+                            "{name}: No such file or directory",
+                            name = operand
+                        )
+                    };
+                    let _ = writeln!(io.stderr, "shuf: {message}");
                     return Ok(1);
                 }
             }
@@ -770,7 +869,15 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     };
 
     if lines.is_empty() && deferred_range.is_none() && repeat && head_count != Some(0) {
-        let _ = writeln!(io.stderr, "shuf: no lines to repeat");
+        let _ = writeln!(
+            io.stderr,
+            "shuf: {}",
+            tr!(
+                ctx,
+                "command.shuf.error.no_lines_to_repeat",
+                "no lines to repeat"
+            )
+        );
         return Ok(1);
     }
     if lines.is_empty() && deferred_range.is_none() {
@@ -783,7 +890,15 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let bytes = match std::fs::read(&full) {
             Ok(b) => b,
             Err(_) => {
-                let _ = writeln!(io.stderr, "shuf: cannot open random source");
+                let _ = writeln!(
+                    io.stderr,
+                    "shuf: {}",
+                    tr!(
+                        ctx,
+                        "command.shuf.error.cannot_open_random_source",
+                        "cannot open random source"
+                    )
+                );
                 return Ok(1);
             }
         };
@@ -795,7 +910,16 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     match rng.choose_from_slice(lines.len()) {
                         Ok(idx) => output.push(lines[idx].clone()),
                         Err(()) => {
-                            let _ = writeln!(io.stderr, "shuf: '{source_file}': end of file");
+                            let _ = writeln!(
+                                io.stderr,
+                                "shuf: {}",
+                                tr!(
+                                    ctx,
+                                    "command.shuf.error.random_source_eof",
+                                    "'{name}': end of file",
+                                    name = source_file
+                                )
+                            );
                             return Ok(1);
                         }
                     }
@@ -959,7 +1083,16 @@ fn emit_output(
             match std::fs::write(&full, &bytes) {
                 Ok(()) => Ok(0),
                 Err(_) => {
-                    let _ = writeln!(io.stderr, "shuf: {file}: No such file or directory");
+                    let _ = writeln!(
+                        io.stderr,
+                        "shuf: {}",
+                        tr!(
+                            ctx,
+                            "command.shuf.error.no_such_file",
+                            "{name}: No such file or directory",
+                            name = file
+                        )
+                    );
                     Ok(1)
                 }
             }
@@ -1090,8 +1223,23 @@ mod tests {
 
     #[test]
     fn random_seed_matches_cpp_model_shapes() {
-        // Deterministic across runs (SHA3/ChaCha12); the exact bytes are the
-        // C++ product model, gate-checked win-side.
+        // The exact 1.x DeterministicRng bytes (C++ shuf.cpp SHA3-256 +
+        // ChaCha12): probed on the pre-wiring product exe, so the extension
+        // keeps byte-identical output across the wire. The SHA3 round-
+        // constant table is easy to mistype — this pins it end to end.
+        let r = run(&[("f5.txt", F5)], "", &["--random-seed", "abc", "f5.txt"]);
+        assert_eq!((r.rc, r.out.as_str()), (0, "d\nc\ne\na\nb\n"));
+        let r = run(&[], "", &["--random-seed", "abc", "-i", "1-5"]);
+        assert_eq!((r.rc, r.out.as_str()), (0, "4\n3\n5\n1\n2\n"));
+        let r = run(
+            &[("f5.txt", F5)],
+            "",
+            &["--random-seed", "abc", "-n", "3", "f5.txt"],
+        );
+        assert_eq!((r.rc, r.out.as_str()), (0, "d\nc\ne\n"));
+        let r = run(&[], "", &["--random-seed", "x", "-i", "1-8"]);
+        assert_eq!((r.rc, r.out.as_str()), (0, "8\n6\n2\n7\n1\n3\n4\n5\n"));
+        // Deterministic across runs.
         let a = run(
             &[("seed.bin", SEED)],
             "",
@@ -1104,6 +1252,7 @@ mod tests {
         );
         assert_eq!((a.rc, b.rc), (0, 0));
         assert_eq!(a.out, b.out);
+        // The emitted permutation is still a permutation of the input.
         let mut sorted: Vec<&str> = a.out.lines().collect();
         sorted.sort_unstable();
         assert_eq!(sorted, ["1", "2", "3", "4", "5", "6", "7", "8"]);

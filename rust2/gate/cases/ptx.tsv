@@ -21,11 +21,12 @@ px18-multiline-wrap	win	printf 'The quick brown fox\njumps over the lazy dog\n' 
 px19-narrow-grid	win	printf 'aaa bbb ccc ddd\n' > ab.txt			-w	40	ab.txt
 px20-ignore-case-plain	strict	printf 'hello world\n' > hw.txt; printf 'one\n' > o.txt			-f	hw.txt
 px21-copyright-ext	win				-C
-px22-help	strict				--help
-px23-version	strict				--version
+px22-help	win				--help
+px23-version	win				--version
 px24-ignore-file	strict	printf 'hello world\n' > hw.txt; printf 'one\n' > o.txt; printf 'hello' > ig.txt			-i	ig.txt	hw.txt
 px25-only-file	strict	printf 'hello world\n' > hw.txt; printf 'one\n' > o.txt; printf 'hello' > on.txt			-o	on.txt	hw.txt
 px26-trunc-flag-narrow	win	printf 'aaa bbb ccc ddd\n' > ab.txt			-F	...	-w	20	ab.txt
 px27-gap-one-narrow	win	printf 'aaa bbb ccc ddd\n' > ab.txt			-g	1	-w	40	ab.txt
 px28-two-files	win	printf 'hello world\n' > hw.txt; printf 'one\n' > o.txt			o.txt	hw.txt
 px29-short-h-rejected	strict				-h
+px30-gap-size-long	win	printf 'hello world\n' > hw.txt; printf 'one\n' > o.txt			--gap-size=2	hw.txt

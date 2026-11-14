@@ -35,7 +35,7 @@ use std::io::Write as _;
 
 use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -605,12 +605,19 @@ pub fn who_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
 
     // [GNU] who.c: the record-selecting utmp views have no Windows
-    // representation; the C++ applet rejects them (first one wins).
+    // representation; the C++ applet rejects them (first one wins). The
+    // program prefix stays in code; the inner wording is the tr! key.
     for (key, spelling) in UNSUPPORTED {
         if p.has(key) {
             let _ = writeln!(
                 io.stderr,
-                "who: option is not supported on Windows: {spelling}"
+                "who: {}",
+                tr!(
+                    ctx,
+                    "command.who.error.unsupported_option",
+                    "option is not supported on Windows: {spelling}",
+                    spelling = spelling
+                )
             );
             return Ok(1);
         }
@@ -632,8 +639,13 @@ pub fn who_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if p.positionals.len() > 2 {
         let _ = writeln!(
             io.stderr,
-            "who: extra operand '{}'",
-            p.positionals[2].to_string_lossy()
+            "who: {}",
+            tr!(
+                ctx,
+                "command.who.error.extra_operand",
+                "extra operand '{operand}'",
+                operand = p.positionals[2].to_string_lossy()
+            )
         );
         let _ = writeln!(io.stderr, "Try 'who --help' for more information.");
         return Ok(1);
