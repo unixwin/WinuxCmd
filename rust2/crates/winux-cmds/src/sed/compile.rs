@@ -554,7 +554,11 @@ impl<'c> Compiler<'c> {
     }
 
     pub(crate) fn no_regex_error(&self) -> Fatal {
-        self.runtime_bad_prog(&i18n::text(self.ctx, "command.sed.error.no_regex", NO_REGEX))
+        self.runtime_bad_prog(&i18n::text(
+            self.ctx,
+            "command.sed.error.no_regex",
+            NO_REGEX,
+        ))
     }
 
     fn bad_command(&self, ch: i32) -> Fatal {
@@ -610,7 +614,11 @@ impl<'c> Compiler<'c> {
         if ch == b'}' as i32 || ch == b'#' as i32 {
             self.savchar(ch);
         } else if ch != EOF && ch != b'\n' as i32 && ch != b';' as i32 {
-            return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.excess_junk", EXCESS_JUNK)));
+            return Err(self.bad_prog(&i18n::text(
+                self.ctx,
+                "command.sed.error.excess_junk",
+                EXCESS_JUNK,
+            )));
         }
         Ok(())
     }
@@ -696,7 +704,11 @@ impl<'c> Compiler<'c> {
             self.line = info.line;
             self.expr_count = info.expr_count;
             self.cur = 0;
-            return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.excess_open_brace", EXCESS_OPEN_BRACE)));
+            return Err(self.bad_prog(&i18n::text(
+                self.ctx,
+                "command.sed.error.excess_open_brace",
+                EXCESS_OPEN_BRACE,
+            )));
         }
         if let Some(text) = self.pending_text.take() {
             if let Some(idx) = self.old_text_idx {
@@ -828,7 +840,11 @@ impl<'c> Compiler<'c> {
                             if buf[p] == b'\\' {
                                 p += 1;
                                 if p >= len || buf[p] != b'\\' {
-                                    return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.recursive_escape_c", RECURSIVE_ESCAPE_C)));
+                                    return Err(self.bad_prog(&i18n::text(
+                                        self.ctx,
+                                        "command.sed.error.recursive_escape_c",
+                                        RECURSIVE_ESCAPE_C,
+                                    )));
                                 }
                             }
                             p += 1;
@@ -930,7 +946,11 @@ impl<'c> Compiler<'c> {
     fn match_slash(&mut self, slash: i32, regex: bool) -> Result<Option<Vec<u8>>, Fatal> {
         let mut mb = MbState::default();
         if mb.is_mb(self.utf8, slash) {
-            return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.bad_delim", BAD_DELIM)));
+            return Err(self.bad_prog(&i18n::text(
+                self.ctx,
+                "command.sed.error.bad_delim",
+                BAD_DELIM,
+            )));
         }
         let mut mb = MbState::default();
         let mut b = Vec::new();
@@ -985,7 +1005,11 @@ impl<'c> Compiler<'c> {
 
     fn read_filename(&mut self) -> Result<Vec<u8>, Fatal> {
         if self.sandbox {
-            return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.disallowed_cmd", DISALLOWED_CMD)));
+            return Err(self.bad_prog(&i18n::text(
+                self.ctx,
+                "command.sed.error.disallowed_cmd",
+                DISALLOWED_CMD,
+            )));
         }
         let mut b = Vec::new();
         let mut ch = self.in_nonblank();
@@ -1000,7 +1024,11 @@ impl<'c> Compiler<'c> {
     fn get_write_file(&mut self) -> Result<usize, Fatal> {
         let name = self.read_filename()?;
         if name.is_empty() {
-            return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.missing_filename", MISSING_FILENAME)));
+            return Err(self.bad_prog(&i18n::text(
+                self.ctx,
+                "command.sed.error.missing_filename",
+                MISSING_FILENAME,
+            )));
         }
         if let Some(i) = self.prog.wfiles.iter().position(|f| f.name == name) {
             return Ok(i);
@@ -1047,7 +1075,11 @@ impl<'c> Compiler<'c> {
     fn get_read_file(&mut self) -> Result<usize, Fatal> {
         let name = self.read_filename()?;
         if name.is_empty() {
-            return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.missing_filename", MISSING_FILENAME)));
+            return Err(self.bad_prog(&i18n::text(
+                self.ctx,
+                "command.sed.error.missing_filename",
+                MISSING_FILENAME,
+            )));
         }
         if let Some(i) = self.prog.rfiles.iter().position(|f| f.name == name) {
             return Ok(i);
@@ -1080,31 +1112,51 @@ impl<'c> Compiler<'c> {
             match ch {
                 c if c == b'i' as i32 || c == b'I' as i32 => {
                     if self.posix == Posix::Basic {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.unknown_s_opt", UNKNOWN_S_OPT)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.unknown_s_opt",
+                            UNKNOWN_S_OPT,
+                        )));
                     }
                     icase = true;
                 }
                 c if c == b'm' as i32 || c == b'M' as i32 => {
                     if self.posix == Posix::Basic {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.unknown_s_opt", UNKNOWN_S_OPT)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.unknown_s_opt",
+                            UNKNOWN_S_OPT,
+                        )));
                     }
                     mline = true;
                 }
                 c if c == b'e' as i32 => {
                     if self.posix == Posix::Basic {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.unknown_s_opt", UNKNOWN_S_OPT)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.unknown_s_opt",
+                            UNKNOWN_S_OPT,
+                        )));
                     }
                     cmd.eval = true;
                 }
                 c if c == b'p' as i32 => {
                     if cmd.print != 0 {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.excess_p_opt", EXCESS_P_OPT)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.excess_p_opt",
+                            EXCESS_P_OPT,
+                        )));
                     }
                     cmd.print |= 1 << (cmd.eval as u8);
                 }
                 c if c == b'g' as i32 => {
                     if cmd.global {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.excess_g_opt", EXCESS_G_OPT)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.excess_g_opt",
+                            EXCESS_G_OPT,
+                        )));
                     }
                     cmd.global = true;
                 }
@@ -1114,11 +1166,19 @@ impl<'c> Compiler<'c> {
                 }
                 c if is_digit(c) => {
                     if cmd.numb != 0 {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.excess_n_opt", EXCESS_N_OPT)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.excess_n_opt",
+                            EXCESS_N_OPT,
+                        )));
                     }
                     cmd.numb = self.in_integer(c);
                     if cmd.numb == 0 {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.zero_n_opt", ZERO_N_OPT)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.zero_n_opt",
+                            ZERO_N_OPT,
+                        )));
                     }
                 }
                 c if c == b'}' as i32 || c == b'#' as i32 => {
@@ -1132,9 +1192,19 @@ impl<'c> Compiler<'c> {
                     if self.inchar() == b'\n' as i32 {
                         return Ok((icase, mline));
                     }
-                    return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.unknown_s_opt", UNKNOWN_S_OPT)));
+                    return Err(self.bad_prog(&i18n::text(
+                        self.ctx,
+                        "command.sed.error.unknown_s_opt",
+                        UNKNOWN_S_OPT,
+                    )));
                 }
-                _ => return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.unknown_s_opt", UNKNOWN_S_OPT))),
+                _ => {
+                    return Err(self.bad_prog(&i18n::text(
+                        self.ctx,
+                        "command.sed.error.unknown_s_opt",
+                        UNKNOWN_S_OPT,
+                    )))
+                }
             }
         }
     }
@@ -1230,7 +1300,11 @@ impl<'c> Compiler<'c> {
     ) -> Result<Option<usize>, Fatal> {
         if b.is_empty() {
             if icase || mline {
-                return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.bad_modif", BAD_MODIF)));
+                return Err(self.bad_prog(&i18n::text(
+                    self.ctx,
+                    "command.sed.error.bad_modif",
+                    BAD_MODIF,
+                )));
             }
             return Ok(None);
         }
@@ -1307,7 +1381,13 @@ impl<'c> Compiler<'c> {
             }
             let b = match self.match_slash(ch, true)? {
                 Some(b) => b,
-                None => return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.unterm_addr_re", UNTERM_ADDR_RE))),
+                None => {
+                    return Err(self.bad_prog(&i18n::text(
+                        self.ctx,
+                        "command.sed.error.unterm_addr_re",
+                        UNTERM_ADDR_RE,
+                    )))
+                }
             };
             let (mut icase, mut mline) = (false, false);
             loop {
@@ -1423,7 +1503,11 @@ impl<'c> Compiler<'c> {
             };
             if let Some(a) = self.compile_address(ch)? {
                 if matches!(a.kind, AddrType::Step | AddrType::StepMod) {
-                    return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.bad_step", BAD_STEP)));
+                    return Err(self.bad_prog(&i18n::text(
+                        self.ctx,
+                        "command.sed.error.bad_step",
+                        BAD_STEP,
+                    )));
                 }
                 cmd.a1 = Some(a);
                 ch = self.in_nonblank();
@@ -1431,7 +1515,13 @@ impl<'c> Compiler<'c> {
                     let c2 = self.in_nonblank();
                     match self.compile_address(c2)? {
                         Some(a2) => cmd.a2 = Some(a2),
-                        None => return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.bad_comma", BAD_COMMA))),
+                        None => {
+                            return Err(self.bad_prog(&i18n::text(
+                                self.ctx,
+                                "command.sed.error.bad_comma",
+                                BAD_COMMA,
+                            )))
+                        }
                     }
                     ch = self.in_nonblank();
                 }
@@ -1446,14 +1536,22 @@ impl<'c> Compiler<'c> {
                             .unwrap_or(false)
                         || self.posix == Posix::Basic)
                 {
-                    return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.invalid_line_0", INVALID_LINE_0)));
+                    return Err(self.bad_prog(&i18n::text(
+                        self.ctx,
+                        "command.sed.error.invalid_line_0",
+                        INVALID_LINE_0,
+                    )));
                 }
             }
             if ch == b'!' as i32 {
                 cmd.bang = true;
                 ch = self.in_nonblank();
                 if ch == b'!' as i32 {
-                    return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.bad_bang", BAD_BANG)));
+                    return Err(self.bad_prog(&i18n::text(
+                        self.ctx,
+                        "command.sed.error.bad_bang",
+                        BAD_BANG,
+                    )));
                 }
             }
             if self.posix == Posix::Basic {
@@ -1465,17 +1563,29 @@ impl<'c> Compiler<'c> {
                     return Err(self.bad_command(ch));
                 }
                 if matches!(c, b'a' | b'i' | b'l' | b'=' | b'r') && cmd.a2.is_some() {
-                    return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.one_addr", ONE_ADDR)));
+                    return Err(self.bad_prog(&i18n::text(
+                        self.ctx,
+                        "command.sed.error.one_addr",
+                        ONE_ADDR,
+                    )));
                 }
             }
             if ch == EOF {
-                return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.no_command", NO_COMMAND)));
+                return Err(self.bad_prog(&i18n::text(
+                    self.ctx,
+                    "command.sed.error.no_command",
+                    NO_COMMAND,
+                )));
             }
             cmd.ch = ch as u8;
             match ch as u8 {
                 b'#' => {
                     if cmd.a1.is_some() {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.no_sharp_addr", NO_SHARP_ADDR)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.no_sharp_addr",
+                            NO_SHARP_ADDR,
+                        )));
                     }
                     let mut c = self.inchar();
                     if c == b'n' as i32 && self.first_script && self.line < 2 && self.cur == 2 {
@@ -1490,7 +1600,11 @@ impl<'c> Compiler<'c> {
                     let version = self.read_label();
                     let compared: &[u8] = if version.is_empty() { b"4.0" } else { &version };
                     if version_greater(compared, PACKAGE_VERSION.as_bytes()) {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.ancient_version", ANCIENT_VERSION)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.ancient_version",
+                            ANCIENT_VERSION,
+                        )));
                     }
                     self.posix = Posix::Extended;
                     continue;
@@ -1508,10 +1622,18 @@ impl<'c> Compiler<'c> {
                 }
                 b'}' => {
                     if self.blocks.is_empty() {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.excess_close_brace", EXCESS_CLOSE_BRACE)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.excess_close_brace",
+                            EXCESS_CLOSE_BRACE,
+                        )));
                     }
                     if cmd.a1.is_some() {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.no_close_brace_addr", NO_CLOSE_BRACE_ADDR)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.no_close_brace_addr",
+                            NO_CLOSE_BRACE_ADDR,
+                        )));
                     }
                     self.read_end_of_cmd()?;
                     let (open, _) = self.blocks.pop().expect("checked");
@@ -1519,7 +1641,11 @@ impl<'c> Compiler<'c> {
                 }
                 b'e' => {
                     if self.sandbox {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.disallowed_cmd", DISALLOWED_CMD)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.disallowed_cmd",
+                            DISALLOWED_CMD,
+                        )));
                     }
                     let c = self.in_nonblank();
                     if c == EOF || c == b'\n' as i32 {
@@ -1534,11 +1660,19 @@ impl<'c> Compiler<'c> {
                 }
                 b':' => {
                     if cmd.a1.is_some() {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.no_colon_addr", NO_COLON_ADDR)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.no_colon_addr",
+                            NO_COLON_ADDR,
+                        )));
                     }
                     let label = self.read_label();
                     if label.is_empty() {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.colon_lacks_label", COLON_LACKS_LABEL)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.colon_lacks_label",
+                            COLON_LACKS_LABEL,
+                        )));
                     }
                     self.labels.push((label.clone(), idx));
                     cmd.x = CmdX::Label(label);
@@ -1550,7 +1684,11 @@ impl<'c> Compiler<'c> {
                 }
                 b'Q' | b'q' | b'L' | b'l' => {
                     if matches!(ch as u8, b'Q' | b'q') && cmd.a2.is_some() {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.one_addr", ONE_ADDR)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.one_addr",
+                            ONE_ADDR,
+                        )));
                     }
                     let c = self.in_nonblank();
                     if is_digit(c) && self.posix != Posix::Basic {
@@ -1568,7 +1706,11 @@ impl<'c> Compiler<'c> {
                 b'r' => {
                     let b = self.read_filename()?;
                     if b.is_empty() {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.missing_filename", MISSING_FILENAME)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.missing_filename",
+                            MISSING_FILENAME,
+                        )));
                     }
                     let mut append = true;
                     if let Some(a1) = cmd.a1.as_mut() {
@@ -1589,11 +1731,23 @@ impl<'c> Compiler<'c> {
                     let slash = self.inchar();
                     let b = match self.match_slash(slash, true)? {
                         Some(b) => b,
-                        None => return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.unterm_s_cmd", UNTERM_S_CMD))),
+                        None => {
+                            return Err(self.bad_prog(&i18n::text(
+                                self.ctx,
+                                "command.sed.error.unterm_s_cmd",
+                                UNTERM_S_CMD,
+                            )))
+                        }
                     };
                     let b2 = match self.match_slash(slash, false)? {
                         Some(b) => b,
-                        None => return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.unterm_s_cmd", UNTERM_S_CMD))),
+                        None => {
+                            return Err(self.bad_prog(&i18n::text(
+                                self.ctx,
+                                "command.sed.error.unterm_s_cmd",
+                                UNTERM_S_CMD,
+                            )))
+                        }
                     };
                     let mut sub = Box::new(Subst {
                         regex: None,
@@ -1609,7 +1763,11 @@ impl<'c> Compiler<'c> {
                     let (icase, mline) = self.mark_subst_opts(&mut sub)?;
                     sub.regex = self.compile_regex(&b, icase, mline, sub.max_id + 1, false)?;
                     if sub.eval && self.sandbox {
-                        return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.disallowed_cmd", DISALLOWED_CMD)));
+                        return Err(self.bad_prog(&i18n::text(
+                            self.ctx,
+                            "command.sed.error.disallowed_cmd",
+                            DISALLOWED_CMD,
+                        )));
                     }
                     cmd.x = CmdX::Subst(sub);
                 }
@@ -1617,12 +1775,24 @@ impl<'c> Compiler<'c> {
                     let slash = self.inchar();
                     let b = match self.match_slash(slash, false)? {
                         Some(b) => b,
-                        None => return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.unterm_y_cmd", UNTERM_Y_CMD))),
+                        None => {
+                            return Err(self.bad_prog(&i18n::text(
+                                self.ctx,
+                                "command.sed.error.unterm_y_cmd",
+                                UNTERM_Y_CMD,
+                            )))
+                        }
                     };
                     let src = self.normalize_text(&b, TextKind::Buffer)?;
                     let b2 = match self.match_slash(slash, false)? {
                         Some(b) => b,
-                        None => return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.unterm_y_cmd", UNTERM_Y_CMD))),
+                        None => {
+                            return Err(self.bad_prog(&i18n::text(
+                                self.ctx,
+                                "command.sed.error.unterm_y_cmd",
+                                UNTERM_Y_CMD,
+                            )))
+                        }
                     };
                     let dst = self.normalize_text(&b2, TextKind::Buffer)?;
                     let t = self.build_translate(&src, &dst)?;
@@ -1634,7 +1804,11 @@ impl<'c> Compiler<'c> {
             self.prog.cmds.push(cmd);
         }
         if self.posix == Posix::Basic && self.pending_text.is_some() {
-            return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.incomplete_cmd", INCOMPLETE_CMD)));
+            return Err(self.bad_prog(&i18n::text(
+                self.ctx,
+                "command.sed.error.incomplete_cmd",
+                INCOMPLETE_CMD,
+            )));
         }
         Ok(())
     }
@@ -1643,13 +1817,21 @@ impl<'c> Compiler<'c> {
     /// `read_text_to_slash`), `c` = first non-blank after the letter.
     fn read_text_cmd(&mut self, cmd: &mut Cmd, idx: usize, mut c: i32) -> Result<(), Fatal> {
         if c == EOF {
-            return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.expected_slash", EXPECTED_SLASH)));
+            return Err(self.bad_prog(&i18n::text(
+                self.ctx,
+                "command.sed.error.expected_slash",
+                EXPECTED_SLASH,
+            )));
         }
         if c == b'\\' as i32 {
             c = self.inchar();
         } else {
             if self.posix == Posix::Basic {
-                return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.expected_slash", EXPECTED_SLASH)));
+                return Err(self.bad_prog(&i18n::text(
+                    self.ctx,
+                    "command.sed.error.expected_slash",
+                    EXPECTED_SLASH,
+                )));
             }
             self.savchar(c);
             c = b'\n' as i32;
@@ -1675,7 +1857,11 @@ impl<'c> Compiler<'c> {
         let s = self.split_chars(src);
         let d = self.split_chars(dst);
         if s.len() != d.len() {
-            return Err(self.bad_prog(&i18n::text(self.ctx, "command.sed.error.y_cmd_len", Y_CMD_LEN)));
+            return Err(self.bad_prog(&i18n::text(
+                self.ctx,
+                "command.sed.error.y_cmd_len",
+                Y_CMD_LEN,
+            )));
         }
         let single = s.iter().chain(d.iter()).all(|c| c.len() == 1);
         let trans = if single {

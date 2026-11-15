@@ -456,7 +456,11 @@ pub fn sed_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     if files.is_empty() {
         if in_place.is_some() {
-            let msg = tr!(ctx, "command.sed.error.no_input_files", "sed: no input files");
+            let msg = tr!(
+                ctx,
+                "command.sed.error.no_input_files",
+                "sed: no input files"
+            );
             let _ = writeln!(io.stderr, "{msg}");
             return Ok(4);
         }

@@ -414,8 +414,14 @@ fn native_parent(path: &str) -> Option<String> {
 /// temp-file command (mktemp, …) to a non-existent Windows path (the CI
 /// gate's mk16-p-dir finding). The C++ tmp_base_w reads the Windows env
 /// block the same way and trusts it; we keep niubash#94's priority but
-/// fall through a value that cannot name a Windows directory. If every
-/// candidate is POSIX-spelled, the caller's no-tmpdir path applies.
+/// fall through a value that cannot name a Windows directory. When every
+/// candidate is POSIX-spelled — the gate-shard env is exactly that
+/// (TMPDIR unset, TEMP/TMP = /tmp) — niubash#94's intent ("a usable
+/// per-user temporary namespace") is served by the Windows default
+/// per-user temp path via GetTempPathW, which itself skips candidates
+/// that do not exist, landing on USERPROFILE when TMP/TEMP are unusable.
+/// This reads process state, which the library otherwise never does; it
+/// is confined to this last-resort arm and documented here on purpose.
 pub fn tmp_base(env: &dyn EnvSource) -> Option<String> {
     for name in ["TMPDIR", "TEMP", "TMP"] {
         if let Some(v) = win32_env_get(env, name) {
@@ -425,7 +431,28 @@ pub fn tmp_base(env: &dyn EnvSource) -> Option<String> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        const BUF: u32 = 1 << 13;
+        let mut buf = vec![0u16; BUF as usize];
+        // SAFETY: fills a caller-owned buffer; the returned count excludes
+        // the terminator and is bounded by the buffer we passed.
+        let n = unsafe { win32_get_temp_path_w(BUF, buf.as_mut_ptr()) };
+        if n > 0 && (n as usize) <= buf.len() {
+            let s = String::from_utf16_lossy(&buf[..n as usize]);
+            if !s.is_empty() {
+                return Some(nativeize_base(&s));
+            }
+        }
+    }
     None
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    #[link_name = "GetTempPathW"]
+    fn win32_get_temp_path_w(nbufferlength: u32, buffer: *mut u16) -> u32;
 }
 
 /// native_path.cppm:184 home_parent_w: /home is the parent of the user's
@@ -924,10 +951,25 @@ mod tests {
         let e = env(&[("WINUXSH_ROOT", r"D:\r"), ("TMP", r"C:\k")]);
         assert_eq!(shell_tree_map(&e, "/tmp/x").as_deref(), Some(r"C:\k\x"));
 
-        // no tmp base configured: /tmp is NOT part of the shell tree
+        // No tmp base in the env: niubash#94's intent ("a usable per-user
+        // temporary namespace") falls to the Windows default per-user temp
+        // path via GetTempPathW — a Git Bash parent exports TEMP=/tmp,
+        // which the priority skip rejects (mk16-p-dir: the CI gate's GNU
+        // leg had a real /tmp and the rust2 side did not). The fallback
+        // must name a Windows path, never a POSIX spelling.
         let e = env(&[("WINUXSH_ROOT", r"D:\r")]);
-        assert_eq!(shell_tree_map(&e, "/tmp"), None);
-        assert_eq!(shell_tree_map(&e, "/tmp/x"), None);
+        let mapped = shell_tree_map(&e, "/tmp").as_deref().unwrap_or_default();
+        assert!(
+            !mapped.is_empty(),
+            "GetTempPathW fallback must yield a base"
+        );
+        assert!(mapped.contains(':'), "Windows path expected: {mapped}");
+        assert!(!mapped.starts_with('/'), "no POSIX-form fallback: {mapped}");
+        let mapped_x = shell_tree_map(&e, "/tmp/x").as_deref().unwrap_or_default();
+        assert!(
+            mapped_x.contains(':') && !mapped_x.starts_with('/'),
+            "{mapped_x}"
+        );
     }
 
     // ---- /home (native_path.cppm:269) ----

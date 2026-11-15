@@ -119,7 +119,12 @@ fn removes_a_file_and_aggregates() {
 fn directory_refusal_without_recursive() {
     let sc = ScratchCtx::new("rm-eisdir");
     dir(&sc, "d");
-    for args in [&["d"][..], &["-f", "d"][..], &["-i", "d"][..], &["-v", "d"][..]] {
+    for args in [
+        &["d"][..],
+        &["-f", "d"][..],
+        &["-i", "d"][..],
+        &["-v", "d"][..],
+    ] {
         let (r, _, err) = run(&sc, args);
         assert_eq!(r, 1, "{args:?}");
         assert_eq!(err, "rm: cannot remove 'd': Is a directory\n", "{args:?}");
@@ -494,10 +499,8 @@ fn preserve_root_refusals() {
 fn shell_root_operand_refusal() {
     // the configured native root is the same floor as '/'
     let mut sc = ScratchCtx::new("rm-shroot");
-    sc.env.set(
-        "WINUXSH_ROOT",
-        &sc.dir.to_string_lossy().into_owned(),
-    );
+    sc.env
+        .set("WINUXSH_ROOT", &sc.dir.to_string_lossy().into_owned());
     file(&sc, "f");
     let dir = sc.dir.to_string_lossy().into_owned();
     let (r, _, err) = run(&sc, &["-r", &dir]);
@@ -513,10 +516,7 @@ fn preserve_root_option_errors() {
     file(&sc, "f");
     let (r, _, err) = run(&sc, &["--preserve-root=x", "f"]);
     assert_eq!(r, 1);
-    assert_eq!(
-        err,
-        "rm: unrecognized --preserve-root argument: 'x'\n"
-    );
+    assert_eq!(err, "rm: unrecognized --preserve-root argument: 'x'\n");
     let (r, _, err) = run(&sc, &["--no-p", "f"]);
     assert_eq!(r, 1);
     assert_eq!(
@@ -661,7 +661,10 @@ fn dash_operand_and_hyphen_hint() {
     let (r, _, err) = run(&sc, &["-z"]);
     assert_eq!(r, 1);
     assert!(err.contains("invalid option -- 'z'"), "{err}");
-    assert!(err.contains("Try 'rm ./-z' to remove the file '-z'"), "{err}");
+    assert!(
+        err.contains("Try 'rm ./-z' to remove the file '-z'"),
+        "{err}"
+    );
     // a dash token naming no file gets no hint
     let (_, _, err) = run(&sc, &["-x"]);
     assert!(!err.contains("Try 'rm ./"), "{err}");
