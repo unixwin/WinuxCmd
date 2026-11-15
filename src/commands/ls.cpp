@@ -2941,9 +2941,29 @@ auto validate_arguments(const CommandContext<LS_OPTIONS.size()> &ctx)
  * @param find_data WIN32_FIND_DATAW structure
  * @return Permissions string in ls format
  */
+// Executable-extension heuristic of the shared Windows mode model —
+// the same set rust2 modemap::EXEC_EXTS carries (exe/com/bat/cmd), which
+// `test -x`, `find -perm/-executable` and `stat` all honor (#1777).
+auto is_executable_mode_name(std::wstring_view leaf) -> bool {
+  const size_t dot = leaf.find_last_of(L'.');
+  if (dot == std::wstring_view::npos || dot + 1 >= leaf.size()) {
+    return false;
+  }
+  const std::wstring_view ext = leaf.substr(dot + 1);
+  for (const std::wstring_view known : {L"exe", L"com", L"bat", L"cmd"}) {
+    if (ext.size() == known.size() &&
+        std::equal(ext.begin(), ext.end(), known.begin(),
+                   [](wchar_t a, wchar_t b) {
+                     return std::towlower(a) == std::towlower(b);
+                   })) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
- * @brief Get file permissions string (improved: simulate real Linux
- * permissions)
+ * @brief Get file permissions string
  * @param find_data WIN32_FIND_DATAW structure
  * @return Permissions string in ls format
  */
@@ -2967,24 +2987,39 @@ auto get_permissions_string(const WIN32_FIND_DATAW &find_data) -> std::string {
   const bool read_only =
       (find_data.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
   const char write_char = read_only ? '-' : 'w';
-  // [GNU] Device files are not executable: /dev/null shows "crw-rw-rw-".
-  const char exec_char = is_char_device ? '-' : 'x';
 
-  // Match Microsoft coreutils' Windows approximation:
-  // every non-link entry is readable and "searchable/executable" for all,
-  // while the read-only attribute removes the write bit triplet-wide.
+  // [GNU/MSYS] One permission model across the stat family (#1777,
+  // niubash#993 §3): the same mode the rust2 stat/find/test face
+  // computes — links 0777, character devices 0666, directories 0755,
+  // executable-extension files 0755, other regulars 0644 — with the
+  // read-only attribute clearing the write bits. Previously every
+  // entry rendered rwxrwxrwx, disagreeing with stat -c %a (0644) and
+  // test -x / find -perm (extension-judged) on the same file.
   perms[1] = 'r';
-  perms[2] = write_char;
-  perms[3] = exec_char;
   perms[4] = 'r';
-  perms[5] = write_char;
-  perms[6] = exec_char;
   perms[7] = 'r';
-  perms[8] = write_char;
-  perms[9] = exec_char;
+  if (is_char_device) {
+    perms[2] = 'w';
+    perms[5] = 'w';
+    perms[8] = 'w';
+  } else if (perms[0] == 'l') {
+    perms[2] = 'w';
+    perms[3] = 'x';
+    perms[5] = 'w';
+    perms[6] = 'x';
+    perms[8] = 'w';
+    perms[9] = 'x';
+  } else {
+    const bool exec_bits = perms[0] == 'd' ||
+                           is_executable_mode_name(find_data.cFileName);
+    perms[2] = write_char;
+    if (exec_bits) {
+      perms[3] = 'x';
+      perms[6] = 'x';
+      perms[9] = 'x';
+    }
+  }
 
-  // Handle hidden files (optional)
-  // Note: Keeping 10 characters for consistent formatting
   return std::string(perms, 10);
 }
 

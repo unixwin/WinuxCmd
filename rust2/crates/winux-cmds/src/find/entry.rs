@@ -55,14 +55,17 @@ impl Kind {
 
 /// Executable-extension heuristic of the Windows mode model (1.x C++
 /// find.cpp permission_mode / win32_executable, plus `.com` which the C++
-/// -executable test already honored).
+/// -executable test already honored). #1777: the single source is
+/// modemap::EXEC_EXTS so `find -perm/-executable`, `test -x`, `stat` and
+/// `ls -l` all answer the same set (`.ps1` dropped — it was never in
+/// `test -x`'s list).
 pub fn exec_ext(name: &[u8]) -> bool {
     let dot = match name.iter().rposition(|&b| b == b'.') {
         Some(d) => d,
         None => return false,
     };
     let ext = &name[dot + 1..];
-    ["exe", "com", "bat", "cmd", "ps1"]
+    crate::modemap::EXEC_EXTS
         .iter()
         .any(|e| ext.eq_ignore_ascii_case(e.as_bytes()))
 }
