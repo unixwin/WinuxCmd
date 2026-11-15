@@ -56,7 +56,6 @@ pub mod mkfifo;
 pub mod mknod;
 pub mod mktemp;
 pub mod modemap;
-pub mod mv;
 pub mod nice;
 pub mod nohup;
 
@@ -131,7 +130,6 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("chmod", chmod::chmod_cmd),
         ("chown", chown::chown_cmd),
         ("cp", cp::cp_cmd),
-        ("mv", mv::mv_cmd),
         ("df", df::df_cmd),
         ("base64", basenc::base64_cmd),
         ("base32", basenc::base32_cmd),
