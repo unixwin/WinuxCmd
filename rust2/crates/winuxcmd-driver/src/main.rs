@@ -301,16 +301,15 @@ fn run_direct(argv: &[std::ffi::OsString]) -> i32 {
                 Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
             }
         }
-    } else if name == "rm" {
-        // rm's tty flag is input metadata (GNU's isatty(0)) for the same
-        // reason: the library only sees the injected Io handles.
-        let meta = rm_stdin_meta();
-        match winux_cmds::rm::rm_with_meta(&args, &mut io, &ctx, &meta) {
-            Ok(s) => s as i32,
-            Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+        "rm" => {
+            // rm's tty flag is input metadata (GNU's isatty(0)) for the same
+            // reason: the library only sees the injected Io handles.
+            let meta = rm_stdin_meta();
+            match winux_cmds::rm::rm_with_meta(&args, &mut io, &ctx, &meta) {
+                Ok(s) => s as i32,
+                Err(_) => winux_core::ABI_FAILURE_STATUS as i32,
+            }
         }
-    } else {
-        match winux_cmds::dispatch(&name, &args, &mut io, &ctx) {
         // `isatty` facts and the stdout retime face are process-IO tier:
         // the driver composes them, the library receives metadata.
         "tty" => {
