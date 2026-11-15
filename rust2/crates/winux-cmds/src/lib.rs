@@ -50,6 +50,7 @@ pub mod id;
 pub mod join;
 pub mod ln;
 pub mod messages;
+pub mod ls;
 pub mod mkdir;
 pub mod mkfifo;
 pub mod mknod;
@@ -212,6 +213,11 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("pinky", pinky::pinky_cmd),
         // #1488 find lane: GNU findutils 4.9 find
         ("find", find::find_cmd),
+        // #1504 wave-J: GNU 9.4 ls on the 1.x Windows value model
+        // (reparse SYMLINK/MOUNT_POINT/LX tags, junction identity,
+        // FSCTL_GET_REPARSE_POINT targets, synthesized permission strings,
+        // no exec bit).
+        ("ls", ls::ls_cmd),
         // #1488: GNU findutils 4.9 xargs (shared childproc spawner family)
         ("xargs", xargs::xargs_cmd),
         // sed lane (#1488): GNU sed 4.9 on winux-regex

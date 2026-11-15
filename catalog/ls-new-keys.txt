@@ -1,0 +1,21 @@
+command.ls.error.ambiguous_argument	"ambiguous argument '{value}' for '{option}'"
+command.ls.error.ambiguous_option	"option '--{opt}' is ambiguous; possibilities: {list}"
+command.ls.error.cannot_access	"cannot access '{name}': {reason}"
+command.ls.error.cannot_open_dir	"cannot open directory '{name}': {reason}"
+command.ls.error.columns_width	'ignoring invalid width in environment variable COLUMNS: ‘{value}’'
+command.ls.error.dired_zero	'--dired and --zero are incompatible'
+command.ls.error.invalid_argument	"invalid argument '{value}' for '{option}'"
+command.ls.error.invalid_line_width	'invalid line width ‘{value}’'
+command.ls.error.invalid_option	"invalid option -- '{opt}'"
+command.ls.error.invalid_tab_size	"invalid tab size: '{value}'"
+command.ls.error.invalid_time_style_format	"invalid time style format '{value}'"
+command.ls.error.option_no_arg	"option '--{opt}' doesn't allow an argument"
+command.ls.error.option_requires_arg	"option '--{opt}' requires an argument"
+command.ls.error.short_requires_arg	"option requires an argument -- '{opt}'"
+command.ls.error.tabsize_env	'ignoring invalid tab size in environment variable TABSIZE: ‘{value}’'
+command.ls.error.time_style	"{kind} argument '{value}' for 'time style'\nValid arguments are:\n  - [posix-]full-iso\n  - [posix-]long-iso\n  - [posix-]iso\n  - [posix-]locale\n  - +FORMAT (e.g., +%H:%M) for a 'date'-style format"
+command.ls.error.try_help	"Try '{prog} --help' for more information."
+command.ls.error.unrecognized_option	"unrecognized option '--{opt}'"
+command.ls.error.valid_arguments	'Valid arguments are:'
+command.ls.error.write_error	'write error'
+command.ls.total	'total '
