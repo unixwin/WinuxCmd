@@ -20,6 +20,18 @@ mkdir -p "$OUT"
 LEDGER="$OUT/ledger.tsv"
 : > "$LEDGER"
 
+# Second-volume root for the mv EXDEV rows: a Windows-absolute path on the
+# system volume (the checkout usually lives elsewhere), overridable with
+# MV_XDEV_BASE.  Both exe sides receive the same spelling; the GNU side sees
+# it as a relative path, where those rows only record rc.
+if [ -z "${MV_XDEV_BASE:-}" ]; then
+  _tmp_win=$(cygpath -m "${LOCALAPPDATA:-C:/Windows/Temp}/Temp" 2>/dev/null)
+  MV_XDEV_BASE="${_tmp_win:-C:/Windows/Temp}/winuxcmd-mv-xdev"
+fi
+XDEV_BASE="$MV_XDEV_BASE"
+XDEV_FILE="$XDEV_BASE/file"
+XDEV_DIR="$XDEV_BASE/dir"
+
 # Fixture scratch: setup_fixture runs in the script's cwd, and some cases
 # CREATE files the table calls "missing" (truncate -s on a fresh name), so
 # the cwd is state, not neutral ground. Run each side in its own scratch
@@ -255,6 +267,40 @@ setup_fixture() {
     mknod)
       rm -rf w4* nodir
       printf x > w4reg; mkdir w4dir ;;
+
+    mv)
+      # wave-mv fixture (#1488 mv wire): plain files with distinct contents,
+      # a directory tree, an empty dir, a full dir, a read-only destination,
+      # a hard-linked pair, per-operand dirs for the just-created refusal,
+      # an unprivileged junction (mklink /J) and a second-volume target for
+      # the EXDEV copy+remove fallback.  Relative names only (MSYS must not
+      # rewrite them); $XDEV_BASE is a Windows-absolute path on C:.
+      cmd /c "rmdir mvjunc" >/dev/null 2>&1 || true
+      rm -rf mva mvb mvf mvd mved mvdfull mvsfull mvdst mvro mvha mvhb \
+             mvafx mvbfx mvjunc mvFile.txt mvout mvtnew mvnodir mvnodir2 \
+             mve mvx mvd~ mvf~ mvdst~ mvdst.bak mvdst.~1~ mvd.~1~ mvdst.~2~ \
+             "$XDEV_BASE" 2>/dev/null || true
+      printf 'A\n' > mva
+      printf 'B\n' > mvb
+      printf 'F\n' > mvf
+      printf 'OLD\n' > mvdst
+      printf 'R\n' > mvro
+      printf 'H\n' > mvha
+      ln mvha mvhb 2>/dev/null || cmd /c "mklink /H mvhb mvha" >/dev/null 2>&1 || cp mvha mvhb
+      mkdir -p mvd mved mvdfull mvsfull/sub mvafx mvbfx
+      printf 'X\n' > mvdfull/x
+      printf 'S\n' > mvsfull/f
+      printf 'Y\n' > mvsfull/sub/g
+      printf '1\n' > mvafx/f
+      printf '2\n' > mvbfx/f
+      printf 'CASE\n' > mvFile.txt
+      touch -t 202001010000 mva
+      touch -t 202101010000 mvdst
+      chmod 444 mvro 2>/dev/null || cmd /c "attrib +R mvro" >/dev/null 2>&1
+      cmd /c "mklink /J mvjunc mvd" >/dev/null 2>&1 || ln -s mvd mvjunc
+      # The second-volume parent has to exist: mv never creates parents, and
+      # this row exercises the EXDEV copy+remove fallback, not ENOENT.
+      if [ "$MODE" = exe ]; then mkdir -p "$XDEV_BASE" 2>/dev/null; fi ;;
 
     *) : ;;
   esac
@@ -1757,6 +1803,73 @@ TABLE
 60|||-r:cps:cpd/cps
 TABLE
       ;;
+    mv)
+      cat <<'TABLE'
+01|||mva:mvout
+02|||-v:mva:mvout
+03|||mva:mvd
+04|||-v:mva:mvd
+05|||mva:mvb:mvd
+06|||mvsfull:mvse
+07|||mvsfull:mved
+08|||-t:mvd:mva:mvb
+09|||-v:-t:mvd:mva
+10|||-T:mva:mvtnew
+11|||-T:mva:mved
+12|||-T:mvsfull:mved
+13|||-T:mvsfull:mvdfull
+14|||mvsfull:mvf
+15|||-v:mvsfull:mvf
+16|||mva:mva
+17|||mva:./mva
+18|||mvha:mvhb
+19|||mva/:mvout
+20|||mva:mvnodir/
+21|||mva:mvd/
+22|||mvd/:mved
+23|||mvd:mvd
+24|||mvd:mvd/sub
+25|||mvnope:mvout
+26|||mva:mvnope:mvd
+27|||mva:mvb:mvf
+28|||mva:mvb:mvnodir2
+29|||-f:mva:mvdst
+30||n|-i:mva:mvdst
+31||y|-i:mva:mvdst
+32|||-i:mva:mvdst
+33|||-n:mva:mvdst
+34|||-u:mva:mvdst
+35|||-u:mvb:mvdst
+36|||-b:mva:mvdst
+37|||-v:-b:mva:mvdst
+38|||-b:-S:.bak:mva:mvdst
+39|||-b:--backup=numbered:mva:mvdst
+40|||--debug:mva:mvout
+41|||--strip-trailing-slashes:mva/:mvout
+42|||--strip-trailing-slashes:mva:mvnodir/
+43|||-Z:mva:mvout
+44|||--exchange:mva:mvdst
+45|||--bogus:mva:mvout
+46|||-t:mvf:mva
+47|||-t:mvnodir:mva
+48|||.:mvx
+49|||mved:.
+50|||mva:mvro
+51||n|-i:mva:mvro
+52|||-b:mvafx/f:mvbfx/f:mvd
+53|||-bT:mva:mved
+54|||-v:mvsfull:mved
+55|||mvd//:mve
+56|||-v:mvjunc:mvout
+57|||mvd:mvjunc
+58|||@EMPTY@:mvout
+59|||mva:@EMPTY@
+60|||--update=none:mva:mvdst
+61|||-n:mva:mva
+62|||mva:@XDEV@
+63|||mvsfull:@XDEVDIR@
+TABLE
+      ;;
     nice)
       cat <<'TABLE'
 01|||
@@ -1828,7 +1941,12 @@ while IFS='|' read -r id envspec stdin_data argspec <&3; do
   if [ "${#args[@]}" -eq 1 ] && [ -z "${args[0]}" ]; then args=(); fi
   local_i=0
   for local_i in "${!args[@]}"; do
-    [ "${args[$local_i]}" = "@EMPTY@" ] && args[$local_i]=""
+    case "${args[$local_i]}" in
+      @EMPTY@) args[$local_i]="" ;;
+      # Second-volume targets for the mv EXDEV rows (defined above).
+      @XDEV@) args[$local_i]="$XDEV_FILE" ;;
+      @XDEVDIR@) args[$local_i]="$XDEV_DIR" ;;
+    esac
   done
   setup_fixture
   run_case "$CMD" "$id" "$envspec" "$stdin_data" "${args[@]+"${args[@]}"}"

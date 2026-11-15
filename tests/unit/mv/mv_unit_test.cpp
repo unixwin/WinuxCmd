@@ -100,8 +100,12 @@ TEST(mv, mv_mixed_windows_posix_operand_forms_all_succeed) {
   }
 }
 
-// [GNU] copy.c:2091: moving a directory into itself fails with
-// "cannot copy a directory, X, into itself, Y" instead of recursing.
+// [GNU] copy.c:2091: moving a directory into itself fails instead of
+// recursing. #1764 re-pin: the retired C++ mv reported "cannot copy a
+// directory, X, into itself, Y"; GNU coreutils 9.4 (WSL probe
+// 2026-11-15, `mv dir dir/sub`) reports
+// "cannot move 'dir' to a subdirectory of itself, 'dir/sub'", rc 1 —
+// the rust2 port emits the GNU wording.
 TEST(mv, mv_directory_into_itself_reports_error) {
   TempDir tmp;
   std::filesystem::create_directories(tmp.path / "dir");
@@ -115,16 +119,19 @@ TEST(mv, mv_directory_into_itself_reports_error) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("into itself") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("subdirectory of itself") !=
+              std::string::npos);
   // No runaway copy happened and the source is untouched.
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "dir" / "file.txt"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "dir" / "sub"));
 }
 
 // [GNU] A trailing separator on DEST names a directory operand; a missing
-// path or a regular file fails with "failed to access 'DEST': Not a
-// directory" (lib/targetdir.c target_directory_operand) and must not create
-// or overwrite the stripped name as a file.
+// path fails "cannot move 'src.txt' to 'missing/': Not a directory" and an
+// existing regular file fails "cannot stat 'existing.txt/': Not a
+// directory" (WSL probe, coreutils 9.4, 2026-11-15 — both rc 1, source
+// untouched). #1764 re-pin: the retired C++ mv reported "failed to
+// access 'DEST'"; the rust2 port emits the GNU 9.4 wording.
 TEST(mv, mv_trailing_slash_destination_not_directory_reports_error) {
   TempDir tmp;
   tmp.write("src.txt", "payload");
@@ -137,7 +144,8 @@ TEST(mv, mv_trailing_slash_destination_not_directory_reports_error) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("failed to access") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("cannot move 'src.txt' to 'missing/'") !=
+              std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "src.txt"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "missing"));
 
@@ -357,6 +365,12 @@ TEST(mv, mv_bare_interactive_long_option_prompts_like_always) {
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
 }
 
+// #1764 re-pin: the retired C++ mv accepted --interactive=WHEN and
+// rejected unknown values with "invalid argument 'maybe'". GNU coreutils
+// 9.4 mv takes NO argument for --interactive at all — WSL probe
+// 2026-11-15: `mv --interactive=maybe source.txt dest.txt` ->
+// "mv: option '--interactive' doesn't allow an argument" + Try-help, rc 1
+// (identical for =always/=none/=once/=<empty>).
 TEST(mv, mv_invalid_interactive_mode_fails) {
   TempDir tmp;
   tmp.write("source.txt", "new content");
@@ -369,7 +383,8 @@ TEST(mv, mv_invalid_interactive_mode_fails) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_NE(r.stderr_text.find("invalid argument 'maybe'"), std::string::npos);
+  EXPECT_NE(r.stderr_text.find("doesn't allow an argument"),
+            std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "source.txt"));
   EXPECT_EQ(tmp.read("dest.txt"), "old content");
 }
@@ -469,6 +484,11 @@ TEST(mv, mv_readonly_destination_no_prompt_on_non_tty) {
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "src.txt"));
 }
 
+// #1764 re-pin ([DIFFERS] in the mv lane): --exchange is a GNU 9.5
+// addition; coreutils 9.4 has no such option. WSL probe 2026-11-15:
+// `mv --exchange a.txt b.txt` -> "mv: unrecognized option '--exchange'"
+// + Try-help, rc 1, both files untouched. The 9.5 swap semantics the
+// retired C++ mv implemented are intentionally NOT kept.
 TEST(mv, mv_exchange_swaps_two_files) {
   TempDir tmp;
   tmp.write("a.txt", "AAA");
@@ -480,11 +500,15 @@ TEST(mv, mv_exchange_swaps_two_files) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(tmp.read("a.txt"), "BBB");
-  EXPECT_EQ(tmp.read("b.txt"), "AAA");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("unrecognized option '--exchange'"),
+            std::string::npos);
+  EXPECT_EQ(tmp.read("a.txt"), "AAA");
+  EXPECT_EQ(tmp.read("b.txt"), "BBB");
 }
 
+// #1764 re-pin ([DIFFERS]): same GNU 9.4 probe as the two-file arm —
+// `mv --exchange d1 d2` -> "unrecognized option '--exchange'", rc 1.
 TEST(mv, mv_exchange_swaps_directories) {
   TempDir tmp;
   std::filesystem::create_directory(tmp.path / "d1");
@@ -498,11 +522,16 @@ TEST(mv, mv_exchange_swaps_directories) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(tmp.read("d1/g.txt"), "two");
-  EXPECT_EQ(tmp.read("d2/f.txt"), "one");
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("unrecognized option '--exchange'"),
+            std::string::npos);
+  EXPECT_EQ(tmp.read("d1/f.txt"), "one");
+  EXPECT_EQ(tmp.read("d2/g.txt"), "two");
 }
 
+// #1764 re-pin ([DIFFERS]): same GNU 9.4 probe — `mv --exchange a.txt
+// nonexist` -> "unrecognized option '--exchange'", rc 1 (the option is
+// rejected before operand validation, so no ENOENT).
 TEST(mv, mv_exchange_missing_operand_fails) {
   TempDir tmp;
   tmp.write("a.txt", "AAA");
@@ -514,7 +543,8 @@ TEST(mv, mv_exchange_missing_operand_fails) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("No such file or directory"), std::string::npos);
+  EXPECT_NE(r.stderr_text.find("unrecognized option '--exchange'"),
+            std::string::npos);
   EXPECT_EQ(tmp.read("a.txt"), "AAA");
 }
 
@@ -1042,6 +1072,11 @@ TEST(mv, issue1726_empty_source_cannot_stat) {
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "dst.txt"));
 }
 
+// #1764 re-pin: the retired C++ mv reported "cannot copy 'a.txt' to ''".
+// GNU coreutils 9.4 (WSL probe 2026-11-15, `mv a.txt ''`) reports
+// "mv: cannot overwrite directory '' with non-directory", rc 1 — the
+// empty operand stats as a directory-shaped destination failure, and
+// the rust2 port emits the GNU wording.
 TEST(mv, issue1726_empty_destination_fails_without_moving) {
   TempDir tmp;
   tmp.write("a.txt", "A");
@@ -1054,6 +1089,7 @@ TEST(mv, issue1726_empty_destination_fails_without_moving) {
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_CONTAINS(r.stderr_text, "cannot copy 'a.txt' to ''");
+  EXPECT_CONTAINS(r.stderr_text,
+                  "cannot overwrite directory '' with non-directory");
   EXPECT_EQ(tmp.read("a.txt"), "A");
 }
