@@ -117,10 +117,12 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
         }
     }
 
-    /// API path for reading/opening SOURCE-side entries: the LX chain is
-    /// expanded because Win32 cannot traverse the tag (GNU stat/open do).
+    /// API path for reading/opening SOURCE-side entries: the link chain is
+    /// expanded because Win32 cannot traverse the LX tag and misreports a
+    /// file-flagged directory symlink as a non-directory (#1647/#1693, the
+    /// GNU stat/open-do-follow rule).
     pub fn api_read(&self, name: &str) -> String {
-        winfs::expand_lx(self.ctx, &self.api(name))
+        winfs::expand_for_follow(self.ctx, &self.api(name))
     }
 
     /// API path for creating/writing DESTINATION-side entries.  A valid LX
