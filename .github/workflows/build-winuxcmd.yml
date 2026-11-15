@@ -637,6 +637,12 @@ jobs:
         shell: bash
         env:
           GATE_GNU_REMOTE_ROOT: /tmp/winuxcmd-gate-shard-${{ matrix.shard }}
+          # Git Bash (MSYS2) rewrites leading-slash argv for native spawns:
+          # without this, wsl.exe receives D:/Git/usr/bin/bash for /bin/bash
+          # and the preflight dies before the distro is ever reached (the
+          # same class run-gate.sh guards internally since #1721).
+          MSYS_NO_PATHCONV: 1
+          MSYS2_ARG_CONV_EXCL: "*"
         run: |
           set -o pipefail
           progs=""
