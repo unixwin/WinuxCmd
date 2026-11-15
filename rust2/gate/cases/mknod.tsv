@@ -9,7 +9,7 @@
 # --help/--version branded product surface (mkfifo precedent).
 mn01-fifo	strict				mp	p
 mn02-fifo-mode	strict				-m	600	m6	p
-mn03-fifo-exists	strict	mkfifo mp			mp	p
+mn03-fifo-exists	strict	printf x > mp			mp	p
 mn04-char-dev	win				mc	c	1	3
 mn05-block-dev	win				mb	b	7	0
 mn06-u-dev	win				mu	u	1	5

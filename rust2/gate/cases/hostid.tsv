@@ -16,7 +16,7 @@ ho13-short-version	win				-V
 ho14-double-dash-help	win				--	--help
 ho15-bogus-after-operand	exit				xyz	--bogus
 ho16-numeric-operand	exit				12345
-ho17-flagish-operand	exit				--
+ho17-flagish-operand	win				--
 ho18-path-operand	exit				/no/such/file
 ho19-bogus-eq	exit				--bogus=1
 ho20-upper-operand	exit				HOST
