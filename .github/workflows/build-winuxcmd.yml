@@ -690,6 +690,7 @@ jobs:
             rust2/target/gate-${{ matrix.shard }}/ledger.tsv
             rust2/target/gate-${{ matrix.shard }}/ledger-posix.tsv
             rust2/target/gate-${{ matrix.shard }}/summary.txt
+            rust2/target/gate-${{ matrix.shard }}/rust-failed-stderr.txt
             rust2/target/gate-${{ matrix.shard }}/timing.tsv
             rust2/target/gate-${{ matrix.shard }}/symlink-capability.txt
             rust2/target/gate-${{ matrix.shard }}/gnu-stderr-samples.txt
