@@ -3939,27 +3939,42 @@ cksum_rows = [
     ("ck30-l-over-max", "strict", "printf '123456789' > ck9", "", "",
      ["-a", "blake2b", "-l", "520", "ck9"]),
     ("ck31-tag-explicit", "strict", "printf '123456789' > ck9", "", "", ["--tag", "ck9"]),
+    # #1767: -c fixtures are printf literals, never host-`cksum` output.
+    # The Windows gate sides resolve `cksum` to whatever is on PATH — on
+    # the CI runner that is Git Bash's coreutils 8.32, which rejects
+    # -a/--base64, so ok.lst/bad.lst/gone.lst/b64.lst/u.lst came out EMPTY
+    # there while WSL GNU 9.4 wrote real lines; both Windows impls then
+    # correctly rejected the empty lists (r_rc=1 vs g_rc=0/1 on
+    # ck32/33/34/36/46, ledger run 43679496077). Literal fixtures are
+    # byte-identical on every side; the constants are the probed GNU 9.4
+    # outputs (sha256('123456789')=15e2...eb225, its base64 form
+    # FeKw...siU=, crc=930766865 — oracle-verified 2026-11-15).
     ("ck32-check-ok", "strict",
-     "printf '123456789' > ck9; cksum -a sha256 ck9 > ok.lst", "", "", ["-c", "ok.lst"]),
+     "printf '123456789' > ck9; printf 'SHA256 (ck9) = 15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225\\n' > ok.lst", "", "", ["-c", "ok.lst"]),
     ("ck33-check-failed", "strict",
-     "printf '123456789' > ck9; cksum -a sha256 ck9 | sed 's/15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225/0000000000000000000000000000000000000000000000000000000000000000/' > bad.lst", "", "",
+     "printf '123456789' > ck9; printf 'SHA256 (ck9) = 0000000000000000000000000000000000000000000000000000000000000000\\n' > bad.lst", "", "",
      ["-c", "bad.lst"]),
     ("ck34-check-missing", "strict",
-     "printf '123456789' > ck9; cksum -a sha256 ck9 | sed 's/(ck9)/(gone)/' > gone.lst", "", "",
+     "printf '123456789' > ck9; printf 'SHA256 (gone) = 15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225\\n' > gone.lst", "", "",
      ["-c", "gone.lst"]),
+    # ck35 keeps mode=exit but the fixture is now a WELL-FORMED wrong
+    # digest (was `sed s/<sha>/00/` -> `= 00`, a malformed line GNU rejects
+    # as improperly formatted; the row's name says FAILED, and GNU 9.4
+    # verifies ZERO64 as a real mismatch: --status stays fully silent,
+    # rc 1 — probed).
     ("ck35-check-status-failed", "exit",
-     "printf '123456789' > ck9; cksum -a sha256 ck9 | sed 's/15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225/00/' > bad.lst", "", "",
+     "printf '123456789' > ck9; printf 'SHA256 (ck9) = 0000000000000000000000000000000000000000000000000000000000000000\\n' > bad.lst", "", "",
      ["--status", "-c", "bad.lst"]),
     ("ck36-check-quiet-ok", "strict",
-     "printf '123456789' > ck9; cksum -a sha256 ck9 > ok.lst", "", "",
+     "printf '123456789' > ck9; printf 'SHA256 (ck9) = 15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225\\n' > ok.lst", "", "",
      ["--quiet", "-c", "ok.lst"]),
     ("ck37-check-ignore-missing", "strict",
-     "printf '123456789' > ck9; cksum -a sha256 ck9 | sed 's/(ck9)/(gone)/' > gone.lst", "", "",
+     "printf '123456789' > ck9; printf 'SHA256 (gone) = 15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225\\n' > gone.lst", "", "",
      ["--ignore-missing", "-c", "gone.lst"]),
     ("ck38-check-crc-lines-rejected", "strict",
-     "printf '123456789' > ck9; cksum ck9 > crc.lst", "", "", ["-c", "crc.lst"]),
+     "printf '123456789' > ck9; printf '930766865 9 ck9\\n' > crc.lst", "", "", ["-c", "crc.lst"]),
     ("ck39-check-untagged-rejected", "strict",
-     "printf '123456789' > ck9; cksum --untagged -a sha256 ck9 > u.lst", "", "",
+     "printf '123456789' > ck9; printf '15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225  ck9\\n' > u.lst", "", "",
      ["-c", "u.lst"]),
     ("ck40-check-garbage", "strict", "printf 'garbage\\n' > g.lst", "", "", ["-c", "g.lst"]),
     ("ck41-check-empty-list", "strict", ": > none.lst", "", "", ["-c", "none.lst"]),
@@ -3970,7 +3985,7 @@ cksum_rows = [
     ("ck45-multi-two-files-sha", "strict", "printf abc > a; printf ab > b", "", "",
      ["-a", "sha256", "a", "b"]),
     ("ck46-check-base64-ok", "strict",
-     "printf '123456789' > ck9; cksum --base64 -a sha256 ck9 > b64.lst", "", "",
+     "printf '123456789' > ck9; printf 'SHA256 (ck9) = FeKw08M4keuw8e9gnsQZQgwg4yDOlMZfvIwzEkSOsiU=\\n' > b64.lst", "", "",
      ["-c", "b64.lst"]),
 ]
 
