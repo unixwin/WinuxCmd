@@ -1757,7 +1757,15 @@ hostid_rows = [
     ("ho14-double-dash-help", "win", "", "", "", ["--", "--help"]),
     ("ho15-bogus-after-operand", "exit", "", "", "", ["xyz", "--bogus"]),
     ("ho16-numeric-operand", "exit", "", "", "", ["12345"]),
-    ("ho17-flagish-operand", "exit", "", "", "", ["--"]),
+    # ho17: `--` ends options, so hostid takes the same success path as
+    # ho01 — printing the machine id, a platform-bound value (win, like
+    # wa04-dashdash/gr02-dashdash-self). The GNU leg cannot score it in
+    # CI anyway: a fresh WSL distro lacks /etc/hostid, gethostid() falls
+    # back to gethostbyname_r() and the name-resolution stall exceeds the
+    # 10s timeout wrapper (g_rc=124, run 43679496077 ho01/ho17). The
+    # workflow seeds /etc/hostid for oracle honesty, but the row's gate
+    # is rust<->cpp parity on the `--` handling.
+    ("ho17-flagish-operand", "win", "", "", "", ["--"]),
     ("ho18-path-operand", "exit", "", "", "", ["/no/such/file"]),
     ("ho19-bogus-eq", "exit", "", "", "", ["--bogus=1"]),
     ("ho20-upper-operand", "exit", "", "", "", ["HOST"]),
@@ -3069,7 +3077,12 @@ NICE_CHILD_OK_SETUP = (
 )
 
 nice_rows = [
-    ("nc01-bare", "strict", "", "", "", []),
+    # nc01: bare nice prints the current niceness — a platform-bound value
+    # (the Windows sides report the priority-class mapping, so a hosted
+    # runner at BelowNormal prints 10 where the WSL oracle prints 0;
+    # run 43679496077). rc is a stable GNU signal (always 0), so exit mode
+    # keeps the oracle gate like mk19-default-template's random path.
+    ("nc01-bare", "exit", "", "", "", []),
     ("nc02-n-no-command", "strict", "", "", "", ["-n", "2"]),
     ("nc03-n-empty-child", "strict", "", "", "", ["-n", "", "true"]),
     ("nc04-n-abc-child", "strict", "", "", "", ["-n", "abc", "true"]),

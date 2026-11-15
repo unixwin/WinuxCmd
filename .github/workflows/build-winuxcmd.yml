@@ -633,6 +633,15 @@ jobs:
             Start-Sleep -Seconds 15
           }
           if (-not $ok) { throw 'WSL Ubuntu did not come up after 5 attempts' }
+          # hostid's gethostid() falls back to gethostbyname_r() when
+          # /etc/hostid is absent; on a fresh WSL distro the hostname may
+          # not resolve via files and the DNS path can stall past the
+          # gate's 10s timeout wrapper (run 43679496077: ho01/ho17
+          # g_rc=124). Seed a fixed /etc/hostid so the oracle's success
+          # path is deterministic; non-fatal — a failed seed only loses
+          # the hostid GNU leg, which win-mode rows do not score anyway.
+          wsl -d Ubuntu-24.04 -u root -- sh -c "printf 'G2H!' > /etc/hostid && chmod 0644 /etc/hostid"
+          if ($LASTEXITCODE -ne 0) { Write-Host 'hostid /etc/hostid seed failed (non-fatal); continuing' }
 
       # Fail loud BEFORE any row is scored: every program this shard drives
       # must resolve in the distro, and the distro's tools must actually be
@@ -653,7 +662,17 @@ jobs:
           set -o pipefail
           progs=""
           for c in ${{ matrix.commands }}; do
-            if [ "$c" != "--posix-mode" ]; then progs="$progs $c"; fi
+            case "$c" in
+              --posix-mode)
+                # the posix shard runs every cases-posix table; preflight
+                # the same program set run-gate.sh --posix-mode will drive
+                # (without this the shard died here with "no command
+                # names given" before any row was scored, run 43679496077)
+                for f in rust2/gate/cases-posix/*.tsv; do
+                  progs="$progs $(basename "$f" .tsv)"
+                done ;;
+              *) progs="$progs $c" ;;
+            esac
           done
           here=$(pwd)
           case "$here" in

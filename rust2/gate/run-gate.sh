@@ -131,7 +131,19 @@ if [ "$POSIX_MODE" -eq 1 ]; then
     # we set the neutral __RUBASH_SHELL_ROOT so no host NIU_ROOT can shadow
     # the fixture; TMPDIR must beat TEMP/TMP which it does by priority).
     POSIX_FIXENV="__RUBASH_SHELL_ROOT=$POSIX_ROOT,TMPDIR=$POSIX_TMP,HOME=$POSIX_HOME"
-    mkdir -p "$POSIX_ROOT/usr/bin" "$POSIX_TMP/var" "$POSIX_ART/home"
+    mkdir -p "$POSIX_ROOT/usr/bin" "$POSIX_TMP/var/tmp" "$POSIX_ART/home"
+    # Mirror the GNU-side sandbox prefixes (POSIX_GNU_PREFIXES): the GNU
+    # script pre-creates them before every case and removes them after, so
+    # a row touching a prefix before any `mkdir -p` setup materializes it
+    # must see the same tree shape on the Windows sides. Without this the
+    # first /tmp rows ran before mkp02's -p created the dir and pended
+    # (chp01/mkp01, posix ledger). Clean-then-create keeps reruns honest.
+    for p in "$POSIX_TMP/winuxcmd-gate-posix" \
+             "$POSIX_TMP/var/tmp/winuxcmd-gate-posix" \
+             "$POSIX_ART/home/winuxcmd-gate"; do
+        rm -rf "$p"
+        mkdir -p "$p"
+    done
     # /usr/bin/<applet> exe-fold cases need the leaf to exist under the root;
     # mirror the wired exes the way the real install root does.
     for leaf in seq echo; do
