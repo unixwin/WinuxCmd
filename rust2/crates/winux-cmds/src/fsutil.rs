@@ -124,14 +124,27 @@ pub fn resolve(ctx: &Ctx, operand: impl AsRef<Path>) -> PathBuf {
         let mapped = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, s);
         // only a claimed spelling changes the resolution — and only when
         // the result stands on its own (an absolute native path, or a
-        // device name Win32 resolves cwd-independently). Relative
-        // operands keep the ctx.cwd join so the OS-level trailing-
-        // separator semantics GNU relies on stay intact.
-        if mapped != s
-            && (Path::new(&mapped).is_absolute()
-                || winux_core::path::resolve_pseudo_device(s).is_some())
-        {
-            return literal_operand_path(&mapped);
+        // device name Win32 resolves cwd-independently). A RELATIVE
+        // rewrite that changed the NAME — the #1283 carrier-colon fold
+        // ("C:name" -> the U+F03A carrier file) — still names the
+        // operand: it joins the cwd exactly like the C++
+        // GetFullPathNameW(normalized) boundary did, never the raw argv
+        // spelling (which would lose the fold and stat a different
+        // name). A separator-only rewrite (the #1052 trailing-
+        // separator restore) keeps the caller's own spelling so the
+        // API-level errno surface GNU pins stays intact.
+        if mapped != s {
+            if Path::new(&mapped).is_absolute()
+                || winux_core::path::resolve_pseudo_device(s).is_some()
+            {
+                return literal_operand_path(&mapped);
+            }
+            if mapped.trim_end_matches(['/', '\\'])
+                != s.trim_end_matches(['/', '\\'])
+            {
+                let joined = ctx.cwd.join(&mapped);
+                return literal_operand_path(&joined.to_string_lossy());
+            }
         }
     }
     if p.is_absolute() {

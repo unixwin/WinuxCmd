@@ -31,7 +31,7 @@
 | M13 | 目录移入自身子目录 | rc=1；消息 `cannot move 'src' to a subdirectory of itself` | rc=1；消息写成 `cannot copy a directory, 'src', into itself`（mv 说 copy） | wording |
 | M14 | `--backup=numbered` | `existing.txt.~1~` | 一致 | 一致 |
 | M15 | `-b` | `existing.txt~` | 一致 | 一致 |
-| M16 | `--exchange` | **9.4 无此选项**（rc=1）；9.5 起支持 | 实现交换，rc=0 | 一致（GNU 9.5 语义，版本差） |
+| M16 | `--exchange` | **9.4 无此选项**（rc=1）；9.5 起支持 | rust2 mv 按 9.4 拒绝：`unrecognized option '--exchange'`，rc=1 **[DIFFERS]**（原 C++ 实现的 9.5 交换语义已退役，#1764 reland） | 一致（GNU 9.4 合同） |
 | M17 | 符号链接作为源 | 移动链接本身，不跟随 | 一致 | 一致 |
 | M18 | `-f` 覆盖只读目标 | 成功 | 一致 | 一致 |
 | M19 | `--update=none` | 跳过 | 一致 | 一致 |
@@ -55,7 +55,7 @@ fixture：`dir/{f.txt,sub/g.txt}`、`a.txt`（内容 `A\n`）。
 | #1326 | `-u` 恒压 `--update=` | 未直接覆盖（仅测 `-u` 单用）——列入后续 |
 | #1325 | 原始 argv 扫描误判 `-n/-i` | 通过（`-t` 值未误判；`-i`/`-n` 行为正确） |
 | #1365 | 跨卷移动把链接变副本 | 未覆盖（需跨卷） |
-| #1068 | `--exchange` 恒失败 | 现已实现（GNU 9.5 语义） |
+| #1068 | `--exchange` 恒失败 | rust2 mv 按 GNU 9.4 拒绝该选项（9.5 交换语义不再实现）[DIFFERS] |
 | #1140 | Windows 源 + POSIX 目标混合失败 | 未覆盖 |
 | #951 | 链接+斜杠源 | 未覆盖 |
 

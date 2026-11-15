@@ -2538,8 +2538,9 @@ fn shell_quote_display_name(name: &str, always: bool) -> String {
 
 /// shell_escape_quoting_style: like shell quoting but non-printable
 /// characters leave the quotes and render as $'\ooo' splices (probed 9.4:
-/// 'tab'$'\t''name').
-fn shell_escape_quote_display_name(name: &str, always: bool) -> String {
+/// 'tab'$'\t''name'). `always` is GNU's shell_escape_always_quoting_style —
+/// the quoteaf() shape mv/cp diagnostics use for operands (#374).
+pub(crate) fn shell_escape_quote_display_name(name: &str, always: bool) -> String {
     let mut quote = always;
     if !quote {
         for (i, c) in name.chars().enumerate() {
