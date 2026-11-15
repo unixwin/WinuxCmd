@@ -59,7 +59,8 @@ auto constexpr MAN_OPTIONS = std::array{
     OPTION("-H", "--html",
            "have groff produce HTML output and display it in a web "
            "browser [DIFFERS: not available on Windows]"),
-};
+    // [GNU] -V: version shorthand (probed: `man -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 REGISTER_COMMAND(man,
                  /* cmd_name */ "man",

@@ -60,7 +60,9 @@ auto constexpr STRINGS_OPTIONS = std::array{
     OPTION("-U", "--unicode",
            "unicode display mode (placeholder/no-op except non-default modes "
            "select UTF-8 scanning)",
-           STRING_TYPE)};
+           STRING_TYPE),
+    // [GNU] -V: version shorthand (probed: `strings -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace strings_pipeline {
 namespace cp = core::pipeline;

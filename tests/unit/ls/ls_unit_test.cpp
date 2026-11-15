@@ -3243,14 +3243,18 @@ TEST(ls, ls_version_sort) {
   EXPECT_LT(file2_pos, file10_pos);
 }
 
-TEST(ls, ls_dispatcher_version_flags_succeed) {
+TEST(ls, ls_version_flag_surface_matches_gnu_issue1714) {
+  // [GNU] #1714: GNU ls registers only --version; `ls -V` is
+  // "ls: invalid option -- 'V'" with rc 2. The dispatcher no longer
+  // rewrites -V to --version for applets that do not declare it.
   Pipeline short_flag;
   short_flag.add(L"ls.exe", {L"-V"});
   auto short_result = short_flag.run();
 
-  EXPECT_EQ(short_result.exit_code, 0);
-  EXPECT_NE(short_result.stdout_text.find("ls (WinuxCmd)"), std::string::npos);
-  EXPECT_TRUE(short_result.stderr_text.empty());
+  EXPECT_NE(short_result.exit_code, 0);
+  EXPECT_EQ(short_result.stdout_text.find("ls (WinuxCmd)"), std::string::npos);
+  EXPECT_NE(short_result.stderr_text.find("invalid option -- 'V'"),
+            std::string::npos);
 
   Pipeline long_flag;
   long_flag.add(L"ls.exe", {L"--version"});

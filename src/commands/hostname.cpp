@@ -47,7 +47,9 @@ auto constexpr HOSTNAME_OPTIONS = std::array{
            BOOL_TYPE),
     // [DIFFERS]
     OPTION("-n", "--node", "network node hostname (not supported on Windows)",
-           BOOL_TYPE)};
+           BOOL_TYPE),
+    // [GNU] -V: version shorthand (probed: `hostname -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 REGISTER_COMMAND(hostname, "hostname", "hostname [OPTION]...",
                  "Print or set system name.\n"

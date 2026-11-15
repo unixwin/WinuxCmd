@@ -27,7 +27,9 @@ auto constexpr UPTIME_OPTIONS = std::array{
     // [EXT] option
     OPTION("-p", "--pretty", "show uptime in pretty format", BOOL_TYPE),
     // [EXT] option
-    OPTION("-s", "--since", "system up since", BOOL_TYPE)};
+    OPTION("-s", "--since", "system up since", BOOL_TYPE),
+    // [GNU] -V: version shorthand (probed: `uptime -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace uptime_pipeline {
 namespace cp = core::pipeline;

@@ -43,7 +43,9 @@ auto constexpr HEXDUMP_OPTIONS = std::array{
     // [GNU]
     OPTION("-v", "", "display all input, no squeeze"),
     // [GNU] -L, --color: interpret color formatting specifiers
-    OPTION("-L", "--color", "interpret color formatting specifiers")};
+    OPTION("-L", "--color", "interpret color formatting specifiers"),
+    // [GNU] -V: version shorthand (probed: `hexdump -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace hexdump_pipeline {
 namespace cp = core::pipeline;

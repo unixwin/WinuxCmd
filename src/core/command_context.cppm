@@ -209,6 +209,18 @@ export auto option_policy_for_command(std::string_view command)
   if (command == "find") {
     policy.allow_long_options = false;
     policy.allow_unknown_short_options_as_positionals = true;
+    // #1718: findutils parses its own argv in one left-to-right pass, so
+    // an unknown predicate must be answered before a later malformed one.
+    // Any generic option pass runs earlier and would pre-empt the
+    // expression: `find . -foo -context` reported the ctx pre-parse's
+    // "option requires an argument -- 'c'" instead of GNU's
+    // "unknown predicate '-foo'", and `find . -name` the same getopt
+    // error instead of "missing argument to '-name'". Handing every token
+    // to find as an operand (the sed treatment) leaves the diagnostics to
+    // the wired 4.9-compatible expression parser in
+    // rust2/crates/winux-cmds/src/find/ (parse.rs handles -context by
+    // reporting "invalid predicate -context: SELinux is not enabled.").
+    policy.all_args_are_positionals = true;
   }
   return policy;
 }

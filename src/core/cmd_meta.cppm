@@ -225,13 +225,6 @@ auto has_option(std::span<const OptionMeta> options, std::string_view long_name)
   });
 }
 
-auto has_short_option(std::span<const OptionMeta> options,
-                      std::string_view short_name) -> bool {
-  return std::ranges::any_of(options, [short_name](const OptionMeta& opt) {
-    return opt.short_name == short_name;
-  });
-}
-
 auto synopsis_looks_like_usage(std::string_view name, std::string_view synopsis)
     -> bool {
   synopsis = trim_left_ascii(synopsis);
@@ -286,9 +279,15 @@ auto format_help_text(std::string_view name, std::string_view synopsis,
                                  OptionType::Bool);
   }
   if (!has_option(options, "--version")) {
-    display_options.emplace_back(
-        has_short_option(options, "-V") ? "" : "-V", "--version",
-        "output version information and exit", OptionType::Bool);
+    // [GNU] #1714: only the long --version spelling is synthesized. GNU
+    // coreutils' standard option parser registers no -V shorthand, so a
+    // help block advertising "-V, --version" would promise an option the
+    // dispatcher no longer intercepts (cksum/readlink/uniq/comm/join all
+    // print "invalid option -- 'V'"). Tools whose own table pairs -V with
+    // --version list that pair themselves.
+    display_options.emplace_back("", "--version",
+                                 "output version information and exit",
+                                 OptionType::Bool);
   }
 
   if (!display_options.empty()) {
@@ -396,11 +395,22 @@ auto format_man_text(std::string_view name, std::string_view synopsis,
     result += "\n";
   }
 
-  if (!options.empty()) {
+  // Mirror format_help_text: empty descriptions are parser sentinels,
+  // not user-facing options, and a declared --help/--version already
+  // appears in the OPTIONS list — synthesizing it again would print the
+  // entry twice (#1714: tables pairing -V with --version must not grow a
+  // second bare --version here).
+  std::vector<OptionMeta> display_options;
+  display_options.reserve(options.size());
+  for (const auto& opt : options) {
+    if (!opt.description.empty()) display_options.push_back(opt);
+  }
+
+  if (!display_options.empty()) {
     result += "OPTIONS\n";
 
     size_t max_option_width = 0;
-    for (const auto& opt : options) {
+    for (const auto& opt : display_options) {
       size_t width = 7;
       if (!opt.short_name.empty() && !opt.long_name.empty()) {
         width += opt.short_name.size() + 2 + opt.long_name.size();
@@ -412,7 +422,7 @@ auto format_man_text(std::string_view name, std::string_view synopsis,
       max_option_width = std::max(max_option_width, width);
     }
 
-    for (const auto& opt : options) {
+    for (const auto& opt : display_options) {
       result += "       ";
       if (!opt.short_name.empty() && !opt.long_name.empty()) {
         result += opt.short_name;
@@ -457,16 +467,20 @@ auto format_man_text(std::string_view name, std::string_view synopsis,
     result += "\n";
   }
 
-  result += "       --help\n";
-  result += "              " +
-            winux::i18n::translate("common.option.help",
-                                   "display this help and exit") +
-            "\n\n";
-  result += "       -V, --version\n";
-  result += "              " +
-            winux::i18n::translate("common.option.version",
-                                   "output version information and exit") +
-            "\n\n";
+  if (!has_option(options, "--help")) {
+    result += "       --help\n";
+    result += "              " +
+              winux::i18n::translate("common.option.help",
+                                     "display this help and exit") +
+              "\n\n";
+  }
+  if (!has_option(options, "--version")) {
+    result += "       --version\n";
+    result += "              " +
+              winux::i18n::translate("common.option.version",
+                                     "output version information and exit") +
+              "\n\n";
+  }
 
   if (!examples.empty()) {
     result += "EXAMPLES\n";

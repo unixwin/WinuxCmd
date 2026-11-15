@@ -1197,3 +1197,69 @@ TEST(winuxcmd, winuxcmd_mkdir_ambiguous_abbrev_before_version_issue1581) {
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_TRUE(r.stderr_text.find("is ambiguous") != std::string::npos);
 }
+
+// #1714: the dispatcher used to rewrite -V to --version for every applet.
+// GNU coreutils registers only the long --version spelling, so cksum,
+// readlink, uniq, comm, join (and the rest of the coreutils surface)
+// answer `-V` with "invalid option -- 'V'" and rc 1 (WSL GNU coreutils
+// 9.4 probe). Only commands whose own option table pairs -V with
+// --version may keep the shorthand.
+TEST(winuxcmd, winuxcmd_dash_v_is_not_a_global_version_alias_issue1714) {
+  for (const wchar_t* cmd :
+       {L"cksum", L"readlink", L"uniq", L"comm", L"join"}) {
+    Pipeline p;
+    p.add(L"winuxcmd.exe", {cmd, L"-V"});
+
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(r.stdout_text.empty());
+    EXPECT_TRUE(r.stderr_text.find("invalid option -- 'V'") !=
+                std::string::npos);
+    EXPECT_TRUE(r.stderr_text.find("WinuxCmd") == std::string::npos);
+  }
+}
+
+// #1714: --version stays a product-wide interception target, so the long
+// spelling still prints the banner and exits 0 on the same applets.
+TEST(winuxcmd, winuxcmd_long_version_still_intercepted_issue1714) {
+  for (const wchar_t* cmd :
+       {L"cksum", L"readlink", L"uniq", L"comm", L"join"}) {
+    Pipeline p;
+    p.add(L"winuxcmd.exe", {cmd, L"--version"});
+
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(r.stdout_text.rfind("WinuxCmd ", 0) == 0);
+    EXPECT_TRUE(r.stderr_text.empty());
+  }
+}
+
+// #1714: tools that really document -V keep it. procps w, free and
+// e2fsprogs lsattr all print their version block for -V.
+TEST(winuxcmd, winuxcmd_declared_dash_v_keeps_version_issue1714) {
+  for (const wchar_t* cmd : {L"w", L"free", L"lsattr"}) {
+    Pipeline p;
+    p.add(L"winuxcmd.exe", {cmd, L"-V"});
+
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(r.stdout_text.find("(WinuxCmd)") != std::string::npos);
+    EXPECT_TRUE(r.stderr_text.empty());
+  }
+}
+
+// #1714: the generated help must not advertise a -V shorthand for commands
+// that do not declare one; GNU coreutils help prints "      --version".
+TEST(winuxcmd, winuxcmd_help_does_not_advertise_dash_v_issue1714) {
+  Pipeline p;
+  p.add(L"winuxcmd.exe", {L"cksum", L"--help"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("--version") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("-V, --version") == std::string::npos);
+}

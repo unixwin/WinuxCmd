@@ -175,7 +175,13 @@ constexpr auto TOP_OPTIONS = std::array{
            "monitor only processes with given real user ID/name", STRING_TYPE),
     OPTION("-u", "--filter-only-euser",
            "monitor only processes with given user", STRING_TYPE),
-    OPTION("-v", "--version", "print version information"),
+    // [GNU] -V, --version: procps top.c's version spelling (probed:
+    // `top -V` prints "top from procps-ng ...")
+    OPTION("-V", "--version", "output version information and exit"),
+    // [EXT] -v: historical WinuxCmd alias of -V; kept hidden. procps top
+    // rejects -v ("top: invalid option -- 'v'") but dropping the alias
+    // would break existing WinuxCmd scripts.
+    OPTION("-v", "", "", BOOL_TYPE),
     OPTION("-w", "--width", "override output width", OPTIONAL_INT_TYPE),
     OPTION("", "--rows", "limit number of processes displayed", INT_TYPE),
     OPTION("", "--help", "display this help"),
@@ -1226,7 +1232,7 @@ auto check_help_version(const CommandContext<TOP_OPTIONS.size()>& ctx)
         "     --rows N       limit number of displayed processes\n"
         "\n"
         "     --help         display this help text, then exit\n"
-        " -v, --version      output version information & exit\n"
+        " -V, --version      output version information & exit\n"
         "\n"
         "For more details see top(1).\n";
     safePrint(cmd::meta::format_custom_help(
@@ -1234,7 +1240,7 @@ auto check_help_version(const CommandContext<TOP_OPTIONS.size()>& ctx)
     return true;  // Should exit
   }
 
-  // [EXT] -v, --version: print version information
+  // [GNU] -V, --version (+[EXT] -v alias): print version information
   if (ctx.get<bool>("--version", false) || ctx.get<bool>("-v", false)) {
     safePrint("top (WinuxCmd) 0.1.0\n");
     safePrint("Copyright (c) 2026 WinuxCmd\n");

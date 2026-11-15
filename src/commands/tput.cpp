@@ -79,9 +79,12 @@ void apply_console_size(TermEntry& entry) {
 
 auto constexpr TPUT_OPTIONS =
     // [GNU] option
-    std::array{OPTION("-T", "", "specify terminal type", STRING_TYPE),
-               // [EXT] operand
-               OPTION("", "", "terminal capabilities", STRING_TYPE)};
+    std::array{
+        OPTION("-T", "", "specify terminal type", STRING_TYPE),
+        // [EXT] operand
+        OPTION("", "", "terminal capabilities", STRING_TYPE),
+        // [GNU] -V: version shorthand (probed: `tput -V`)
+        OPTION("-V", "--version", "output version information and exit")};
 
 REGISTER_COMMAND(tput,
                  /* cmd_name */ "tput",

@@ -50,7 +50,9 @@ auto constexpr PS_OPTIONS = std::array{
     // [EXT]
     OPTION("", "--no-headers", "print no header line"),
     // [EXT]
-    OPTION("", "--sort", "sort by column (e.g., +pid, -rss)", STRING_TYPE)};
+    OPTION("", "--sort", "sort by column (e.g., +pid, -rss)", STRING_TYPE),
+    // [GNU] -V: version shorthand (probed: `ps -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace ps_pipeline {
 namespace cp = core::pipeline;

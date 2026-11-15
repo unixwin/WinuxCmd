@@ -34,7 +34,9 @@ auto constexpr NAMEI_OPTIONS = std::array{
     OPTION("-o", "--owners", "show owner and group of each component"),
     OPTION("-v", "--vertical", "show the path components vertically"),
     OPTION("-x", "--mountpoints", "show mount point directories with a 'D'"),
-    OPTION("-Z", "--context", "print the security context")};
+    OPTION("-Z", "--context", "print the security context"),
+    // [GNU] -V: version shorthand (probed: `namei -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace namei_pipeline {
 namespace cp = core::pipeline;

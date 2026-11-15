@@ -87,7 +87,9 @@ auto constexpr LESS_OPTIONS = std::array{
            "accepted placeholder; no keypad init strings are sent", BOOL_TYPE),
     // [GNU] --rscroll: character marking a chopped line (default '>')
     OPTION("", "--rscroll", "set the character used to mark chopped lines",
-           STRING_TYPE)};
+           STRING_TYPE),
+    // [GNU] -V: version shorthand (probed: `less -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace less_pipeline {
 namespace cp = core::pipeline;

@@ -39,7 +39,9 @@ constexpr auto TIME_OPTIONS = std::array{
            "print a verbose report with all available fields"),
     // [GNU] -q, --quiet
     OPTION("-q", "--quiet",
-           "do not report abnormal termination of the command")};
+           "do not report abnormal termination of the command"),
+    // [GNU] -V: version shorthand (probed: `time -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace time_pipeline {
 namespace cp = core::pipeline;

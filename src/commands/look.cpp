@@ -28,7 +28,8 @@ auto constexpr LOOK_OPTIONS = std::array{
     OPTION("-f", "--ignore-case", "ignore case when comparing"),
     OPTION("-a", "--alternative", "use alternative dictionary order"),
     OPTION("-t", "--terminate", "terminate string at CHAR", STRING_TYPE),
-    OPTION("", "--version", "output version information and exit")};
+    // [GNU] -V, --version (util-linux look probes: `look -V` prints version)
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace look_pipeline {
 namespace cp = core::pipeline;

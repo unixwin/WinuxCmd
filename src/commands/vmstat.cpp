@@ -36,7 +36,9 @@ auto constexpr VMSTAT_OPTIONS = std::array{
            STRING_TYPE),
     OPTION("-t", "--timestamp", "show timestamp"),
     OPTION("-w", "--wide", "use wide output"),
-    OPTION("-y", "--no-first", "skips first line of output")};
+    OPTION("-y", "--no-first", "skips first line of output"),
+    // [GNU] -V: version shorthand (probed: `vmstat -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace vmstat_pipeline {
 

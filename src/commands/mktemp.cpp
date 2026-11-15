@@ -40,7 +40,9 @@ auto constexpr MKTEMP_OPTIONS = std::array{
     OPTION("-p", "--tmpdir",
            "interpret TEMPLATE relative to DIR; if DIR is not specified, use "
            "$TMPDIR",
-           STRING_TYPE)};
+           STRING_TYPE),
+    // [GNU] -V: version shorthand (probed: `mktemp -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 REGISTER_COMMAND(
     mktemp, "mktemp", "mktemp [OPTION]... [TEMPLATE]",
     "Create a temporary file or directory, safely, and print its name.\n"

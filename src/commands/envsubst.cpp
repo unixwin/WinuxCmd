@@ -16,7 +16,9 @@ using cmd::meta::OptionType;
 
 auto constexpr ENVSUBST_OPTIONS = std::array{
     // [GNU]
-    OPTION("-v", "--variables", "output variables occurring in SHELL-FORMAT")};
+    OPTION("-v", "--variables", "output variables occurring in SHELL-FORMAT"),
+    // [GNU] -V: version shorthand (probed: `envsubst -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace envsubst_pipeline {
 
