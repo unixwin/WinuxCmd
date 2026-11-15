@@ -734,20 +734,6 @@ mod imp {
         }
     }
 
-    /// renameat2(RENAME_NOREPLACE): succeeds only when the destination
-    /// does not exist; ERROR_FILE_EXISTS/ERROR_ALREADY_EXISTS on a
-    /// collision. mv's two-operand probe and copy_internal's rename
-    /// attempt (copy.c:2233) use this.
-    pub fn rename_noreplace(from: &str, to: &str) -> Result<(), DWORD> {
-        let f = wide(from);
-        let t = wide(to);
-        if unsafe { MoveFileExW(f.as_ptr(), t.as_ptr(), 0) } == 0 {
-            Err(last_error())
-        } else {
-            Ok(())
-        }
-    }
-
     /// Set/clear the read-only bit, preserving the other attributes.
     pub fn set_read_only(path: &str, read_only: bool) -> Result<(), DWORD> {
         let a = attributes(path).ok_or_else(last_error)?;
@@ -994,9 +980,6 @@ mod imp {
         Err(5)
     }
     pub fn rename(_from: &str, _to: &str) -> Result<(), DWORD> {
-        Err(2)
-    }
-    pub fn rename_noreplace(_from: &str, _to: &str) -> Result<(), DWORD> {
         Err(2)
     }
     pub fn set_read_only(_path: &str, _read_only: bool) -> Result<(), DWORD> {
