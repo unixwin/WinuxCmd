@@ -358,6 +358,60 @@ fn files_recursion_and_selection_rules() {
     assert_eq!(run(&["-r", "fox", "d/b.log"]).1, "fox log\n"); // -r on a file: no name
 }
 
+#[cfg(windows)]
+#[test]
+fn recursive_directory_entries_keep_junction_follow_policy() {
+    use std::os::windows::process::CommandExt;
+
+    let sc = ScratchCtx::new("grep-r-junction");
+    std::fs::create_dir_all(sc.path("tree")).unwrap();
+    std::fs::create_dir_all(sc.path("target")).unwrap();
+    std::fs::write(sc.path("tree/plain.txt"), "needle plain\n").unwrap();
+    std::fs::write(sc.path("target/linked.txt"), "needle linked\n").unwrap();
+    let junction = std::process::Command::new("cmd.exe")
+        .current_dir(sc.path("tree"))
+        .args(["/d", "/c", "mklink", "/J", "junction", r"..\target"])
+        .creation_flags(0x0800_0000)
+        .output()
+        .unwrap();
+    assert!(junction.status.success(), "{junction:?}");
+    let run = |args: &[&str]| {
+        let mut m = MemIo::new("");
+        let rc = grep_cmd(&os(args), &mut m.split(), &sc.ctx()).unwrap();
+        let mut names: Vec<_> = m.out().lines().map(str::to_owned).collect();
+        names.sort();
+        (rc, names, m.err())
+    };
+    assert_eq!(
+        run(&["-rl", "needle", "tree"]),
+        (0, vec!["tree/plain.txt".into()], String::new())
+    );
+    assert_eq!(
+        run(&["-Rl", "needle", "tree"]),
+        (
+            0,
+            vec!["tree/junction/linked.txt".into(), "tree/plain.txt".into()],
+            String::new()
+        )
+    );
+    assert_eq!(
+        run(&["-rl", "needle", "tree/junction"]),
+        (0, vec!["tree/junction/linked.txt".into()], String::new())
+    );
+    assert_eq!(
+        run(&["-Rl", "--exclude-dir=junction", "needle", "tree"]),
+        (0, vec!["tree/plain.txt".into()], String::new())
+    );
+    std::fs::remove_file(sc.path("target/linked.txt")).unwrap();
+    std::fs::remove_dir(sc.path("target")).unwrap();
+    let (rc, names, err) = run(&["-Rl", "needle", "tree"]);
+    assert_eq!(rc, 2);
+    assert_eq!(names, ["tree/plain.txt"]);
+    assert!(err.contains("tree/junction: No such file or directory"));
+    // Remove only the junction, never recursively traverse its target.
+    std::fs::remove_dir(sc.path("tree/junction")).unwrap();
+}
+
 #[test]
 fn streaming_is_read_size_independent() {
     // ~1.3 MB of lines with sparse matches, NUL-free; lines of varied
