@@ -407,11 +407,20 @@ fn native_parent(path: &str) -> Option<String> {
 /// native_path.cppm:176 tmp_base_w: /tmp resolves through TMPDIR, TEMP or
 /// TMP (the per-user temporary namespace, niubash#94 — never a fixed
 /// location under a possibly non-writable install root).
+///
+/// POSIX-spelled values (leading `/`) are skipped: when the driver runs
+/// under Git Bash, TEMP/TMP arrive as the MSYS form `/tmp` itself — a
+/// circular mapping that would resolve /tmp to /tmp and send every
+/// temp-file command (mktemp, …) to a non-existent Windows path (the CI
+/// gate's mk16-p-dir finding). The C++ tmp_base_w reads the Windows env
+/// block the same way and trusts it; we keep niubash#94's priority but
+/// fall through a value that cannot name a Windows directory. If every
+/// candidate is POSIX-spelled, the caller's no-tmpdir path applies.
 pub fn tmp_base(env: &dyn EnvSource) -> Option<String> {
     for name in ["TMPDIR", "TEMP", "TMP"] {
         if let Some(v) = win32_env_get(env, name) {
             let v = v.to_string_lossy().into_owned();
-            if !v.is_empty() {
+            if !v.is_empty() && !v.starts_with('/') {
                 return Some(nativeize_base(&v));
             }
         }
