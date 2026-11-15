@@ -630,6 +630,17 @@ run_case() {
             printf '\n'
         } >> "$ART/gnu-stderr-samples.txt"
     fi
+    # Failed rows: keep the rust side's own stderr with the run's summary
+    # (which is always uploaded) — exit-mode rows otherwise leave no trace
+    # of WHY the rc differed, which is un-diagnosable from CI alone
+    # (mk16-p-dir on the runner: rc 1 with no visible cause).
+    if [ "$ok" != 1 ] && [ -s "$scase.rust/.err" ]; then
+        {
+            printf '=== %s (%s) rust stderr (r_rc=%s) ===\n' "$id" "$cmd" "${r_rc:-?}"
+            cat "$scase.rust/.err"
+            printf '\n'
+        } >> "$ART/rust-failed-stderr.txt"
+    fi
 
     # ---- SKIP: the host cannot build this row's symlink fixture ----
     # Never score it: a pass would be vacuous (both Windows sides see the

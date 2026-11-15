@@ -1,0 +1,13 @@
+{
+ "baseline_catalog": "git archive HEAD extract -> /tmp/en-US-lsbase.json (3619 keys)",
+ "extract": "catalog/en-US-ls.json (3640 keys)",
+ "added_total": 21,
+ "removed_total": 0,
+ "changed_total": 0,
+ "ls_added": 21,
+ "ls_changed": 0,
+ "ls_removed_legacy": 0,
+ "non_ls_added": 0,
+ "non_ls_removed": 0,
+ "changed": 0
+}

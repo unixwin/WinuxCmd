@@ -27,7 +27,7 @@ fn wildcard_match(pat: &str, name: &str) -> bool {
         }
         match p[0] {
             '*' => {
-                if n.is_empty() || n[0] == '.' {
+                if !n.is_empty() && n[0] == '.' {
                     return false; // leading dot is not matched by '*'
                 }
                 let mut i = 0usize;

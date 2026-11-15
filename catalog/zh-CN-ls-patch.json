@@ -1,0 +1,27 @@
+{
+ "schema": 1,
+ "locale": "zh-CN",
+ "messages": {
+  "command.ls.error.ambiguous_argument": "参数 '{value}' 有歧义（用于 '{option}'）",
+  "command.ls.error.ambiguous_option": "选项 '--{opt}' 有歧义；可能的选项：{list}",
+  "command.ls.error.cannot_access": "无法访问 '{name}'：{reason}",
+  "command.ls.error.cannot_open_dir": "无法打开目录 '{name}'：{reason}",
+  "command.ls.error.columns_width": "忽略环境变量 COLUMNS 中的无效宽度：‘{value}’",
+  "command.ls.error.dired_zero": "--dired 与 --zero 不兼容",
+  "command.ls.error.invalid_argument": "参数 '{value}' 对 '{option}' 无效",
+  "command.ls.error.invalid_line_width": "无效的行宽 ‘{value}’",
+  "command.ls.error.invalid_option": "无效选项 -- '{opt}'",
+  "command.ls.error.invalid_tab_size": "无效的制表位大小：'{value}'",
+  "command.ls.error.invalid_time_style_format": "无效的时间样式格式 '{value}'",
+  "command.ls.error.option_no_arg": "选项 '--{opt}' 不允许带参数",
+  "command.ls.error.option_requires_arg": "选项 '--{opt}' 需要一个参数",
+  "command.ls.error.short_requires_arg": "选项需要一个参数 -- '{opt}'",
+  "command.ls.error.tabsize_env": "忽略环境变量 TABSIZE 中的无效制表位大小：‘{value}’",
+  "command.ls.error.time_style": "'time style' 的参数 '{value}' {kind}\n有效参数为：\n  - [posix-]full-iso\n  - [posix-]long-iso\n  - [posix-]iso\n  - [posix-]locale\n  - +FORMAT（例如 +%H:%M）为 'date' 风格格式",
+  "command.ls.error.try_help": "请尝试 '{prog} --help' 获取更多信息。",
+  "command.ls.error.unrecognized_option": "无法识别的选项 '--{opt}'",
+  "command.ls.error.valid_arguments": "有效参数为：",
+  "command.ls.error.write_error": "写入错误",
+  "command.ls.total": "总计 "
+ }
+}
