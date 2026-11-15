@@ -272,20 +272,19 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // (PathBuf, display string): the display keeps the operand/env value
     // as given so output matches what the user handed in (GNU prints the
-    // destination prefix verbatim)
+    // destination prefix verbatim). Resolution goes through winux_core
+    // tmp_base — NOT a local env loop: the loop trusted TEMP/TMP verbatim,
+    // and a Git Bash parent exports them as the MSYS form "/tmp" itself,
+    // which circularly resolved /tmp to /tmp and failed every -p /tmp
+    // creation on the CI runner (mk16, fs-dirs shard). tmp_base skips
+    // POSIX-spelled candidates and falls back to GetTempPathW (which
+    // skips directories that do not exist), landing on the real per-user
+    // temp; the display prints the resolved NATIVE forward-slash form
+    // (the 1.x getenv_path contract: normalize_win_shell_path).
     let default_dir = || -> (std::path::PathBuf, String) {
-        for key in ["TMPDIR", "TEMP", "TMP"] {
-            let hit = winux_core::win32_env_get(ctx.env, key)
-                .map(|v| v.to_string_lossy().into_owned())
-                .filter(|s| !s.is_empty());
-            if let Some(d) = hit {
-                // Every default-directory source prints the NATIVE
-                // forward-slash form: the 1.x getenv_path applied
-                // normalize_win_shell_path (a POSIX TMPDIR=/c/... printed
-                // C:/...) and GetTempPathW already returns a native path.
-                let _ = key;
-                return (resolve(ctx, &d), display_source_dir(ctx, &d));
-            }
+        if let Some(base) = winux_core::path::tmp_base(ctx.env) {
+            let d = base.clone();
+            return (resolve(ctx, &d), display_source_dir(ctx, &d));
         }
         (
             ctx.cwd.clone(),
