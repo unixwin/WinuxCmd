@@ -840,7 +840,7 @@ fn interpret(occs: &[Occ], io: &mut Io, ctx: &Ctx) -> Result<Cfg, Early> {
                 return Err(Early(0));
             }
             Occ::Err(msg) => {
-                let _ = usage_error(io, "ls", msg);
+                let _ = usage_error(ctx, io, "ls", msg);
                 return Err(Early(2));
             }
             _ => {}
