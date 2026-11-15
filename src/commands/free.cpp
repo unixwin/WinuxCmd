@@ -67,7 +67,9 @@ auto constexpr FREE_OPTIONS = std::array{
     OPTION("-L", "--line", "show output on a single line", BOOL_TYPE),
     // [GNU] -v/--committed: show committed memory and commit limit
     OPTION("-v", "--committed", "show committed memory and commit limit",
-           BOOL_TYPE)};
+           BOOL_TYPE),
+    // [GNU] -V: version shorthand (probed: `free -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace free_pipeline {
 namespace cp = core::pipeline;

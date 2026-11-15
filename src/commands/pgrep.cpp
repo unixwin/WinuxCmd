@@ -44,7 +44,9 @@ auto constexpr PGREP_OPTIONS = std::array{
     // Accepted for procps compatibility: in pgrep the signal is only
     // consumed by --require-handler, which has no Windows equivalent,
     // so the value is validated and otherwise unused (as upstream).
-    OPTION("", "--signal", "", STRING_TYPE)};
+    OPTION("", "--signal", "", STRING_TYPE),
+    // [GNU] -V: version shorthand (probed: `pgrep -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace pgrep_pipeline {
 namespace sel = procps_select;

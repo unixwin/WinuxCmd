@@ -4284,7 +4284,10 @@ TEST(find, issue_1617_double_dash_help_version_are_synonyms) {
   EXPECT_EQ_TEXT(help.stdout_text, help_short.stdout_text);
 
   // Acts where it appears: after a start point it is still
-  // version-then-exit, not a walk with an unknown predicate.
+  // version-then-exit, not a walk with an unknown predicate. find owns
+  // its help/version surface (#1488 wiring): the rust2 body prints the
+  // probed findutils 4.9 block byte-for-byte, so the branding is GNU's,
+  // not the dispatcher's WinuxCmd banner.
   Pipeline p_version;
   p_version.set_cwd(tmp.wpath());
   p_version.add(L"find.exe", {L".", L"--version"});
@@ -4305,4 +4308,63 @@ TEST(find, issue_1617_double_dash_help_version_are_synonyms) {
   auto version_short = p_version_short.run();
   EXPECT_EQ(version_short.exit_code, 0);
   EXPECT_EQ_TEXT(version.stdout_text, version_short.stdout_text);
+}
+
+// #1718: findutils parses argv left to right, so an unknown predicate is
+// reported before any later malformed predicate. WinuxCmd's generic
+// option pre-parse judged the declared -context option first and answered
+// "option requires an argument -- 'c'" even when -foo came earlier.
+// GNU findutils 4.9.0 probe:
+//   find . -foo -context  -> find: unknown predicate `-foo'         rc 1
+//   find . -context       -> find: missing argument to `-context'   rc 1
+//   find . -context x     -> find: invalid predicate -context:
+//                            SELinux is not enabled.               rc 1
+//   find . -context -foo  -> same invalid-predicate line            rc 1
+TEST(find, issue_1718_unknown_predicate_precedes_later_malformed_predicate) {
+  TempDir tmp;
+  tmp.write("a.txt", "x");
+
+  Pipeline unknown_first;
+  unknown_first.set_cwd(tmp.wpath());
+  unknown_first.add(L"find.exe", {L".", L"-foo", L"-context"});
+  auto uf = unknown_first.run();
+  EXPECT_EQ(uf.exit_code, 1);
+  EXPECT_TRUE(uf.stderr_text.find("unknown predicate `-foo'") !=
+              std::string::npos);
+  EXPECT_TRUE(uf.stderr_text.find("option requires an argument") ==
+              std::string::npos);
+
+  // Same ordering class for any other string predicate: the unknown token
+  // wins over a later -name with no operand.
+  Pipeline unknown_before_name;
+  unknown_before_name.set_cwd(tmp.wpath());
+  unknown_before_name.add(L"find.exe", {L".", L"-foo", L"-name"});
+  auto un = unknown_before_name.run();
+  EXPECT_EQ(un.exit_code, 1);
+  EXPECT_TRUE(un.stderr_text.find("unknown predicate `-foo'") !=
+              std::string::npos);
+
+  // Bare -context is find's own "missing argument" diagnostic.
+  Pipeline context_bare;
+  context_bare.set_cwd(tmp.wpath());
+  context_bare.add(L"find.exe", {L".", L"-context"});
+  auto cb = context_bare.run();
+  EXPECT_EQ(cb.exit_code, 1);
+  EXPECT_TRUE(cb.stderr_text.find("missing argument to `-context'") !=
+              std::string::npos);
+
+  // SELinux is not enabled on Windows: -context is an invalid predicate,
+  // whether or not it carries an operand.
+  for (const std::vector<std::wstring>& args :
+       {std::vector<std::wstring>{L".", L"-context", L"x"},
+        std::vector<std::wstring>{L".", L"-context", L"-foo"}}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"find.exe", args);
+    auto r = p.run();
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(r.stderr_text.find(
+                    "invalid predicate -context: SELinux is not enabled.") !=
+                std::string::npos);
+  }
 }

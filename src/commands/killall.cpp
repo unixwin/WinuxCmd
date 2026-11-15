@@ -39,8 +39,9 @@ auto constexpr KILLALL_OPTIONS = std::array{
     OPTION("-w", "--wait", "wait for all killed processes to die"),
     OPTION("-y", "--younger-than",
            "match only processes younger than the given time", STRING_TYPE),
-    OPTION("-NUM", "", "", INT_TYPE),
-    PROCPS_SIGNAL_SPELLING_OPTIONS};
+    OPTION("-NUM", "", "", INT_TYPE), PROCPS_SIGNAL_SPELLING_OPTIONS,
+    // [GNU] -V: version shorthand (probed: `killall -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace killall_pipeline {
 namespace sel = procps_select;

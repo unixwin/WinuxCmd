@@ -817,12 +817,6 @@ auto echo_posixly_correct_literal_mode(std::string_view cmdName,
   return args.empty() || args[0] != "-n";
 }
 
-auto command_declares_option(std::span<const cmd::meta::OptionMeta> options,
-                             std::string_view name) -> bool {
-  return std::ranges::any_of(options, [name](const auto &option) {
-    return option.short_name == name || option.long_name == name;
-  });
-}
 auto command_declares_version_short(
     std::span<const cmd::meta::OptionMeta> options, std::string_view name)
     -> bool {
@@ -1634,8 +1628,16 @@ class RegistryImpl {
                      command_declares_version_short(options, "-v")) {
             event = Event::Version;
           } else if (arg == "-V" &&
-                     (!command_declares_option(options, arg) ||
-                      command_declares_version_short(options, arg))) {
+                     command_declares_version_short(options, "-V")) {
+            // [GNU] #1714: there is no global "-V means --version" rule.
+            // GNU coreutils registers only the long --version spelling, so
+            // `cksum -V` is "invalid option -- 'V'" with rc 1 while
+            // procps/util-linux/ncurses tools that do document -V (free,
+            // w, ps, col, clear, ...) print their version block. Only a
+            // command whose own option table pairs -V with --version gets
+            // the interception; every other applet judges -V itself (and
+            // rejects it unless its table declares a different meaning,
+            // e.g. `sort -V` = --version-sort, `chattr -V` = verbose).
             event = Event::Version;
           }
           if (event == Event::None) continue;

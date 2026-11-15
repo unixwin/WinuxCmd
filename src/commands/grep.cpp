@@ -218,7 +218,9 @@ auto constexpr GREP_OPTIONS = std::array{
         OPTIONAL_STRING_TYPE),
     OPTION("-u", "--unix-byte-offsets", "report Unix-style byte offsets"),
     // [DIFFERS] - Unix byte offsets not applicable on Windows
-    OPTION("-U", "--binary", "do not strip CR at EOL")};
+    OPTION("-U", "--binary", "do not strip CR at EOL"),
+    // [GNU] -V: version shorthand (probed: `grep -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace grep_pipeline {
 namespace cp = core::pipeline;

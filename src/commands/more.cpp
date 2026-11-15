@@ -44,7 +44,9 @@ auto constexpr MORE_OPTIONS = std::array{
     // [EXT]
     OPTION("-n", "--lines", "number of lines per screenful", INT_TYPE),
     // [EXT]
-    OPTION("-NUM", "", "same as -n NUM", INT_TYPE)};
+    OPTION("-NUM", "", "same as -n NUM", INT_TYPE),
+    // [GNU] -V: version shorthand (probed: `more -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace more_pipeline {
 namespace cp = core::pipeline;

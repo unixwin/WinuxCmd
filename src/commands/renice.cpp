@@ -23,7 +23,9 @@ auto constexpr RENICE_OPTIONS =
         // [DIFFERS] GNU renice: process group; not supported on Windows
         OPTION("-g", "--pgrp", "interpret operands as process group IDs"),
         // [DIFFERS] GNU renice: user-based renice; not supported on Windows
-        OPTION("-u", "--user", "interpret operands as usernames or UIDs")};
+        OPTION("-u", "--user", "interpret operands as usernames or UIDs"),
+        // [GNU] -V: version shorthand (probed: `renice -V`)
+        OPTION("-V", "--version", "output version information and exit")};
 
 namespace renice_pipeline {
 

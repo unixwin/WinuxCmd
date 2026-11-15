@@ -22,25 +22,27 @@ using cmd::meta::OptionType;
 // Options (constexpr)
 // ======================================================
 
-auto constexpr LOCALE_OPTIONS =
-    std::array{// [GNU] -a, --all-locales (glibc name; --all kept as an
-               // alias)
-               OPTION("-a", "--all-locales", "print all available locales"),
-               OPTION("", "--all", "same as --all-locales"),
-               // [GNU]
-               OPTION("-c", "--category-name",
-                      "print the names of defined locale categories"),
-               // [GNU]
-               OPTION("-k", "--keyword-name",
-                      "print the names and values of keyword definitions"),
-               // [GNU]
-               OPTION("-m", "--charmaps", "print available character maps"),
-               // [GNU] -v, --verbose: print more information
-               OPTION("-v", "--verbose", "print more information"),
-               // [GNU] --usage: print a short usage message and exit
-               OPTION("", "--usage", "print a short usage message and exit"),
-               // [GNU]
-               OPTION("", "", "print locale information", STRING_TYPE)};
+auto constexpr LOCALE_OPTIONS = std::array{
+    // [GNU] -a, --all-locales (glibc name; --all kept as an
+    // alias)
+    OPTION("-a", "--all-locales", "print all available locales"),
+    OPTION("", "--all", "same as --all-locales"),
+    // [GNU]
+    OPTION("-c", "--category-name",
+           "print the names of defined locale categories"),
+    // [GNU]
+    OPTION("-k", "--keyword-name",
+           "print the names and values of keyword definitions"),
+    // [GNU]
+    OPTION("-m", "--charmaps", "print available character maps"),
+    // [GNU] -v, --verbose: print more information
+    OPTION("-v", "--verbose", "print more information"),
+    // [GNU] --usage: print a short usage message and exit
+    OPTION("", "--usage", "print a short usage message and exit"),
+    // [GNU]
+    OPTION("", "", "print locale information", STRING_TYPE),
+    // [GNU] -V: version shorthand (probed: `locale -V`)
+    OPTION("-V", "--version", "output version information and exit")};
 
 // ======================================================
 // Helper functions

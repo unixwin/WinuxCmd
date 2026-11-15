@@ -16,7 +16,9 @@ using cmd::meta::OptionType;
 
 auto constexpr PLDD_OPTIONS = std::array{
     // [EXT]
-    OPTION("-n", "--name", "print module basenames instead of paths")};
+    OPTION("-n", "--name", "print module basenames instead of paths"),
+    // [GNU] -V: version shorthand (probed: `pldd -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace pldd_pipeline {
 

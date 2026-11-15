@@ -144,7 +144,9 @@ auto constexpr KILL_OPTIONS = std::array{
     OPTION("-PWR", "", "send SIGPWR"),
     OPTION("-SIGPWR", "", "send SIGPWR"),
     OPTION("-SYS", "", "send SIGSYS"),
-    OPTION("-SIGSYS", "", "send SIGSYS")};
+    OPTION("-SIGSYS", "", "send SIGSYS"),
+    // [GNU] -V: version shorthand (probed: `kill -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 // ======================================================
 // Signal definitions (Linux ABI surface)

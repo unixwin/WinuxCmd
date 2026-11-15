@@ -40,7 +40,9 @@ auto constexpr W_OPTIONS = std::array{
            "display IP address instead of hostname (if possible)",
            BOOL_TYPE),
     OPTION("-p", "--pids", "show the PID(s) of processes in WHAT",
-           BOOL_TYPE)};
+           BOOL_TYPE),
+    // [GNU] -V: version shorthand (probed: `w -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace w_pipeline {
 namespace cp = core::pipeline;

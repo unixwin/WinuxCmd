@@ -71,7 +71,9 @@ auto constexpr LOGGER_OPTIONS = std::array{
     // its parse contract is implemented in run().
     OPTION("", "--socket-errors",
            "print connection errors when using Unix sockets", STRING_TYPE),
-    OPTION("", "--journald", "write to the systemd journal")};
+    OPTION("", "--journald", "write to the systemd journal"),
+    // [GNU] -V: version shorthand (probed: `logger -V`).
+    OPTION("-V", "--version", "output version information and exit")};
 
 namespace logger_pipeline {
 
