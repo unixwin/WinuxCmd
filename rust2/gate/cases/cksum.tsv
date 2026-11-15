@@ -31,18 +31,18 @@ ck28-l-not-blake	strict	printf '123456789' > ck9			-a	sha256	-l	128	ck9
 ck29-l-invalid	strict	printf '123456789' > ck9			-a	blake2b	-l	7	ck9
 ck30-l-over-max	strict	printf '123456789' > ck9			-a	blake2b	-l	520	ck9
 ck31-tag-explicit	strict	printf '123456789' > ck9			--tag	ck9
-ck32-check-ok	strict	printf '123456789' > ck9; cksum -a sha256 ck9 > ok.lst			-c	ok.lst
-ck33-check-failed	strict	printf '123456789' > ck9; cksum -a sha256 ck9 | sed 's/15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225/0000000000000000000000000000000000000000000000000000000000000000/' > bad.lst			-c	bad.lst
-ck34-check-missing	strict	printf '123456789' > ck9; cksum -a sha256 ck9 | sed 's/(ck9)/(gone)/' > gone.lst			-c	gone.lst
-ck35-check-status-failed	exit	printf '123456789' > ck9; cksum -a sha256 ck9 | sed 's/15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225/00/' > bad.lst			--status	-c	bad.lst
-ck36-check-quiet-ok	strict	printf '123456789' > ck9; cksum -a sha256 ck9 > ok.lst			--quiet	-c	ok.lst
-ck37-check-ignore-missing	strict	printf '123456789' > ck9; cksum -a sha256 ck9 | sed 's/(ck9)/(gone)/' > gone.lst			--ignore-missing	-c	gone.lst
-ck38-check-crc-lines-rejected	strict	printf '123456789' > ck9; cksum ck9 > crc.lst			-c	crc.lst
-ck39-check-untagged-rejected	strict	printf '123456789' > ck9; cksum --untagged -a sha256 ck9 > u.lst			-c	u.lst
+ck32-check-ok	strict	printf '123456789' > ck9; printf 'SHA256 (ck9) = 15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225\n' > ok.lst			-c	ok.lst
+ck33-check-failed	strict	printf '123456789' > ck9; printf 'SHA256 (ck9) = 0000000000000000000000000000000000000000000000000000000000000000\n' > bad.lst			-c	bad.lst
+ck34-check-missing	strict	printf '123456789' > ck9; printf 'SHA256 (gone) = 15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225\n' > gone.lst			-c	gone.lst
+ck35-check-status-failed	exit	printf '123456789' > ck9; printf 'SHA256 (ck9) = 0000000000000000000000000000000000000000000000000000000000000000\n' > bad.lst			--status	-c	bad.lst
+ck36-check-quiet-ok	strict	printf '123456789' > ck9; printf 'SHA256 (ck9) = 15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225\n' > ok.lst			--quiet	-c	ok.lst
+ck37-check-ignore-missing	strict	printf '123456789' > ck9; printf 'SHA256 (gone) = 15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225\n' > gone.lst			--ignore-missing	-c	gone.lst
+ck38-check-crc-lines-rejected	strict	printf '123456789' > ck9; printf '930766865 9 ck9\n' > crc.lst			-c	crc.lst
+ck39-check-untagged-rejected	strict	printf '123456789' > ck9; printf '15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225  ck9\n' > u.lst			-c	u.lst
 ck40-check-garbage	strict	printf 'garbage\n' > g.lst			-c	g.lst
 ck41-check-empty-list	strict	: > none.lst			-c	none.lst
 ck42-help	strict				--help
 ck43-version	strict				--version
 ck44-blake2b-l8	strict	printf '123456789' > ck9			-a	blake2b	-l	8	ck9
 ck45-multi-two-files-sha	strict	printf abc > a; printf ab > b			-a	sha256	a	b
-ck46-check-base64-ok	strict	printf '123456789' > ck9; cksum --base64 -a sha256 ck9 > b64.lst			-c	b64.lst
+ck46-check-base64-ok	strict	printf '123456789' > ck9; printf 'SHA256 (ck9) = FeKw08M4keuw8e9gnsQZQgwg4yDOlMZfvIwzEkSOsiU=\n' > b64.lst			-c	b64.lst
