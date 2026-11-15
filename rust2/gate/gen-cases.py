@@ -3794,7 +3794,12 @@ mkfifo_rows = [
 mknod_rows = [
     ("mn01-fifo", "strict", "", "", "", ["mp", "p"]),
     ("mn02-fifo-mode", "strict", "", "", "", ["-m", "600", "m6", "p"]),
-    ("mn03-fifo-exists", "strict", "mkfifo mp", "", "", ["mp", "p"]),
+    # #1767: fixture is a plain file, not mkfifo — the MSYS fifo emulation
+    # keeps the pipe outside the filesystem path, so the rust mknod's
+    # GetFileAttributesW EEXIST check never saw the fixture on the CI
+    # runner (GNU mknod: EEXIST for ANY existing node type, probed
+    # 2026-11-15 on plain file and fifo alike).
+    ("mn03-fifo-exists", "strict", "printf x > mp", "", "", ["mp", "p"]),
     # GNU-as-root creates device nodes (probed); Windows cannot — Rust
     # vs C++ only (the documented boundary in mknod.rs)
     ("mn04-char-dev", "win", "", "", "", ["mc", "c", "1", "3"]),
