@@ -238,9 +238,9 @@ fn interactive_mode(word: &str) -> Result<Interactive, bool> {
         }
     }
     match modes.len() {
-        0 => Err(false),      // invalid
+        0 => Err(false), // invalid
         1 => Ok(modes[0]),
-        _ => Err(true),       // ambiguous
+        _ => Err(true), // ambiguous
     }
 }
 
@@ -330,10 +330,13 @@ fn prescan(args: &[OsString]) -> Prescan {
                         None => out.events.push(Event::InteractiveMode(Interactive::Always)),
                         Some(v) => match interactive_mode(v) {
                             Ok(m) => out.events.push(Event::InteractiveMode(m)),
-                            Err(amb) => pending!(i, Pending::InteractiveBad {
-                                ambiguous: amb,
-                                arg: v.to_string(),
-                            }),
+                            Err(amb) => pending!(
+                                i,
+                                Pending::InteractiveBad {
+                                    ambiguous: amb,
+                                    arg: v.to_string(),
+                                }
+                            ),
                         },
                     }
                 }
@@ -341,9 +344,7 @@ fn prescan(args: &[OsString]) -> Prescan {
                     None => out.events.push(Event::PreserveRoot),
                     Some("all") => out.events.push(Event::PreserveAllRoot),
                     // rm.c:299-309: anything else ("" included) errors.
-                    Some(v) => pending!(i, Pending::PreserveRootBad {
-                        arg: v.to_string(),
-                    }),
+                    Some(v) => pending!(i, Pending::PreserveRootBad { arg: v.to_string() }),
                 },
                 LongRes::Hit("no-preserve-root") => {
                     if inline.is_some() {
@@ -841,11 +842,8 @@ impl Outcome {
 /// literal keys): render the English fallback through the same template
 /// machinery, then let the catalog template win when present.
 fn trd(ctx: &Ctx, key: &str, fallback_template: &str, bindings: &[(&str, &str)]) -> String {
-    let fallback = winux_core::i18n::format_with_fallback(
-        Some(fallback_template),
-        String::new(),
-        bindings,
-    );
+    let fallback =
+        winux_core::i18n::format_with_fallback(Some(fallback_template), String::new(), bindings);
     winux_core::i18n::format_with_fallback(ctx.host.message(key), fallback, bindings)
 }
 
@@ -859,7 +857,10 @@ fn noun_for(meta: &fs_win::FileMeta, is_link: bool, is_fifo: bool, ctx: &Ctx) ->
     } else if meta.is_dir {
         ("command.rm.noun.directory", "directory")
     } else if meta.character_device {
-        ("command.rm.noun.character_special", "character special file")
+        (
+            "command.rm.noun.character_special",
+            "character special file",
+        )
     } else if meta.size == 0 {
         ("command.rm.noun.regular_empty_file", "regular empty file")
     } else {
@@ -1020,7 +1021,11 @@ fn root_kind(ctx: &Ctx, name: &str, stripped: &str) -> Option<RootKind> {
     if stripped.is_empty() {
         // GNU collapses 3+ separators to '/' and reports '//' verbatim.
         let seps = name.chars().count();
-        return Some(if seps == 2 { RootKind::Same } else { RootKind::Slash });
+        return Some(if seps == 2 {
+            RootKind::Same
+        } else {
+            RootKind::Slash
+        });
     }
     let resolved = api(ctx, stripped);
     if crate::fsutil::is_preserve_root_operand(ctx, name, &resolved) {
@@ -1155,25 +1160,23 @@ fn remove_operand(name: &str, cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> Outcome {
         // recursive root check below handles it, the non-recursive gate
         // reports Is a directory.
         None => (true, false, false, fs_win::FileMeta::default()),
-        Some(m) if had_sep && m.is_symlink => {
-            match fs_win::file_meta(ctx, stripped, false) {
-                Ok(t) if t.is_dir => (true, false, true, t),
-                Ok(_) => {
-                    if cfg.ignore_missing {
-                        return Outcome::Ok;
-                    }
-                    cannot_remove(io, ctx, name, "Not a directory");
-                    return Outcome::Error;
+        Some(m) if had_sep && m.is_symlink => match fs_win::file_meta(ctx, stripped, false) {
+            Ok(t) if t.is_dir => (true, false, true, t),
+            Ok(_) => {
+                if cfg.ignore_missing {
+                    return Outcome::Ok;
                 }
-                Err(code) => {
-                    if cfg.ignore_missing && nonexistent_code(code) {
-                        return Outcome::Ok;
-                    }
-                    cannot_remove(io, ctx, name, fs_win::win32_reason(code));
-                    return Outcome::Error;
-                }
+                cannot_remove(io, ctx, name, "Not a directory");
+                return Outcome::Error;
             }
-        }
+            Err(code) => {
+                if cfg.ignore_missing && nonexistent_code(code) {
+                    return Outcome::Ok;
+                }
+                cannot_remove(io, ctx, name, fs_win::win32_reason(code));
+                return Outcome::Error;
+            }
+        },
         Some(m) if had_sep && !m.is_dir => {
             // "f/" on a non-directory: ENOTDIR, ignorable under -f.
             if cfg.ignore_missing {
@@ -1296,9 +1299,9 @@ fn remove_dir_operand(
 
     // Descend/remove prompt selection (remove.c:prompt, 188-326). The
     // write-protected gate: !ignore_missing && (Always || tty) && !link.
-    let wp_dir =
-        !cfg.ignore_missing && (cfg.interactive == Interactive::Always || cfg.stdin_tty)
-            && meta.read_only;
+    let wp_dir = !cfg.ignore_missing
+        && (cfg.interactive == Interactive::Always || cfg.stdin_tty)
+        && meta.read_only;
 
     if cfg.interactive == Interactive::Always {
         match status {

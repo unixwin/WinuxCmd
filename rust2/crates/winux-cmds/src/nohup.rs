@@ -117,12 +117,7 @@ pub fn nohup_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     nohup_with_meta(args, io, ctx, &StdioMeta::pipe())
 }
 
-pub fn nohup_with_meta(
-    args: &[OsString],
-    io: &mut Io,
-    ctx: &Ctx,
-    stdio: &StdioMeta,
-) -> CmdResult {
+pub fn nohup_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdio: &StdioMeta) -> CmdResult {
     // GNU nohup.c compiles getopt with optstring "+" — NO permutation: only
     // LEADING options are parsed, and the first operand ends option
     // processing (probed: `nohup true --bogus` runs true rc 0, while
@@ -821,7 +816,10 @@ mod tests {
             "err={err:?}"
         );
         assert!(
-            err.contains(&format!("failed to open '{}/nohup.out': ", gone.to_string_lossy())),
+            err.contains(&format!(
+                "failed to open '{}/nohup.out': ",
+                gone.to_string_lossy()
+            )),
             "err={err:?}"
         );
     }

@@ -617,11 +617,17 @@ jobs:
           wsl --set-default-version 2
           wsl --update
           if ($LASTEXITCODE -ne 0) { Write-Host 'wsl --update failed (non-fatal); continuing' }
-          wsl --install -d Ubuntu --no-launch
-          if ($LASTEXITCODE -ne 0) { throw "wsl --install -d Ubuntu failed ($LASTEXITCODE)" }
+          # Pin 24.04: the gate oracle is the distro's coreutils, and the
+          # attestation box is 24.04 / GNU coreutils 9.4 / C.UTF-8. The
+          # rolling "Ubuntu" distro now ships uutils as the default
+          # coreutils — preflight caught `ls (uutils coreutils) 0.8.0` and
+          # correctly refused to score rust2 against the wrong oracle.
+          wsl --install -d Ubuntu-24.04 --no-launch
+          if ($LASTEXITCODE -ne 0) { throw "wsl --install -d Ubuntu-24.04 failed ($LASTEXITCODE)" }
+          wsl --set-default Ubuntu-24.04
           $ok = $false
           foreach ($i in 1..5) {
-            wsl -d Ubuntu -u root -- sh -c 'echo wsl-ready'
+            wsl -d Ubuntu-24.04 -u root -- sh -c 'echo wsl-ready'
             if ($LASTEXITCODE -eq 0) { $ok = $true; break }
             Write-Host "WSL not ready (attempt $i); retrying in 15s"
             Start-Sleep -Seconds 15
@@ -637,6 +643,12 @@ jobs:
         shell: bash
         env:
           GATE_GNU_REMOTE_ROOT: /tmp/winuxcmd-gate-shard-${{ matrix.shard }}
+          # Git Bash (MSYS2) rewrites leading-slash argv for native spawns:
+          # without this, wsl.exe receives D:/Git/usr/bin/bash for /bin/bash
+          # and the preflight dies before the distro is ever reached (the
+          # same class run-gate.sh guards internally since #1721).
+          MSYS_NO_PATHCONV: 1
+          MSYS2_ARG_CONV_EXCL: "*"
         run: |
           set -o pipefail
           progs=""

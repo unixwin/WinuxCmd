@@ -44,7 +44,14 @@ TEST(mktemp, mktemp_basic) {
   }
   EXPECT_FALSE(filename.starts_with("/c/"));
   EXPECT_TRUE(filename.size() >= 3 && filename[1] == 58 && filename[2] == 47);
-  EXPECT_EQ(filename.find("~"), std::string::npos);
+  // #1761 re-pin: the retired C++ mktemp ran the result through
+  // GetLongPathNameW, which expanded 8.3 short names (RUNNER~1 -> runneradmin)
+  // and so the old pin banned '~' anywhere in the printed path.  rust2 prints
+  // the resolved template verbatim, which is the GNU contract: WSL probe
+  // (coreutils 9.4, 2026-11-15) `TMPDIR=/tmp/oracle1761/has~tilde mktemp`
+  // -> `/tmp/oracle1761/has~tilde/tmp.76DfUIROuq`, rc 0 -- a '~' inside the
+  // temp dir is emitted unchanged.  The random suffix itself stays in the
+  // GNU alnum alphabet; nothing about the directory portion is restricted.
   auto created_path = std::filesystem::u8path(filename);
   EXPECT_TRUE(std::filesystem::exists(created_path));
   std::filesystem::remove(created_path);
@@ -71,7 +78,11 @@ TEST(mktemp, mktemp_default_template_uses_tmpdir_env_as_native_path) {
 
   EXPECT_FALSE(created.starts_with("/c/"));
   EXPECT_TRUE(created.size() >= 3 && created[1] == 58 && created[2] == 47);
-  EXPECT_EQ(created.find("~"), std::string::npos);
+  // #1761 re-pin: same '~' removal as mktemp_basic -- the ban pinned the
+  // retired C++ GetLongPathNameW 8.3-expansion, not GNU.  rust2 emits the
+  // TMPDIR-derived directory verbatim (probe: coreutils 9.4 emits a '~'
+  // inside TMPDIR unchanged, rc 0), so a '~' in the configured temp root is
+  // legal output, not a defect.
   auto created_path = std::filesystem::u8path(created);
   EXPECT_TRUE(std::filesystem::exists(created_path));
   EXPECT_TRUE(std::filesystem::equivalent(created_path.parent_path(), out_dir));

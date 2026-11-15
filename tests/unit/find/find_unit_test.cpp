@@ -4291,7 +4291,13 @@ TEST(find, issue_1617_double_dash_help_version_are_synonyms) {
   auto version = p_version.run();
   EXPECT_EQ(version.exit_code, 0);
   EXPECT_TRUE(version.stderr_text.empty());
-  EXPECT_TRUE(version.stdout_text.find("find (WinuxCmd)") != std::string::npos);
+  // #1761 re-pin: rust2 find prints the GNU findutils version banner, not the
+  // retired C++ "find (WinuxCmd)" product string.  WSL probe (findutils
+  // 4.9.0, 2026-11-15): `find --version` and `find . --version` both emit
+  // "find (GNU findutils) 4.9.0" as the first line, rc 0 -- byte-identical
+  // to what rust2 now prints.
+  EXPECT_TRUE(version.stdout_text.find("find (GNU findutils)") !=
+              std::string::npos);
 
   Pipeline p_version_short;
   p_version_short.set_cwd(tmp.wpath());

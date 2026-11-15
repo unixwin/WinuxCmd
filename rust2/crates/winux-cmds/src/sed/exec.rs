@@ -341,7 +341,11 @@ impl<'a> Exec<'a> {
         for f in self.prog.wfiles.iter_mut() {
             if let OutKind::File(Some(w)) = &mut f.kind {
                 if let Err(e) = w.flush() {
-                    first_err.get_or_insert(io_fatal(self.ctx, &String::from_utf8_lossy(&f.name), &e));
+                    first_err.get_or_insert(io_fatal(
+                        self.ctx,
+                        &String::from_utf8_lossy(&f.name),
+                        &e,
+                    ));
                 }
             }
         }
@@ -380,7 +384,9 @@ impl<'a> Exec<'a> {
                         .write_all(data)
                         .map_err(|e| io_fatal(self.ctx, "stderr", &e))
                 }
-                OutKind::File(Some(w)) => w.write_all(data).map_err(|e| io_fatal(self.ctx, "file", &e)),
+                OutKind::File(Some(w)) => w
+                    .write_all(data)
+                    .map_err(|e| io_fatal(self.ctx, "file", &e)),
                 OutKind::File(None) => Ok(()),
             },
         }
@@ -1409,7 +1415,9 @@ impl<'a> Exec<'a> {
     // ---- --debug -------------------------------------------------------------------------
 
     fn dbg(&mut self, b: &[u8]) -> Result<(), Fatal> {
-        self.stdout.write_all(b).map_err(|e| io_fatal(self.ctx, "stdout", &e))
+        self.stdout
+            .write_all(b)
+            .map_err(|e| io_fatal(self.ctx, "stdout", &e))
     }
 
     fn debug_input(&mut self) -> Result<(), Fatal> {

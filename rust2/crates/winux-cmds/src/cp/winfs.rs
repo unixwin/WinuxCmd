@@ -480,7 +480,16 @@ mod imp {
         let substitute_len = u16at(10) as usize;
         let print_off = u16at(12) as usize;
         let print_len = u16at(14) as usize;
-        let path_start = 16usize; // PathBuffer offset in the reparse buffer
+        // PathBuffer offset in the reparse buffer.  MountPointReparseBuffer
+        // has the four offset/length u16s then PathBuffer at 16, but
+        // SymbolicLinkReparseBuffer inserts a 4-byte Flags field first, so
+        // its PathBuffer starts at 20 (#1761: reading at 16 for a SYMLINK tag
+        // consumed Flags as two UTF-16 units and shifted the whole target).
+        let path_start = if tag == IO_REPARSE_TAG_SYMLINK {
+            20usize
+        } else {
+            16usize
+        };
         let read_name = |off: usize, len: usize| -> String {
             let start = path_start + off;
             let end = start + len;
@@ -1089,11 +1098,48 @@ pub fn expand_lx(ctx: &winux_core::Ctx, path: &str) -> String {
     text
 }
 
-/// `stat(2)` through the LX reader: expand the chain, then snapshot the
-/// target.  `lstat` callers keep `meta(..., false)` and see the link.
-pub fn meta_follow(ctx: &winux_core::Ctx, path: &str) -> Result<Meta, DWORD> {
+/// `stat(2)` link-chain resolution for the name-surrogate reparse points
+/// Win32 stat misreports: a symlink whose reparse point is file-flagged but
+/// whose target is a directory comes back as a non-directory entry, so
+/// `-H`/`-L` read the command-line dir link as "not a dir" and the copy
+/// died before creating the destination (#1693, #1761).  `expand_lx` only
+/// decodes the LX tag; native symlinks and junctions resolve here in user
+/// space, bounded like MAXSYMLINKS — the retired C++
+/// `dereferenced_source_path` rule.
+fn resolve_deref_chain(ctx: &winux_core::Ctx, path: &str) -> String {
+    let mut cur = path.to_string();
+    for _ in 0..crate::fs_win::MAX_SYMLINK_FOLLOW {
+        let (_, tag, _) = match find_record(&cur) {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        if !is_link_tag(tag) {
+            break;
+        }
+        let target = match link_target(&cur) {
+            Ok((t, _)) if !t.is_empty() => t,
+            _ => break,
+        };
+        cur = crate::fs_win::resolve_symlink_target(ctx, &cur, &target);
+    }
+    cur
+}
+
+/// The follow-side operand expansion: LX links first (`expand_lx`), then
+/// the name-surrogate chain Win32 stat misreports — native symlinks and
+/// junctions resolve in user space so `-H`/`-L` see the real target type
+/// (#1693, #1761).  `lstat` callers keep `expand_lx_parent` and see the
+/// link itself.
+pub fn expand_for_follow(ctx: &winux_core::Ctx, path: &str) -> String {
     let expanded = expand_lx(ctx, path);
-    meta(&expanded, true)
+    resolve_deref_chain(ctx, &expanded)
+}
+
+/// `stat(2)` through the follow expansion: snapshot the resolved target.
+/// `lstat` callers keep `meta(..., false)` and see the link.
+pub fn meta_follow(ctx: &winux_core::Ctx, path: &str) -> Result<Meta, DWORD> {
+    let resolved = expand_for_follow(ctx, path);
+    meta(&resolved, true)
 }
 
 /// Expand LX links in the parent chain only, keeping the final component

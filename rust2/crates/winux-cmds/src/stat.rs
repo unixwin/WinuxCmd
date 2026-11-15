@@ -1364,7 +1364,10 @@ mod tests {
         let sc = setup("stat-empty");
         let (r, _, err) = run_sc(&sc, &["-c", "%n", ""]);
         assert_eq!(r, 1);
-        assert!(err.contains("cannot statx '': No such file or directory"), "err={err}");
+        assert!(
+            err.contains("cannot statx '': No such file or directory"),
+            "err={err}"
+        );
     }
 
     #[test]

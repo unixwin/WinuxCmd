@@ -601,8 +601,7 @@ fn link_one(
             // [GNU] ln.c same-file check: a forced link between two
             // different directory entries of the same inode removes the
             // destination and relinks; `ln -f a a` still refuses.
-            let force_relink =
-                opts.force && resolve(ctx, src) != resolve(ctx, dst);
+            let force_relink = opts.force && resolve(ctx, src) != resolve(ctx, dst);
             if !force_relink {
                 let _ = writeln!(io.stderr, "ln: '{src}' and '{dst}' are the same file");
                 *ok = false;

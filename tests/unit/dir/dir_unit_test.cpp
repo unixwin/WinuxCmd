@@ -91,6 +91,11 @@ TEST(dir, dir_forwards_directory_option_to_ls) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.empty());
-  EXPECT_TRUE(r.stdout_text.find("test data") != std::string::npos);
+  // #1761 re-pin: dir forwards to `ls -C -b`, whose -b escapes the space as
+  // `test\ data`.  WSL probe (coreutils ls 9.4, 2026-11-15):
+  // `ls -C -b -d "test data"` -> `test\ data`, rc 0 -- the escaped bytes are
+  // the GNU contract, so the pin now expects the backslash form, not the
+  // literal unescaped spelling the retired C++ path printed.
+  EXPECT_TRUE(r.stdout_text.find("test\\ data") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("alpha.txt") == std::string::npos);
 }
