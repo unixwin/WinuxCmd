@@ -23,7 +23,7 @@
 //! verbatim in a GNU sandbox and dump `{id, argv, input, stdout, rc}`; the
 //! tables below are the byte-for-byte Rust transcription of that dump.
 
-use winux_regex::dfa::{LineDfa, LineMode};
+use winux_regex::dfa::{InputRequirement, LineDfa, LineMode};
 use winux_regex::dialect::{self, Dialect, DialectError};
 use winux_regex::{CompileOptions, MatchCache, Regex, Syntax};
 
@@ -383,7 +383,11 @@ fn nfa_bounds_never_disagree_with_backtracker() {
 }
 
 /// The line DFA declines the dialect-only node kinds instead of guessing:
-/// those patterns stay on the interpreter.
+/// those patterns stay on the interpreter. The restricted `.` is the only
+/// exception: its extra rules are implied by the line model itself
+/// (`reject_invalid_utf8` by the ValidUtf8 requirement, `exclude_newline`
+/// while the record delimiter IS '\n'), so it builds — the sed address
+/// filter depends on that (WinuxCmd #1488 scan-perf lane).
 #[test]
 fn line_dfa_declines_dialect_nodes() {
     let plain = Regex::compile(Syntax::Basic, "^a$").unwrap();
@@ -391,7 +395,17 @@ fn line_dfa_declines_dialect_nodes() {
     let sed = Regex::compile_with(Syntax::Basic, b"^a$", CompileOptions::sed(false, true)).unwrap();
     assert!(LineDfa::new(&[&sed], LineMode::Contains, b'\n').is_none());
     let dot = Regex::compile_with(Syntax::Basic, b"a.", CompileOptions::sed(false, false)).unwrap();
-    assert!(LineDfa::new(&[&dot], LineMode::Contains, b'\n').is_none());
+    let d = LineDfa::new(&[&dot], LineMode::Contains, b'\n');
+    assert_eq!(
+        d.map(|d| d.input_requirement()),
+        Some(InputRequirement::ValidUtf8)
+    );
+    // `M` `.` under a '\n' record model: the excluded byte is the eol the
+    // model already strips; under `-z` (eol = NUL) it stays a real
+    // constraint, so the DFA declines.
+    let mdot = Regex::compile_with(Syntax::Basic, b"a.", CompileOptions::sed(false, true)).unwrap();
+    assert!(LineDfa::new(&[&mdot], LineMode::Contains, b'\n').is_some());
+    assert!(LineDfa::new(&[&mdot], LineMode::Contains, 0).is_none());
 }
 // ---- grep rows: 30 of the 162 rows in gate/cases/{grep,egrep}.tsv
 const GREP_ROWS: &[GrepRow] = &[

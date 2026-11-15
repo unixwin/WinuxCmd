@@ -42,8 +42,13 @@
 //! `None` for them (and for NFAs above a size cap), and the caller keeps the
 //! interpreter. The same `None` is returned for the dialect-only node kinds
 //! of [`crate::CompileOptions`] (sed `M` line anchors, `` \` ``/`\'` buffer
-//! anchors, the restricted `.`): this model's `eol` already delimits lines
-//! and it carries no buffer-anchor state, so those stay on the interpreter.
+//! anchors): this model's `eol` already delimits lines and it carries no
+//! buffer-anchor state, so those stay on the interpreter. The restricted `.`
+//! ([`crate::ast::Node::DotRestricted`]) is the plain-dot fragment when its
+//! two extra rules are already implied by the line model — the `ValidUtf8`
+//! requirement covers `reject_invalid_utf8`, and `exclude_newline` is
+//! vacuous while the record `eol` is `'\n'` (a `sed -z ... M` `.` would
+//! still have to reject `'\n'` mid-record, so that combination declines).
 //!
 //! # Scanning model
 //!
@@ -208,6 +213,33 @@ impl Nfa {
                 let lead4 = self.bytes(ByteSet::from_fn(eol, |b| (0xF0..=0xF7).contains(&b)), c3);
                 self.push(NState::Eps(vec![single, lead2, lead3, lead4]))
             }
+            Node::DotRestricted {
+                exclude_newline, ..
+            } if !exclude_newline || eol == b'\n' => {
+                // The sed-dialect `.` differs from `Node::Dot` only where
+                // the line model already constrains the input:
+                // `exclude_newline` bars the '\n' byte, which every byte
+                // set excludes anyway when the record delimiter IS '\n'
+                // (under `sed -z` it is ordinary record content, so an
+                // `M` `.` there keeps the interpreter); `reject_invalid_utf8`
+                // rejects only bytes no well-formed UTF-8 line contains —
+                // the `has_dot` ValidUtf8 requirement routes such lines to
+                // the interpreter. On admissible input the fragment is the
+                // same codepoint-width rule as `Node::Dot`.
+                self.has_dot = true;
+                let cont = ByteSet::from_fn(eol, |b| (0x80..=0xBF).contains(&b));
+                let c1 = self.bytes(cont, next);
+                let c2a = self.bytes(cont, next);
+                let c2 = self.bytes(cont, c2a);
+                let c3b = self.bytes(cont, next);
+                let c3a = self.bytes(cont, c3b);
+                let c3 = self.bytes(cont, c3a);
+                let single = self.bytes(ByteSet::from_fn(eol, |b| b < 0xC0 || b >= 0xF8), next);
+                let lead2 = self.bytes(ByteSet::from_fn(eol, |b| (0xC0..=0xDF).contains(&b)), c1);
+                let lead3 = self.bytes(ByteSet::from_fn(eol, |b| (0xE0..=0xEF).contains(&b)), c2);
+                let lead4 = self.bytes(ByteSet::from_fn(eol, |b| (0xF0..=0xF7).contains(&b)), c3);
+                self.push(NState::Eps(vec![single, lead2, lead3, lead4]))
+            }
             Node::AnchorStart => {
                 self.uses_prev_start = true;
                 self.push(NState::Assert(Assert::LineStart, next))
@@ -250,10 +282,11 @@ impl Nfa {
             Node::Capture { child, .. } => self.build(child, ic, next)?,
             Node::BackReference(_) => return None,
             // Dialect-only nodes (sed `M` line anchors, `` \` ``/`\'` buffer
-            // anchors, the restricted `.`) are not part of this line-DFA
-            // model: its eol byte already delimits lines and it has no
-            // buffer-anchor state. Unsupported here means "keep the
-            // interpreter", so the answer stays exact.
+            // anchors, a restricted `.` whose newline rule a non-'\n'
+            // record delimiter does not already imply) are not part of
+            // this line-DFA model: its eol byte already delimits lines and
+            // it has no buffer-anchor state. Unsupported here means "keep
+            // the interpreter", so the answer stays exact.
             Node::LineStart(_)
             | Node::LineEnd(_)
             | Node::BufferStart
