@@ -1,5 +1,11 @@
 # Speed-matrix benchmark baseline
 
+For a focused recursive-grep comparison, run
+`python scripts/benchmark-grep-walk.py baseline/winuxcmd.exe candidate/winuxcmd.exe report.json`.
+It validates all 2,000 filenames on every invocation and records alternating
+before/after samples. See [the directory-metadata report](../../DOCS/2.0-grep-directory-metadata.md)
+for the measured result and compatibility limits.
+
 `scripts/benchmark-speed-matrix.py` compares the built WinuxCmd
 dispatcher against GNU coreutils (MSYS/Git toolchain) and uutils
 coreutils on the hot-path workloads of `DOCS/performance-roadmap.md`

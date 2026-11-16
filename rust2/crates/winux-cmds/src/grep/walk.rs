@@ -510,19 +510,22 @@ impl<'r, 'a, 'e> Runner<'r, 'a, 'e> {
                 return Ok(true);
             }
         };
-        let mut names: Vec<(OsString, PathBuf)> = Vec::new();
-        for entry in entries.flatten() {
-            names.push((entry.file_name(), entry.path()));
-        }
+        let entries: Vec<_> = entries.flatten().collect();
         let mut status = true;
-        for (fname, path) in names {
-            let name = fname.to_string_lossy().into_owned();
+        for entry in entries {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
             let child = if display.ends_with('/') {
                 format!("{display}{name}")
             } else {
                 format!("{display}/{name}")
             };
-            let lmeta = match std::fs::symlink_metadata(&path) {
+            // Keep the non-following metadata supplied by directory enumeration.
+            // On Windows this avoids reopening every entry just to classify it;
+            // on Unix DirEntry::metadata still performs symlink_metadata. GNU
+            // grep 3.11 likewise uses FTS_NOSTAT and only asks for status when
+            // the entry type is unknown (grep.c:1699 grepdirent).
+            let lmeta = match entry.metadata() {
                 Ok(m) => m,
                 Err(e) => {
                     let shown = self.shown(&child);
