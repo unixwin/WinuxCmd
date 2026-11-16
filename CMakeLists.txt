@@ -78,8 +78,8 @@ set(WINUXCMD_RUST2_COMMANDS "b2sum;base32;base64;basename;dirname;echo;expand;fa
 # source, three REGISTER_COMMANDs): the split-engine wire keeps grep.cpp
 # in the build for the -P/PCRE2 face even with rust2 ON, and the OFF
 # filter below drops all three applets together (no dual track).
-set(WINUXCMD_RUST2_COMMANDS "b2sum;base32;base64;basename;cp;cut;dirname;du;echo;expand;false;find;fmt;fold;getconf;grep;hostid;hostname;id;join;ln;md5sum;mkdir;mkfifo;mknod;mktemp;nice;nohup;nproc;numfmt;od;paste;printenv;pwd;readlink;realpath;rev;rmdir;sed;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;sleep;stat;sum;sync;tac;tee;test;test_bracket;timeout;touch;tr;true;truncate;tsort;uname;unexpand;unlink;users;whoami")
-set(WINUXCMD_RUST2_COMMANDS "b2sum;base32;base64;basename;cp;cut;dirname;du;echo;expand;false;find;fmt;fold;getconf;grep;hostid;hostname;id;join;ln;md5sum;mkdir;mkfifo;mknod;mktemp;mv;nice;nproc;numfmt;od;paste;printenv;pwd;readlink;realpath;rev;rmdir;sed;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;sleep;stat;sum;sync;tac;tee;test;test_bracket;timeout;touch;tr;true;truncate;tsort;uname;unexpand;unlink;users;whoami")
+set(WINUXCMD_RUST2_COMMANDS "b2sum;base32;base64;basename;cut;dirname;du;echo;expand;false;find;fmt;fold;getconf;grep;hostid;hostname;id;join;ln;md5sum;mkdir;mkfifo;mknod;mktemp;nice;nohup;nproc;numfmt;od;paste;printenv;pwd;readlink;realpath;rev;rmdir;sed;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;sleep;stat;sum;sync;tac;tee;test;test_bracket;timeout;touch;tr;true;truncate;tsort;uname;unexpand;unlink;users;whoami")
+set(WINUXCMD_RUST2_COMMANDS "b2sum;base32;base64;basename;cut;dirname;du;echo;expand;false;find;fmt;fold;getconf;grep;hostid;hostname;id;join;ln;md5sum;mkdir;mkfifo;mknod;mktemp;mv;nice;nproc;numfmt;od;paste;printenv;pwd;readlink;realpath;rev;rmdir;sed;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;sleep;stat;sum;sync;tac;tee;test;test_bracket;timeout;touch;tr;true;truncate;tsort;uname;unexpand;unlink;users;whoami")
 
 # Command-set edition shipped by this build (#1438, ruling of 2026-10-30):
 #   default - every registered command stays runnable through the multicall
