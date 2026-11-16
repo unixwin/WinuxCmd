@@ -44,8 +44,10 @@ pub fn hostid_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // wherever they appear (the branded text is the dispatcher's job).
     // hostid registers no option-table entries: GNU's
     // parse_gnu_standard_options_only (hostid.c:63-65) offers only the long
-    // --help/--version, so every short letter (-V, -v, -h, ...) is an
-    // "invalid option" usage error.
+    // --help/--version, so -V / -v are getopt's "invalid option -- 'V'"
+    // usage errors (rc 1). A lone -h still takes argopt's bare-h -> --help
+    // mapping; that pre-existing divergence is recorded in the ho12 note row
+    // and HELP-SURFACE.md (RC-ONLY), not fixed by this row.
     let opts: [argopt::OptSpec; 0] = [];
     let p = match argopt::parse("hostid", args, &opts, io, ctx, 1) {
         Ok(p) => p,
@@ -148,8 +150,10 @@ mod tests {
 
     #[test]
     fn long_version_is_accepted() {
-        // The dispatcher owns the branded version text; the library form just
-        // reports success, as it does for --help.
+        // GNU prints the version banner and exits 0. This library form only
+        // reports the status: the banner text is still an open help-surface
+        // gap (HELP-SURFACE.md logs hostid --version as EMPTY-HELP), so the
+        // test pins the contract this layer owns, not the missing text.
         let (r, out, err) = run(&["--version"]);
         assert_eq!(r, 0);
         assert_eq!(out, "");
