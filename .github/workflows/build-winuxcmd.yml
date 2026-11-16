@@ -514,7 +514,11 @@ jobs:
   # job needs no change — it has no network corpus path to swap.
   # Artifacts: each shard uploads ledger + summary + timing under
   # rust2-gate-<shard>; the `rust2-gate` job below merges them into the run
-  # dashboard (step summary + rust2-gate-dashboard artifact).
+  # dashboard (step summary + gate-dashboard artifact). The dashboard name
+  # deliberately does NOT start with rust2-gate-: the aggregate downloads
+  # by that pattern, and on a job re-run its own previous attempt's
+  # dashboard is downloadable, so it would land in gates/ and be counted as
+  # a ledger-less shard (run 43931514524).
   rust2-gate-shards:
     runs-on: ${{ matrix.runner }}
     needs: build-windows
@@ -788,7 +792,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: rust2-gate-dashboard
+          # Must not match the `rust2-gate-*` pattern above. On a re-run,
+          # this job's previous attempt still has its dashboard artifact
+          # available, and download-artifact would place it in gates/;
+          # matrix-summary.py counts every subdirectory there as a shard,
+          # so a ledger-less dashboard would red the whole run. Keeping the
+          # name outside the pattern is what makes the "real shard missing
+          # its ledger => RED" rule safe to keep strict.
+          name: gate-dashboard
           path: gate-dashboard.md
           retention-days: 7
           if-no-files-found: warn
