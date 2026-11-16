@@ -37,6 +37,9 @@ POSITIONAL_TO_NAMED: dict[str, tuple[str, ...]] = {
     # [#1488 wave-W2 wire] tr's rust2 body owns the [c*n] diagnostics; the
     # C++ translate_error helper publishes the same key positionally.
     "command.tr.error.invalid_repeat_count": ("count",),
+    "command.fmt.error.invalid_width": ("width",),
+    "command.join.error.incompatible_fields": ("first", "second"),
+    "command.join.error.file_not_sorted": ("file", "line", "text"),
 }
 
 

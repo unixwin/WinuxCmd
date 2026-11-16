@@ -35,7 +35,7 @@ use std::ffi::OsString;
 use std::io::Write;
 
 use crate::argopt;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const WIDTH_DEFAULT: usize = 75;
 const LEEWAY: usize = 7;
@@ -543,14 +543,22 @@ impl<'a> Fmt<'a> {
 /// xdectoumax(text, 0, MAXCHARS/2, "invalid width", 0): non-numbers give
 /// `invalid width: 'x'` with no suffix; numbers above the limit give
 /// `invalid width: 'N': Numerical result out of range`. 0 is allowed.
-fn parse_width_arg(text: &str) -> Result<usize, String> {
+fn parse_width_arg(ctx: &Ctx, text: &str) -> Result<usize, String> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(format!("invalid width: '{text}'"));
+        return Err(tr!(
+            ctx,
+            "command.fmt.error.invalid_width",
+            "invalid width: '{width}'",
+            width = text
+        ));
     }
     match text.parse::<u128>() {
         Ok(v) if v <= MAX_WIDTH_LIMIT as u128 => Ok(v as usize),
-        _ => Err(format!(
-            "invalid width: '{text}': Numerical result out of range"
+        _ => Err(tr!(
+            ctx,
+            "command.fmt.error.invalid_width_range",
+            "invalid width: '{width}': Numerical result out of range",
+            width = text
         )),
     }
 }
@@ -573,7 +581,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut rest = &strs[..];
     if let Some(first) = strs.first() {
         if first.starts_with('-') && first.len() > 1 && first.as_bytes()[1].is_ascii_digit() {
-            match parse_width_arg(&first[1..]) {
+            match parse_width_arg(ctx, &first[1..]) {
                 Ok(w) => {
                     max_width = w;
                     max_width_given = true;
@@ -630,7 +638,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             }
                         }
                     };
-                    match parse_width_arg(&v) {
+                    match parse_width_arg(ctx, &v) {
                         Ok(w) => {
                             max_width = w;
                             max_width_given = true;
@@ -660,7 +668,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             }
                         }
                     };
-                    match parse_width_arg(&v) {
+                    match parse_width_arg(ctx, &v) {
                         Ok(g) => goal_width = Some(g),
                         Err(msg) => {
                             let _ = writeln!(io.stderr, "fmt: {msg}");
@@ -732,7 +740,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         }
                     };
                     match c {
-                        'w' => match parse_width_arg(&v) {
+                        'w' => match parse_width_arg(ctx, &v) {
                             Ok(w) => {
                                 max_width = w;
                                 max_width_given = true;
@@ -742,7 +750,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                                 return Ok(1);
                             }
                         },
-                        'g' => match parse_width_arg(&v) {
+                        'g' => match parse_width_arg(ctx, &v) {
                             Ok(g) => goal_width = Some(g),
                             Err(msg) => {
                                 let _ = writeln!(io.stderr, "fmt: {msg}");
@@ -757,8 +765,11 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         ctx,
                         io,
                         "fmt",
-                        &format!(
-                            "invalid option -- {d}; -WIDTH is recognized only when it is the first\noption; use -w N instead"
+                        &tr!(
+                            ctx,
+                            "command.fmt.error.width_not_first",
+                            "invalid option -- {option}; -WIDTH is recognized only when it is the first\noption; use -w N instead",
+                            option = d
                         ),
                     );
                     return Ok(1);
@@ -777,7 +788,16 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let goal = match goal_width {
         Some(g) => {
             if g > max_width {
-                let _ = writeln!(io.stderr, "fmt: invalid width: '{g}'");
+                let _ = writeln!(
+                    io.stderr,
+                    "fmt: {}",
+                    tr!(
+                        ctx,
+                        "command.fmt.error.invalid_width",
+                        "invalid width: '{width}'",
+                        width = g
+                    )
+                );
                 return Ok(1);
             }
             if !max_width_given {
@@ -802,7 +822,11 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if operands.is_empty() {
         let mut data = Vec::new();
         if std::io::Read::read_to_end(&mut io.stdin, &mut data).is_err() {
-            let _ = writeln!(io.stderr, "fmt: read error");
+            let _ = writeln!(
+                io.stderr,
+                "fmt: {}",
+                tr!(ctx, "command.fmt.error.read_error", "read error")
+            );
             ok = false;
         }
         let mut f = make_fmt(
@@ -825,7 +849,11 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             if op == "-" {
                 let mut data = Vec::new();
                 if std::io::Read::read_to_end(&mut io.stdin, &mut data).is_err() {
-                    let _ = writeln!(io.stderr, "fmt: read error");
+                    let _ = writeln!(
+                        io.stderr,
+                        "fmt: {}",
+                        tr!(ctx, "command.fmt.error.read_error", "read error")
+                    );
                     ok = false;
                     continue;
                 }
@@ -864,7 +892,16 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         prefix_bytes.2,
                     );
                     if f.run(io.stdout).is_err() {
-                        let _ = writeln!(io.stderr, "fmt: read error: {op}");
+                        let _ = writeln!(
+                            io.stderr,
+                            "fmt: {}",
+                            tr!(
+                                ctx,
+                                "command.fmt.error.read_error_file",
+                                "read error: {file}",
+                                file = op
+                            )
+                        );
                         ok = false;
                     }
                 }
@@ -882,7 +919,11 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             .map(|m| m.is_dir)
                             .unwrap_or(false)
                     {
-                        let _ = writeln!(io.stderr, "fmt: read error");
+                        let _ = writeln!(
+                            io.stderr,
+                            "fmt: {}",
+                            tr!(ctx, "command.fmt.error.read_error", "read error")
+                        );
                         ok = false;
                         continue;
                     } else {
@@ -892,7 +933,17 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             _ => "Invalid argument",
                         }
                     };
-                    let _ = writeln!(io.stderr, "fmt: cannot open '{op}' for reading: {reason}");
+                    let _ = writeln!(
+                        io.stderr,
+                        "fmt: {}",
+                        tr!(
+                            ctx,
+                            "command.fmt.error.cannot_open",
+                            "cannot open '{file}' for reading: {reason}",
+                            file = op,
+                            reason = reason
+                        )
+                    );
                     ok = false;
                 }
             }

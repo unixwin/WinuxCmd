@@ -34,7 +34,7 @@ use crate::argopt::{self, OptSpec};
 use crate::bre::Regex;
 use crate::fsutil::resolve;
 use crate::gnuhelp;
-use winux_core::{CmdResult, Ctx, Io};
+use winux_core::{tr, CmdResult, Ctx, Io};
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -203,7 +203,15 @@ pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let sep_ends_record = !p.has("before");
     if regex_mode && separator.is_empty() {
         // tac.c: error (EXIT_FAILURE, 0, "separator cannot be empty")
-        let _ = writeln!(io.stderr, "tac: separator cannot be empty");
+        let _ = writeln!(
+            io.stderr,
+            "tac: {}",
+            tr!(
+                ctx,
+                "command.tac.error.separator_empty",
+                "separator cannot be empty"
+            )
+        );
         return Ok(1);
     }
     // Compile once up front so an invalid regex fails before any file is
@@ -215,7 +223,15 @@ pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         match Regex::compile(&separator) {
             Ok(re) => Some(re),
             Err(_) => {
-                let _ = writeln!(io.stderr, "tac: Invalid regular expression");
+                let _ = writeln!(
+                    io.stderr,
+                    "tac: {}",
+                    tr!(
+                        ctx,
+                        "command.tac.error.invalid_regex",
+                        "Invalid regular expression"
+                    )
+                );
                 return Ok(1);
             }
         }
@@ -247,7 +263,16 @@ pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 Ok(mut f) => {
                     let mut buf = Vec::new();
                     if f.read_to_end(&mut buf).is_err() {
-                        let _ = writeln!(io.stderr, "tac: {file}: read error");
+                        let _ = writeln!(
+                            io.stderr,
+                            "tac: {}",
+                            tr!(
+                                ctx,
+                                "command.tac.error.read_error",
+                                "{file}: read error",
+                                file = file
+                            )
+                        );
                         failed = true;
                         continue;
                     }
@@ -265,14 +290,30 @@ pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         .map(|m| m.is_dir())
                         .unwrap_or(false)
                     {
-                        let _ = writeln!(io.stderr, "tac: {file}: read error: Is a directory");
+                        let _ = writeln!(
+                            io.stderr,
+                            "tac: {}",
+                            tr!(
+                                ctx,
+                                "command.tac.error.read_error_directory",
+                                "{file}: read error: Is a directory",
+                                file = file
+                            )
+                        );
                         failed = true;
                         continue;
                     }
                     let reason = crate::fsutil::gnu_open_reason(ctx, file, &e, false);
                     let _ = writeln!(
                         io.stderr,
-                        "tac: failed to open '{file}' for reading: {reason}"
+                        "tac: {}",
+                        tr!(
+                            ctx,
+                            "command.tac.error.open_failed",
+                            "failed to open '{file}' for reading: {reason}",
+                            file = file,
+                            reason = reason
+                        )
                     );
                     failed = true;
                     continue;
@@ -293,7 +334,16 @@ pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             // GNU tac exits through its stdout close/write checks
             // (tac.c: `error (0, errno, _("write error"))`), so a failed
             // record write is reported, not swallowed.
-            let _ = writeln!(io.stderr, "tac: write error: {}", crate::fsutil::reason(&e));
+            let _ = writeln!(
+                io.stderr,
+                "tac: {}",
+                tr!(
+                    ctx,
+                    "command.tac.error.write_error",
+                    "write error: {reason}",
+                    reason = crate::fsutil::reason(&e)
+                )
+            );
             failed = true;
         }
     }

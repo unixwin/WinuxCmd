@@ -52,7 +52,7 @@
 use std::ffi::OsString;
 
 use crate::argopt;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const SEQ_FAST_STEP_LIMIT: u64 = 200;
 /// Sane cap for printf widths so a bogus `%999999999999f` cannot OOM us;
@@ -442,13 +442,18 @@ fn format_hex_float(x: f64, spec: &FormatSpec, upper: bool) -> String {
 
 /// long_double_format(): validate a seq format and split it at the single
 /// % directive. Returns (prefix, spec, conversion, suffix).
-fn parse_format(fmt: &str) -> Result<(String, FormatSpec, char, String), String> {
+fn parse_format(ctx: &Ctx, fmt: &str) -> Result<(String, FormatSpec, char, String), String> {
     let bytes = fmt.as_bytes();
     let mut i = 0usize;
     let prefix_len;
     loop {
         if i >= bytes.len() {
-            return Err(format!("format '{fmt}' has no % directive"));
+            return Err(tr!(
+                ctx,
+                "command.seq.error.format_no_directive",
+                "format '{format}' has no % directive",
+                format = fmt
+            ));
         }
         if bytes[i] == b'%' {
             if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
@@ -504,11 +509,22 @@ fn parse_format(fmt: &str) -> Result<(String, FormatSpec, char, String), String>
         i += 1;
     }
     if i >= bytes.len() {
-        return Err(format!("format '{fmt}' ends in %"));
+        return Err(tr!(
+            ctx,
+            "command.seq.error.format_ends_in_percent",
+            "format '{format}' ends in %",
+            format = fmt
+        ));
     }
     let conv = fmt[i..].chars().next().unwrap();
     if !"efgaEFGA".contains(conv) {
-        return Err(format!("format '{fmt}' has unknown %{conv} directive"));
+        return Err(tr!(
+            ctx,
+            "command.seq.error.format_unknown_directive",
+            "format '{format}' has unknown %{conv} directive",
+            format = fmt,
+            conv = conv
+        ));
     }
     i += conv.len_utf8();
     let mut suffix = String::new();
@@ -520,7 +536,12 @@ fn parse_format(fmt: &str) -> Result<(String, FormatSpec, char, String), String>
                 j += 2;
                 continue;
             }
-            return Err(format!("format '{fmt}' has too many % directives"));
+            return Err(tr!(
+                ctx,
+                "command.seq.error.format_too_many_directives",
+                "format '{format}' has too many % directives",
+                format = fmt
+            ));
         }
         let c = fmt[j..].chars().next().unwrap();
         suffix.push(c);
@@ -686,6 +707,7 @@ struct ExactRun {
 /// Build the exact run when the case qualifies: default format only, all
 /// three operands fixed-point decimals whose common-scale mantissas fit.
 fn try_exact_run(
+    ctx: &Ctx,
     texts: (&str, &str, &str),
     first_scan: &Operand,
     step_scan: &Operand,
@@ -757,7 +779,7 @@ fn try_exact_run(
         // same width derivation as get_default_format via the scanned
         // operand texts; the emitted default is %0<w>.<prec>f
         let fmt = default_format(first_scan, step_scan, last_scan, true);
-        let (_, spec, conv, _) = parse_format(&fmt).ok()?;
+        let (_, spec, conv, _) = parse_format(ctx, &fmt).ok()?;
         if conv != 'f' {
             return None;
         }
@@ -1237,7 +1259,7 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
     // ---- format validation (seq.c long_double_format call) ----
     if let Some(f) = &format {
-        if let Err(msg) = parse_format(f) {
+        if let Err(msg) = parse_format(ctx, f) {
             let _ = writeln!(io.stderr, "seq: {msg}");
             return Ok(1);
         }
@@ -1248,7 +1270,11 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             ctx,
             io,
             "seq",
-            "format string may not be specified when printing equal width strings",
+            &tr!(
+                ctx,
+                "command.seq.error.format_with_equal_width",
+                "format string may not be specified when printing equal width strings"
+            ),
         );
         return Ok(1);
     }
@@ -1313,7 +1339,12 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     ctx,
                     io,
                     "seq",
-                    &format!("invalid Zero increment value: '{}'", strs[oidx - 1]),
+                    &tr!(
+                        ctx,
+                        "command.seq.error.invalid_zero_increment",
+                        "invalid Zero increment value: '{value}'",
+                        value = strs[oidx - 1]
+                    ),
                 );
                 return Ok(1);
             }
@@ -1386,17 +1417,17 @@ pub fn seq_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             2 => (op_texts[0], "1", op_texts[1]),
             _ => (op_texts[0], op_texts[1], op_texts[2]),
         };
-        if let Some(run) = try_exact_run((ft, st, lt), &first, &step, &last, equal_width) {
+        if let Some(run) = try_exact_run(ctx, (ft, st, lt), &first, &step, &last, equal_width) {
             run.print(io, &separator)?;
             return Ok(0);
         }
     }
     // ---- format resolution and printing ----
     let (prefix, spec, conv, suffix) = match &format {
-        Some(f) => parse_format(f).unwrap(),
+        Some(f) => parse_format(ctx, f).unwrap(),
         None => {
             let f = default_format(&first, &step, &last, equal_width);
-            let (p, s, c, x) = parse_format(&f).unwrap();
+            let (p, s, c, x) = parse_format(ctx, &f).unwrap();
             (p, s, c, x)
         }
     };
@@ -1430,9 +1461,19 @@ fn scan_operand(s: &str) -> Result<Operand, ScanErr<'_>> {
 
 fn scan_error(ctx: &Ctx, io: &mut Io, e: &ScanErr<'_>) -> CmdResult {
     let msg = if e.nan {
-        format!("invalid 'not-a-number' argument: '{}'", e.text)
+        tr!(
+            ctx,
+            "command.seq.error.invalid_nan_argument",
+            "invalid 'not-a-number' argument: '{text}'",
+            text = e.text
+        )
     } else {
-        format!("invalid floating point argument: '{}'", e.text)
+        tr!(
+            ctx,
+            "command.seq.error.invalid_float_argument",
+            "invalid floating point argument: '{text}'",
+            text = e.text
+        )
     };
     let _ = usage_error(ctx, io, "seq", &msg);
     Ok(1)

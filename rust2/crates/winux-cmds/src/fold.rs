@@ -29,7 +29,7 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 
 use crate::argopt;
-use winux_core::{usage_error, CmdResult, Ctx, Io};
+use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 const TAB_WIDTH: usize = 8;
 
@@ -189,7 +189,7 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     Some(v) => match parse_width(&v) {
                         WidthArg::Good(w) => width = w,
                         WidthArg::Bad(t) => {
-                            return width_error(io, &t);
+                            return width_error(ctx, io, &t);
                         }
                         WidthArg::None => unreachable!(),
                     },
@@ -252,7 +252,7 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     };
                     match parse_width(&v) {
                         WidthArg::Good(w) => width = w,
-                        WidthArg::Bad(t) => return width_error(io, &t),
+                        WidthArg::Bad(t) => return width_error(ctx, io, &t),
                         WidthArg::None => unreachable!(),
                     }
                 }
@@ -263,7 +263,7 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     let original = &arg[1..]; // everything after the dash
                     match parse_width(original) {
                         WidthArg::Good(w) => width = w,
-                        WidthArg::Bad(t) => return width_error(io, &t),
+                        WidthArg::Bad(t) => return width_error(ctx, io, &t),
                         WidthArg::None => unreachable!(),
                     }
                     ci = chars.len();
@@ -303,7 +303,16 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match std::fs::File::open(&path) {
                 Ok(mut f) => {
                     if fold_file(&mut f, io.stdout, width, break_spaces, count_bytes).is_err() {
-                        let _ = writeln!(io.stderr, "fold: read error: {name}");
+                        let _ = writeln!(
+                            io.stderr,
+                            "fold: {}",
+                            tr!(
+                                ctx,
+                                "command.fold.error.read_error",
+                                "read error: {file}",
+                                file = name
+                            )
+                        );
                         ok = false;
                     }
                 }
@@ -322,7 +331,17 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     } else {
                         reason_str(&e)
                     };
-                    let _ = writeln!(io.stderr, "fold: {name}: {reason}");
+                    let _ = writeln!(
+                        io.stderr,
+                        "fold: {}",
+                        tr!(
+                            ctx,
+                            "command.fold.error.open_failed",
+                            "{file}: {reason}",
+                            file = name,
+                            reason = reason
+                        )
+                    );
                     ok = false;
                 }
             }
@@ -339,19 +358,30 @@ fn reason_str(e: &std::io::Error) -> &'static str {
     }
 }
 
-fn width_error(io: &mut Io, text: &str) -> CmdResult {
+fn width_error(ctx: &Ctx, io: &mut Io, text: &str) -> CmdResult {
     // Match xdectoumax's three failure shapes by re-deriving the cause.
     let msg = if text.bytes().all(|b| b.is_ascii_digit()) && !text.is_empty() {
         match text.parse::<u128>() {
-            Ok(v) if v < 1 => {
-                format!("invalid number of columns: '{text}': Numerical result out of range")
-            }
-            _ => format!(
-                "invalid number of columns: '{text}': Value too large for defined data type"
+            Ok(v) if v < 1 => tr!(
+                ctx,
+                "command.fold.error.columns_out_of_range",
+                "invalid number of columns: '{value}': Numerical result out of range",
+                value = text
+            ),
+            _ => tr!(
+                ctx,
+                "command.fold.error.columns_too_large",
+                "invalid number of columns: '{value}': Value too large for defined data type",
+                value = text
             ),
         }
     } else {
-        format!("invalid number of columns: '{text}'")
+        tr!(
+            ctx,
+            "command.fold.error.invalid_columns",
+            "invalid number of columns: '{value}'",
+            value = text
+        )
     };
     let _ = writeln!(io.stderr, "fold: {msg}");
     Ok(1)

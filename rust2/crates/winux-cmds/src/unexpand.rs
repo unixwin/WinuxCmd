@@ -24,7 +24,7 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 
 use crate::argopt::{self, OptSpec};
-use crate::expand::{parse_token, Mode, TabStops};
+use crate::expand::{parse_token, tabmsg, Mode, TabSpecError, TabStops};
 use crate::fsutil::resolve;
 use winux_core::{CmdResult, Ctx, Io};
 
@@ -47,12 +47,12 @@ const OPTS: &[OptSpec] = &[
 ];
 
 /// add_tab_stop: per-stop validation at add time (expand-common.c).
-fn add_stop(ts: &mut TabStops, value: u64) -> Result<(), String> {
+fn add_stop(ts: &mut TabStops, value: u64) -> Result<(), TabSpecError> {
     if value == 0 {
-        return Err("tab size cannot be 0".to_string());
+        return Err(TabSpecError::Zero);
     }
     if ts.stops.last().map(|last| value <= *last).unwrap_or(false) {
-        return Err("tab sizes must be ascending".to_string());
+        return Err(TabSpecError::Ascending);
     }
     ts.stops.push(value);
     Ok(())
@@ -64,7 +64,7 @@ fn add_spec(
     spec: &str,
     slash: &mut bool,
     plus: &mut bool,
-) -> Result<(), String> {
+) -> Result<(), TabSpecError> {
     let normalized = spec.replace(',', " ");
     let tokens: Vec<&str> = normalized.split_whitespace().collect();
     for (i, token) in tokens.iter().enumerate() {
@@ -77,7 +77,7 @@ fn add_spec(
                     continue;
                 }
                 if i + 1 != tokens.len() {
-                    return Err(format!("'{m}' specifier only allowed with the last value"));
+                    return Err(TabSpecError::RepeatNotLast(m));
                 }
                 if m == '/' {
                     *slash = true;
@@ -246,7 +246,7 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             if let Some(spec) = long.strip_prefix("tabs=") {
                 t_seen = true;
                 if let Err(e) = add_spec(&mut ts, spec, &mut slash_repeat, &mut plus_repeat) {
-                    let _ = writeln!(io.stderr, "unexpand: {e}");
+                    let _ = writeln!(io.stderr, "unexpand: {}", tabmsg::text(ctx, "unexpand", &e));
                     return Ok(1);
                 }
                 i += 1;
@@ -261,7 +261,11 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         if let Err(e) =
                             add_spec(&mut ts, &spec, &mut slash_repeat, &mut plus_repeat)
                         {
-                            let _ = writeln!(io.stderr, "unexpand: {e}");
+                            let _ = writeln!(
+                                io.stderr,
+                                "unexpand: {}",
+                                tabmsg::text(ctx, "unexpand", &e)
+                            );
                             return Ok(1);
                         }
                         i += 2;
@@ -301,7 +305,11 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         have_pending = true;
                     } else if *ch == ',' {
                         if let Err(e) = add_stop(&mut ts, pending) {
-                            let _ = writeln!(io.stderr, "unexpand: {e}");
+                            let _ = writeln!(
+                                io.stderr,
+                                "unexpand: {}",
+                                tabmsg::text(ctx, "unexpand", &e)
+                            );
                             return Ok(1);
                         }
                         pending = 0;
@@ -323,7 +331,11 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             if let Err(e) =
                                 add_spec(&mut ts, &spec, &mut slash_repeat, &mut plus_repeat)
                             {
-                                let _ = writeln!(io.stderr, "unexpand: {e}");
+                                let _ = writeln!(
+                                    io.stderr,
+                                    "unexpand: {}",
+                                    tabmsg::text(ctx, "unexpand", &e)
+                                );
                                 return Ok(1);
                             }
                             i += 1;
@@ -340,7 +352,7 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     }
                 } else if let Err(e) = add_spec(&mut ts, &val, &mut slash_repeat, &mut plus_repeat)
                 {
-                    let _ = writeln!(io.stderr, "unexpand: {e}");
+                    let _ = writeln!(io.stderr, "unexpand: {}", tabmsg::text(ctx, "unexpand", &e));
                     return Ok(1);
                 }
                 consumed = true;
@@ -369,7 +381,7 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         if k == "tabs" {
             t_seen = true;
             if let Err(e) = add_spec(&mut ts, v, &mut slash_repeat, &mut plus_repeat) {
-                let _ = writeln!(io.stderr, "unexpand: {e}");
+                let _ = writeln!(io.stderr, "unexpand: {}", tabmsg::text(ctx, "unexpand", &e));
                 return Ok(1);
             }
         }
@@ -378,14 +390,15 @@ pub fn unexpand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // finalize: flush the pending -NUM value, mutual exclusion, tail mode.
     if have_pending {
         if let Err(e) = add_stop(&mut ts, pending) {
-            let _ = writeln!(io.stderr, "unexpand: {e}");
+            let _ = writeln!(io.stderr, "unexpand: {}", tabmsg::text(ctx, "unexpand", &e));
             return Ok(1);
         }
     }
     if slash_repeat && plus_repeat {
         let _ = writeln!(
             io.stderr,
-            "unexpand: '/' specifier is mutually exclusive with '+'"
+            "unexpand: {}",
+            tabmsg::text(ctx, "unexpand", &TabSpecError::MutuallyExclusive)
         );
         return Ok(1);
     }

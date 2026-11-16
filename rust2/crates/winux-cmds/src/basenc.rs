@@ -134,7 +134,11 @@ fn run(name: &str, codec: &b64core::Codec, args: &[OsString], io: &mut Io, ctx: 
                 // GNU basenc.c: error (0, 0, "invalid wrap size: %s")
                 // without usage() — no "Try ... --help" line (the 1.x
                 // body printed the same single diagnostic line).
-                let _ = writeln!(io.stderr, "{name}: invalid wrap size: '{raw}'");
+                let _ = writeln!(
+                    io.stderr,
+                    "{name}: {}",
+                    family::invalid_wrap(ctx, name, raw)
+                );
                 return Ok(1);
             }
         },
@@ -176,14 +180,18 @@ fn run(name: &str, codec: &b64core::Codec, args: &[OsString], io: &mut Io, ctx: 
                             .map(|m| m.is_dir())
                             .unwrap_or(false)
                         {
-                            let _ = writeln!(io.stderr, "{name}: read error: Is a directory");
+                            let _ = writeln!(
+                                io.stderr,
+                                "{name}: {}",
+                                family::read_error(ctx, name, "Is a directory")
+                            );
                             return Ok(1);
                         }
                         let reason = crate::fsutil::gnu_open_reason(ctx, &shown, &e, false);
                         let _ = writeln!(
                             io.stderr,
-                            "{name}: {}: {reason}",
-                            crate::fsutil::quotef(&shown)
+                            "{name}: {}",
+                            family::open_failed(ctx, name, &crate::fsutil::quotef(&shown), &reason)
                         );
                         return Ok(1);
                     }
@@ -203,7 +211,7 @@ fn run(name: &str, codec: &b64core::Codec, args: &[OsString], io: &mut Io, ctx: 
             }
             Err(b) => {
                 out.write_all(&b)?;
-                let _ = writeln!(io.stderr, "{name}: invalid input");
+                let _ = writeln!(io.stderr, "{name}: {}", family::invalid_input(ctx, name));
                 Ok(1)
             }
         }
@@ -220,6 +228,73 @@ pub fn base64_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
 pub fn base32_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     run("base32", &b64core::base32_codec(), args, io, ctx)
+}
+
+/// Per-command message bodies: base32 and base64 share run() but keep
+/// their own `command.<cmd>.*` keys (the batch-2/3 convention — one key
+/// set per user-visible program name).
+mod family {
+    use winux_core::{tr, Ctx};
+
+    pub fn invalid_wrap(ctx: &Ctx, prog: &str, value: &str) -> String {
+        match prog {
+            "base32" => tr!(
+                ctx,
+                "command.base32.error.invalid_wrap",
+                "invalid wrap size: '{value}'",
+                value = value
+            ),
+            _ => tr!(
+                ctx,
+                "command.base64.error.invalid_wrap",
+                "invalid wrap size: '{value}'",
+                value = value
+            ),
+        }
+    }
+
+    pub fn read_error(ctx: &Ctx, prog: &str, reason: &str) -> String {
+        match prog {
+            "base32" => tr!(
+                ctx,
+                "command.base32.error.read_error",
+                "read error: {reason}",
+                reason = reason
+            ),
+            _ => tr!(
+                ctx,
+                "command.base64.error.read_error",
+                "read error: {reason}",
+                reason = reason
+            ),
+        }
+    }
+
+    pub fn open_failed(ctx: &Ctx, prog: &str, file: &str, reason: &str) -> String {
+        match prog {
+            "base32" => tr!(
+                ctx,
+                "command.base32.error.open_failed",
+                "{file}: {reason}",
+                file = file,
+                reason = reason
+            ),
+            _ => tr!(
+                ctx,
+                "command.base64.error.open_failed",
+                "{file}: {reason}",
+                file = file,
+                reason = reason
+            ),
+        }
+    }
+
+    pub fn invalid_input(ctx: &Ctx, prog: &str) -> String {
+        match prog {
+            "base32" => tr!(ctx, "command.base32.error.invalid_input", "invalid input"),
+            _ => tr!(ctx, "command.base64.error.invalid_input", "invalid input"),
+        }
+    }
 }
 
 #[cfg(test)]
