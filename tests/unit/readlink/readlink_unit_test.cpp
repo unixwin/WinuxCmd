@@ -83,6 +83,37 @@ auto long_existing_prefix_path(std::filesystem::path path)
   return path;
 }
 
+auto temp_root_text() -> const std::string& {
+  // Mirrors tmp_base (winux-core path.rs): TMPDIR > TEMP > TMP, folded
+  // through the same /c/ drive dialect the operand boundary uses.
+  static const std::string value = [] {
+    auto nativeize = [](std::string v) {
+      std::replace(v.begin(), v.end(), '\\', '/');
+      if (v.size() >= 2 && v[0] == '/' &&
+          ((v[1] >= 'a' && v[1] <= 'z') || (v[1] >= 'A' && v[1] <= 'Z')) &&
+          (v.size() == 2 || v[2] == '/')) {
+        v = std::string(1, static_cast<char>(toupper(v[1]))) + ":" +
+            (v.size() > 2 ? v.substr(2) : "/");
+      }
+      while (!v.empty() && v.back() == '/') v.pop_back();
+      return v;
+    };
+    for (const char* name : {"TMPDIR", "TEMP", "TMP"}) {
+      if (const char* v = getenv(name); v != nullptr && *v != '\0') {
+        return nativeize(v);
+      }
+    }
+    wchar_t buf[MAX_PATH];
+    const DWORD n = GetTempPathW(MAX_PATH, buf);
+    if (n != 0 && n < MAX_PATH) {
+      return nativeize(
+          wide_to_utf8_for_readlink_test(std::wstring(buf, n)));
+    }
+    return std::string{};
+  }();
+  return value;
+}
+
 auto normalize_path_text(std::string text) -> std::string {
   std::string terminator;
   while (!text.empty() && (text.back() == '\n' || text.back() == '\0')) {
@@ -90,7 +121,33 @@ auto normalize_path_text(std::string text) -> std::string {
     text.pop_back();
   }
 
+  // The §7 display re-spells the temp namespace as /tmp and /var/tmp —
+  // fold the mounts back to the real temp directory before comparing.
+  const std::string& tmp_root = temp_root_text();
+  if (!tmp_root.empty()) {
+    for (const auto& [mount, base] :
+         std::vector<std::pair<std::string, std::string>>{
+             {"/var/tmp", tmp_root + "/var/tmp"}, {"/tmp", tmp_root}}) {
+      if (text == mount ||
+          (text.size() > mount.size() &&
+           text.compare(0, mount.size(), mount) == 0 &&
+           text[mount.size()] == '/')) {
+        text = base + text.substr(mount.size());
+        break;
+      }
+    }
+  }
+
   std::replace(text.begin(), text.end(), '/', '\\');
+  // The §7 display form spells a native path "/c/..." — fold the drive
+  // mount back to "C:\..." so pins compare the resolved file, not the
+  // spelling.
+  if (text.size() >= 2 && text[0] == '\\' &&
+      ((text[1] >= 'a' && text[1] <= 'z') || (text[1] >= 'A' && text[1] <= 'Z')) &&
+      (text.size() == 2 || text[2] == '\\')) {
+    text = std::string(1, static_cast<char>(toupper(text[1]))) + ":" +
+           (text.size() > 2 ? text.substr(2) : "\\");
+  }
   if (text.rfind("\\\\?\\UNC\\", 0) == 0) {
     text = "\\\\" + text.substr(8);
   } else if (text.rfind("\\\\?\\", 0) == 0 || text.rfind("\\??\\", 0) == 0) {

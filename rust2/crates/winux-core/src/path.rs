@@ -625,6 +625,27 @@ pub fn shell_tree_display(env: &dyn EnvSource, native: &str, include_home: bool)
     under(&home_parent(env)?, "/home")
 }
 
+/// The Git Bash display spelling of a native absolute path (niubash#993
+/// section 7): shell-tree mounts keep their POSIX name (/usr/bin, /tmp),
+/// everything else takes the /c/ drive form — the single spelling
+/// realpath, readlink -f and the shell's pwd share under MSYS. Relative
+/// and already-POSIX spellings pass through unchanged.
+pub fn shell_display_path(env: &dyn EnvSource, native: &str) -> String {
+    if let Some(display) = shell_tree_display(env, native, false) {
+        return display;
+    }
+    let value = native.replace('\\', "/");
+    let bytes = value.as_bytes();
+    if value.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        let mut out = String::with_capacity(value.len() + 1);
+        out.push('/');
+        out.push((bytes[0] as char).to_ascii_lowercase());
+        out.push_str(&value[2..]);
+        return out;
+    }
+    value
+}
+
 // ---------------------------------------------------------------------------
 // The unified operand boundary (native_path.cppm:508 normalize_api_operand_w,
 // :1371 canonicalize_path_w's fold chain)
