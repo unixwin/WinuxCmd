@@ -123,9 +123,10 @@ pub fn readlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     // '\' breaks the shell word arithmetic that consumes
                     // the output (bats-core "${BATS_PATH%/*/*}", #1491),
                     // so the canonicalize modes render the resolved name
-                    // in the '/' display form. The no-mode form prints the
-                    // stored target text verbatim, like GNU areadlink.
-                    Ok(v) => Some(v.replace('\\', "/")),
+                    // in the '/' display form. niubash#993 section 7: the
+                    // display is the shell's /c/ (or mount-name) spelling
+                    // — realpath and pwd emit the same value there.
+                    Ok(v) => Some(winux_core::path::shell_display_path(ctx.env, &v)),
                     Err(e) => {
                         if verbose {
                             let _ = writeln!(
@@ -138,8 +139,16 @@ pub fn readlink_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         None
                     }
                 },
+                // The no-mode form prints the stored target text like GNU
+                // areadlink — rendered in the shell display spelling
+                // (niubash#993 §7): the stored text is the Win32 form
+                // CreateSymbolicLinkW requires ("d\f", "C:\x"), while Git
+                // Bash stores and reports the POSIX form ("d/f", "/c/x").
                 None => match std::fs::read_link(&name_abs(ctx, &name)) {
-                    Ok(t) => Some(t.to_string_lossy().into_owned()),
+                    Ok(t) => Some(winux_core::path::shell_display_path(
+                        ctx.env,
+                        &t.to_string_lossy(),
+                    )),
                     Err(e) => {
                         if verbose {
                             let _ = writeln!(

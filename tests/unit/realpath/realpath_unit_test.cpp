@@ -87,6 +87,37 @@ auto long_existing_prefix_path(std::filesystem::path path)
   return path;
 }
 
+auto temp_root_text() -> const std::string& {
+  // Mirrors tmp_base (winux-core path.rs): TMPDIR > TEMP > TMP, folded
+  // through the same /c/ drive dialect the operand boundary uses.
+  static const std::string value = [] {
+    auto nativeize = [](std::string v) {
+      std::replace(v.begin(), v.end(), '\\', '/');
+      if (v.size() >= 2 && v[0] == '/' &&
+          ((v[1] >= 'a' && v[1] <= 'z') || (v[1] >= 'A' && v[1] <= 'Z')) &&
+          (v.size() == 2 || v[2] == '/')) {
+        v = std::string(1, static_cast<char>(toupper(v[1]))) + ":" +
+            (v.size() > 2 ? v.substr(2) : "/");
+      }
+      while (!v.empty() && v.back() == '/') v.pop_back();
+      return v;
+    };
+    for (const char* name : {"TMPDIR", "TEMP", "TMP"}) {
+      if (const char* v = getenv(name); v != nullptr && *v != '\0') {
+        return nativeize(v);
+      }
+    }
+    wchar_t buf[MAX_PATH];
+    const DWORD n = GetTempPathW(MAX_PATH, buf);
+    if (n != 0 && n < MAX_PATH) {
+      return nativeize(
+          wide_to_utf8_for_realpath_test(std::wstring(buf, n)));
+    }
+    return std::string{};
+  }();
+  return value;
+}
+
 auto normalize_path_text(std::string text) -> std::string {
   std::string terminator;
   while (!text.empty() && (text.back() == '\n' || text.back() == '\0')) {
@@ -94,7 +125,33 @@ auto normalize_path_text(std::string text) -> std::string {
     text.pop_back();
   }
 
+  // The §7 display re-spells the temp namespace as /tmp and /var/tmp —
+  // fold the mounts back to the real temp directory before comparing.
+  const std::string& tmp_root = temp_root_text();
+  if (!tmp_root.empty()) {
+    for (const auto& [mount, base] :
+         std::vector<std::pair<std::string, std::string>>{
+             {"/var/tmp", tmp_root + "/var/tmp"}, {"/tmp", tmp_root}}) {
+      if (text == mount ||
+          (text.size() > mount.size() &&
+           text.compare(0, mount.size(), mount) == 0 &&
+           text[mount.size()] == '/')) {
+        text = base + text.substr(mount.size());
+        break;
+      }
+    }
+  }
+
   std::replace(text.begin(), text.end(), '/', '\\');
+  // The §7 display form spells a native path "/c/..." — fold the drive
+  // mount back to "C:\..." so pins compare the resolved file.
+  if (text.size() >= 2 && text[0] == '\\' &&
+      ((text[1] >= 'a' && text[1] <= 'z') ||
+       (text[1] >= 'A' && text[1] <= 'Z')) &&
+      (text.size() == 2 || text[2] == '\\')) {
+    text = std::string(1, static_cast<char>(toupper(text[1]))) + ":" +
+           (text.size() > 2 ? text.substr(2) : "\\");
+  }
   if (text.rfind("\\\\?\\UNC\\", 0) == 0) {
     text = "\\\\" + text.substr(8);
   } else if (text.rfind("\\\\?\\", 0) == 0 || text.rfind("\\??\\", 0) == 0) {
@@ -131,10 +188,11 @@ TEST(realpath, realpath_basic) {
   TEST_LOG("realpath.exe output", r.stdout_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  // Output should be an absolute path
+  // Output should be an absolute path in the §7 shell display form
+  // ("/c/..."), never the backslashed Win32 spelling.
   EXPECT_TRUE(r.stdout_text.find("file.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find(":\\") != std::string::npos ||
-              r.stdout_text.find(":/") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find('\\') == std::string::npos);
+  EXPECT_TRUE(!r.stdout_text.empty() && r.stdout_text.front() == '/');
 }
 
 TEST(realpath, realpath_requires_operand) {
@@ -258,7 +316,7 @@ TEST(realpath, realpath_canonicalize_existing) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(
-      r.stdout_text,
+      normalize_path_text(r.stdout_text),
       normalize_path_text((tmp.path / "subdir/file.txt").string()) + "\n");
 }
 
@@ -738,12 +796,13 @@ TEST(realpath, realpath_bare_drive_dialect_is_drive_root) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("realpath bare drive dialect output", r.stdout_text);
 
-  // "/x" names the root of the drive, not <cwd>\x.
+  // "/x" names the root of the drive, not <cwd>\x — reported in the §7
+  // display form ("/c/" for the cwd's drive).
   EXPECT_EQ(r.exit_code, 0);
-  std::string expected(
-      1, static_cast<char>(
-             std::toupper(static_cast<unsigned char>(cwd.path.string()[0]))));
-  expected += ":\\\n";
+  std::string expected("/");
+  expected += static_cast<char>(
+      std::tolower(static_cast<unsigned char>(cwd.path.string()[0])));
+  expected += "/\n";
   EXPECT_EQ_TEXT(r.stdout_text, expected);
 }
 
@@ -880,4 +939,63 @@ TEST(realpath, issue1726_empty_operand_missing_mode) {
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text,
                  "realpath: '': No such file or directory\n");
+}
+
+// ---------------------------------------------------------------------------
+// niubash#993 §7: the three path emitters share ONE display spelling —
+// the shell "/c/" drive form Git Bash prints — instead of realpath's
+// backslashes, readlink -f's forward-slash drive form and pwd's third
+// dialect. The pin locks all three on the same value.
+// ---------------------------------------------------------------------------
+TEST(realpath, niu993_section7_all_emitters_share_display_spelling) {
+  TempDir tmp;
+  tmp.write("d/f", "x");
+  tmp.mkdir("d");
+
+  auto expect_display = [](const std::string& native) {
+    std::string v = native;
+    std::replace(v.begin(), v.end(), '\\', '/');
+    const std::string& tmp_root = temp_root_text();
+    if (!tmp_root.empty() &&
+        (v == tmp_root ||
+         (v.size() > tmp_root.size() &&
+          v.compare(0, tmp_root.size(), tmp_root) == 0 &&
+          v[tmp_root.size()] == '/'))) {
+      return "/tmp" + v.substr(tmp_root.size());
+    }
+    if (v.size() >= 2 && v[1] == ':') {
+      v = "/" + std::string(
+                    1, static_cast<char>(
+                           tolower(static_cast<unsigned char>(v[0])))) +
+          v.substr(2);
+    }
+    return v;
+  };
+
+  const std::string wanted_dir =
+      expect_display((tmp.path / "d").string()) + "\n";
+  const std::string wanted_file =
+      expect_display((tmp.path / "d" / "f").string()) + "\n";
+
+  Pipeline rp;
+  rp.set_cwd(tmp.wpath());
+  rp.add(L"realpath.exe", {L"d"});
+  const auto rrp = rp.run();
+  EXPECT_EQ(rrp.exit_code, 0);
+  EXPECT_EQ_TEXT(rrp.stdout_text, wanted_dir);
+  EXPECT_TRUE(rrp.stdout_text.find('\\') == std::string::npos);
+
+  Pipeline rl;
+  rl.set_cwd(tmp.wpath());
+  rl.add(L"readlink.exe", {L"-f", L"d/f"});
+  const auto rrl = rl.run();
+  EXPECT_EQ(rrl.exit_code, 0);
+  EXPECT_EQ_TEXT(rrl.stdout_text, wanted_file);
+
+  Pipeline pw;
+  pw.set_cwd((tmp.path / "d").wstring());
+  pw.add(L"pwd.exe", {});
+  const auto rpw = pw.run();
+  EXPECT_EQ(rpw.exit_code, 0);
+  EXPECT_EQ_TEXT(rpw.stdout_text, wanted_dir);
 }

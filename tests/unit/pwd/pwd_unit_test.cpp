@@ -9,11 +9,68 @@ namespace {
 // cwd is always reported in its long form.  Physical-output
 // expectations therefore compare against the canonical spelling of
 // the same directory; tests that echo $PWD verbatim keep using the
-// as-typed spelling.
+// as-typed spelling; niubash#993 §7 renders it in the shell display form.
+// Mirrors tmp_base (winux-core path.rs): TMPDIR > TEMP > TMP, folded
+// through the /c/ drive dialect.
+auto temp_root_text() -> const std::string& {
+  static const std::string value = [] {
+    auto nativeize = [](std::string v) {
+      std::replace(v.begin(), v.end(), '\\', '/');
+      if (v.size() >= 2 && v[0] == '/' &&
+          ((v[1] >= 'a' && v[1] <= 'z') || (v[1] >= 'A' && v[1] <= 'Z')) &&
+          (v.size() == 2 || v[2] == '/')) {
+        v = std::string(1, static_cast<char>(toupper(v[1]))) + ":" +
+            (v.size() > 2 ? v.substr(2) : "/");
+      }
+      while (!v.empty() && v.back() == '/') v.pop_back();
+      return v;
+    };
+    for (const char* name : {"TMPDIR", "TEMP", "TMP"}) {
+      if (const char* v = getenv(name); v != nullptr && *v != '\0') {
+        return nativeize(v);
+      }
+    }
+    wchar_t buf[MAX_PATH];
+    const DWORD n = GetTempPathW(MAX_PATH, buf);
+    if (n != 0 && n < MAX_PATH) {
+      return nativeize(std::string(buf, buf + n));
+    }
+    return std::string{};
+  }();
+  return value;
+}
+
+// The §7 display spelling: under the temp mount paths print as
+// "/tmp/...", elsewhere as "/c/..." — matching realpath/readlink -f and
+// the Git Bash oracle.
+auto display_spelling(std::string native) -> std::string {
+  std::replace(native.begin(), native.end(), '\\', '/');
+  const std::string& tmp_root = temp_root_text();
+  if (!tmp_root.empty()) {
+    for (const auto& [base, mount] :
+         std::vector<std::pair<std::string, std::string>>{
+             {tmp_root + "/var/tmp", "/var/tmp"}, {tmp_root, "/tmp"}}) {
+      if (native == base ||
+          (native.size() > base.size() &&
+           native.compare(0, base.size(), base) == 0 &&
+           native[base.size()] == '/')) {
+        return mount + native.substr(base.size());
+      }
+    }
+  }
+  if (native.size() >= 2 && native[1] == ':' &&
+      ((native[0] >= 'a' && native[0] <= 'z') ||
+       (native[0] >= 'A' && native[0] <= 'Z'))) {
+    return "/" + std::string(1, static_cast<char>(tolower(native[0]))) +
+           native.substr(2);
+  }
+  return native;
+}
+
 auto physical_spelling(const TempDir& tmp) -> std::string {
   std::error_code ec;
   const auto canon = std::filesystem::canonical(tmp.path, ec);
-  return ec ? tmp.path.string() : canon.string();
+  return display_spelling(ec ? tmp.path.string() : canon.string());
 }
 
 }  // namespace
@@ -130,7 +187,7 @@ TEST(pwd, pwd_logical_uses_pwd_environment) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, logical_pwd + "\n");
+  EXPECT_EQ_TEXT(r.stdout_text, display_spelling(logical_pwd) + "\n");
 }
 
 TEST(pwd, pwd_posixly_correct_defaults_to_logical_pwd_environment) {
@@ -147,7 +204,7 @@ TEST(pwd, pwd_posixly_correct_defaults_to_logical_pwd_environment) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, logical_pwd + "\n");
+  EXPECT_EQ_TEXT(r.stdout_text, display_spelling(logical_pwd) + "\n");
 }
 
 TEST(pwd, pwd_physical_overrides_posixly_correct_default) {
@@ -181,7 +238,7 @@ TEST(pwd, pwd_logical_last_occurrence_wins_over_physical) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, logical_pwd + "\n");
+  EXPECT_EQ_TEXT(r.stdout_text, display_spelling(logical_pwd) + "\n");
 }
 
 TEST(pwd, pwd_physical_last_occurrence_wins_over_logical) {

@@ -153,6 +153,11 @@ pub fn realpath_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     } else {
                         v
                     };
+                    // niubash#993 section 7: the canonical name is DATA,
+                    // but its display spelling is the shell's — Git Bash
+                    // realpath prints the /c/ (or mount-name) form that
+                    // pwd reports, never the backslashed Win32 spelling.
+                    let v = winux_core::path::shell_display_path(ctx.env, &v);
                     out.write_all(v.as_bytes())?;
                     if zero {
                         out.write_all(b"\0")?;
