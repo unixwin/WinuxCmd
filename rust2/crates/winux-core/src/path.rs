@@ -563,6 +563,31 @@ fn has_prefix_ci(value: &str, prefix: &str) -> bool {
     value.len() >= prefix.len() && value[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
+/// native_path.cppm:257/:262 — the machine-level temporary namespace.
+/// `/tmp` is the per-user temporary base itself (tmp_base; niubash#94: a
+/// per-user namespace, never a fixed location under the install root) and
+/// `/var/tmp` lives beside it as `<base>/var/tmp`. Every process has a temp
+/// namespace, so this mapping does NOT depend on a configured shell root
+/// (shell_tree_map's `root?` gate is the install-tree contract, not the
+/// temp contract); callers that must stay inside the shell tree
+/// (shell_tree_map) apply the gate themselves. None when the spelling is
+/// outside the namespace, is a double-slash/drive form, or no base answers.
+pub fn tmp_namespace_map(env: &dyn EnvSource, normalized: &str) -> Option<String> {
+    let (tail, sub) = if normalized == "/tmp" || normalized.starts_with("/tmp/") {
+        (&normalized[4..], None)
+    } else if normalized == "/var/tmp" || normalized.starts_with("/var/tmp/") {
+        (&normalized[8..], Some("var/tmp"))
+    } else {
+        return None;
+    };
+    let base = tmp_base(env)?;
+    let base = match sub {
+        Some(sub) => join_tail(sub, base),
+        None => base,
+    };
+    Some(join_tail(tail, base))
+}
+
 /// native_path.cppm:246 shell_tree_map_w: map a shell-namespace spelling to
 /// a native path, or None when the operand is not part of the shell
 /// namespace (a native/relative path, a double-slash spelling, /dev/*, a
@@ -584,14 +609,8 @@ pub fn shell_tree_map(env: &dyn EnvSource, normalized: &str) -> Option<String> {
         return None;
     }
 
-    if normalized == "/tmp" || normalized.starts_with("/tmp/") {
-        let base = tmp_base(env)?;
-        return Some(join_tail(&normalized[4..], base));
-    }
-    if normalized == "/var/tmp" || normalized.starts_with("/var/tmp/") {
-        let base = tmp_base(env)?;
-        let base = join_tail("var/tmp", base);
-        return Some(join_tail(&normalized[8..], base));
+    if let Some(mapped) = tmp_namespace_map(env, normalized) {
+        return Some(mapped);
     }
     if normalized == "/home" || normalized.starts_with("/home/") {
         let base = home_parent(env)?;
@@ -1049,6 +1068,45 @@ mod tests {
         assert!(
             mapped_x.contains(':') && !mapped_x.starts_with('/'),
             "{mapped_x}"
+        );
+    }
+
+    // ---- tmp_namespace_map: the temp namespace needs no shell root ----
+
+    #[test]
+    fn tmp_namespace_maps_without_a_shell_root() {
+        // mk16-p-dir: a process outside a configured shell tree still has a
+        // temp namespace; only the install-root tail of shell_tree_map is
+        // gated. /tmp is tmp_base itself, /var/tmp is <base>/var/tmp
+        // (native_path.cppm:257/:262).
+        let e = env(&[("TEMP", r"C:\t")]);
+        assert_eq!(shell_root(&e), None);
+        assert_eq!(tmp_namespace_map(&e, "/tmp").as_deref(), Some(r"C:\t"));
+        assert_eq!(tmp_namespace_map(&e, "/tmp/x").as_deref(), Some(r"C:\t\x"));
+        assert_eq!(
+            tmp_namespace_map(&e, "/var/tmp").as_deref(),
+            Some(r"C:\t\var\tmp")
+        );
+        assert_eq!(
+            tmp_namespace_map(&e, "/var/tmp/x").as_deref(),
+            Some(r"C:\t\var\tmp\x")
+        );
+        // trailing separators are the same directory (join_tail folds them)
+        assert_eq!(tmp_namespace_map(&e, "/tmp/").as_deref(), Some(r"C:\t"));
+        assert_eq!(
+            tmp_namespace_map(&e, "/var/tmp//x/").as_deref(),
+            Some(r"C:\t\var\tmp\x")
+        );
+        // spellings outside the namespace are declined, root or not
+        assert_eq!(tmp_namespace_map(&e, "/etc/passwd"), None);
+        assert_eq!(tmp_namespace_map(&e, "/tmpfoo"), None);
+        assert_eq!(tmp_namespace_map(&e, "/var/tmpfoo"), None);
+        // inside a configured root the shell tree maps the same way
+        let e = env(&[("WINUXSH_ROOT", r"D:\r"), ("TMP", r"C:\k")]);
+        assert_eq!(shell_tree_map(&e, "/tmp").as_deref(), Some(r"C:\k"));
+        assert_eq!(
+            shell_tree_map(&e, "/var/tmp/x").as_deref(),
+            Some(r"C:\k\var\tmp\x")
         );
     }
 
