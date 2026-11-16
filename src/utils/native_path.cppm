@@ -110,6 +110,18 @@ export auto attributes_are_regular_file(DWORD attrs) -> bool;
 export auto valid_attributes(DWORD attrs) -> bool;
 export auto current_directory_w() -> std::wstring;
 
+export auto valid_attributes(DWORD attrs) -> bool;
+export auto current_directory_w() -> std::wstring;
+
+// The drive-dialect folds live below the shell namespace block, but the
+// POSIX-spelled candidate arm of shell_ns::tmp_base_w (#1792 mirror) needs
+// them; forward-declare so the candidate loop can resolve /cygdrive/X,
+// /mnt/X and /X spellings before adoption.
+auto fold_posix_drive_prefix_w(std::wstring_view normalized)
+    -> std::optional<std::wstring>;
+auto fold_drive_dialect_w(std::wstring_view normalized)
+    -> std::optional<std::wstring>;
+
 // ---------------------------------------------------------------------------
 // Shell namespace (niubash#346, the "coreutils own the shell tree" boundary).
 //
@@ -176,24 +188,47 @@ inline auto nativeize_base_w(std::wstring_view base) -> std::wstring {
 inline auto tmp_base_w() -> std::wstring {
   for (const auto* name : {L"TMPDIR", L"TEMP", L"TMP"}) {
     std::wstring candidate = read_env_w(name);
-    // #1769: a POSIX-spelled value (leading '/') cannot name a Windows
-    // directory. Under a Git Bash parent TEMP/TMP arrive as the MSYS form
-    // "/tmp" itself — trusting it maps /tmp right back onto /tmp and
-    // sends every temp-file operand to a path that does not exist (the
-    // rust2 port's winux-core path.rs tmp_base fix; the CI gate's
-    // mk16-p-dir finding). Skip it; niubash#94's TMPDIR > TEMP > TMP
-    // priority continues over the remaining candidates.
-    if (!candidate.empty() && candidate.front() != L'/') {
+    if (candidate.empty()) continue;
+    if (candidate.front() != L'/') {
       return nativeize_base_w(candidate);
     }
+    // #1769 removed the blind trust that let a Git Bash parent's TEMP/TMP
+    // = "/tmp" map /tmp right back onto /tmp; #1792 (the rust2 twin's CI
+    // finding) showed the blunt skip overshoots: a POSIX-spelled value
+    // can still name a real Windows directory through the dialect's drive
+    // folds (/cygdrive/X and /mnt/X fold onto the drive form, and /X
+    // folds onto X:\). Adopt the fold only when it names an existing
+    // directory — a stale workspace value must not hijack the temp root —
+    // and fall through otherwise. /tmp and /var/tmp stay unadopted:
+    // shell_tree_map_w maps them THROUGH this function, so honoring them
+    // here would be the circular mapping #1769 removed. niubash#94's
+    // TMPDIR > TEMP > TMP priority continues over the remaining
+    // candidates.
+    std::wstring folded;
+    if (auto prefix = fold_posix_drive_prefix_w(candidate)) {
+      if (auto drive = fold_drive_dialect_w(*prefix)) {
+        folded = std::move(*drive);
+      }
+    } else if (auto drive = fold_drive_dialect_w(candidate)) {
+      folded = std::move(*drive);
+    }
+    if (!folded.empty()) {
+      std::error_code probe_ec;
+      if (std::filesystem::is_directory(folded, probe_ec) && !probe_ec) {
+        return nativeize_base_w(folded);
+      }
+      continue;
+    }
   }
-  // Every candidate was POSIX-spelled — the Git Bash shard env is exactly
-  // that (TMPDIR unset, TEMP/TMP = /tmp). niubash#94's intent, a usable
-  // per-user temporary namespace, is served by the Windows default
+  // Every candidate was empty or unusable — the Git Bash shard env is
+  // exactly that (TMPDIR unset, TEMP/TMP = /tmp). niubash#94's intent, a
+  // usable per-user temporary namespace, is served by the Windows default
   // per-user temp path. This last-resort arm reads process state through
   // GetTempPathW — its own TMP/TEMP/USERPROFILE walk over the same env
   // block — which the candidate loop above deliberately does not consult;
-  // the read is confined to this arm on purpose, mirroring path.rs.
+  // the read is confined to this arm on purpose, mirroring path.rs. (The
+  // fold arm's is_directory probe is the one other filesystem read,
+  // confined to POSIX-spelled candidates.)
   std::array<wchar_t, 8192> buffer{};
   const DWORD written =
       GetTempPathW(static_cast<DWORD>(buffer.size()), buffer.data());

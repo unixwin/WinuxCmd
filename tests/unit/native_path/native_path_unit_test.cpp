@@ -105,3 +105,59 @@ TEST(native_path, tmp_base_native_candidates_keep_tmpdir_priority) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, tmpdir.path.string() + "\\g5probe\n");
 }
+
+// #1792 mirror: a POSIX-spelled TMPDIR in the MSYS drive spelling (/c/...)
+// names a real Windows directory through the dialect's drive folds
+// (/cygdrive/X, /mnt/X, /X -> X:\). tmp_base_w must ADOPT it — the blunt
+// skip discarded the spelling and dropped every temp operand onto TEMP
+// while TMPDIR named an existing directory (the rust2 twin's CI diagnostic
+// pinned exactly this shape: created parent = TEMP root, TMPDIR ignored).
+TEST(native_path, tmp_base_adopts_resolvable_posix_drive_form) {
+  TempDir payload;
+  TempDir cwd;
+  TempDir tmpdir;
+
+  const std::wstring native_tmp = tmpdir.wpath();
+  ASSERT_FALSE(native_tmp.empty());
+  ASSERT_TRUE(native_tmp.size() >= 2 && native_tmp[1] == L':');
+  std::wstring posix = L"/";
+  wchar_t drive = native_tmp[0];
+  if (drive >= L'A' && drive <= L'Z') {
+    drive = static_cast<wchar_t>(drive - L'A' + L'a');
+  }
+  posix.push_back(drive);
+  posix.append(native_tmp.substr(2));
+
+  Pipeline p;
+  p.set_cwd(cwd.wpath());
+  use_shell_root(p, payload.wpath());
+  p.set_env(L"TMPDIR", posix);
+  p.add(L"cygpath.exe", {L"-w", L"/tmp/g5probe"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, tmpdir.path.string() + "\\g5probe\n");
+}
+
+// #1792 mirror: a spelling that folds but names no existing directory
+// (stale workspace, or a drive the machine does not have) must not hijack
+// the base — niubash#94's priority falls through to the next candidate.
+TEST(native_path, tmp_base_falls_through_unresolvable_posix_drive_form) {
+  TempDir payload;
+  TempDir cwd;
+  TempDir temp;
+
+  Pipeline p;
+  p.set_cwd(cwd.wpath());
+  use_shell_root(p, payload.wpath());
+  p.set_env(L"TMPDIR", L"/q/zzz-nonexistent-wc-probe");
+  p.set_env(L"TEMP", temp.wpath());
+  p.set_env(L"TMP", temp.wpath());
+  p.add(L"cygpath.exe", {L"-w", L"/tmp/g5probe"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, temp.path.string() + "\\g5probe\n");
+}
