@@ -49,13 +49,93 @@ pub fn quotef(name: &str) -> String {
 /// path names one (the paste/digestsum precedent): a plain open would read
 /// the 7-byte marker file and strand the rendezvous writer. Every other
 /// operand is a plain binary open.
+/// niubash#993 §5: infinite byte stream for the kernel-synthesized
+/// devices (/dev/zero, /dev/random, /dev/urandom, and reads of /dev/full
+/// — Linux drivers/char/mem.c read_full yields zeros like read_zero).
+/// The RNG is a plain xorshift64*: compatibility needs nondeterministic
+/// bytes, not a CSPRNG (the C++ side uses mt19937_64 + random_device).
+struct SynthDeviceReader {
+    kind: winux_core::path::SynthesizedDevice,
+    state: u64,
+}
+
+impl SynthDeviceReader {
+    fn new(kind: winux_core::path::SynthesizedDevice) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9E37_79B9_7F4A_7C15)
+            ^ (std::process::id() as u64) << 32
+            | 0x2545_F491_4F6C_DD1D;
+        Self {
+            kind,
+            state: seed | 1, // xorshift's all-zero state must never occur
+        }
+    }
+}
+
+impl std::io::Read for SynthDeviceReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.kind == winux_core::path::SynthesizedDevice::Random {
+            for chunk in buf.chunks_mut(8) {
+                self.state ^= self.state >> 12;
+                self.state ^= self.state << 25;
+                self.state ^= self.state >> 27;
+                chunk.copy_from_slice(
+                    &self.state.wrapping_mul(0x2545_F491_4F6C_DD1D).to_ne_bytes()[..chunk.len()],
+                );
+            }
+        } else {
+            buf.fill(0);
+        }
+        Ok(buf.len())
+    }
+}
+
+/// The write half of the §5 device model: /dev/{zero,random,urandom}
+/// discard like NUL; /dev/full fails with ENOSPC (os error 28 formats as
+/// "No space left on device (os error 28)", matching GNU's reason).
+pub fn open_write_operand(
+    ctx: &Ctx,
+    operand: &str,
+    append: bool,
+) -> io::Result<Box<dyn std::io::Write>> {
+    match winux_core::path::synthesized_device(operand) {
+        Some(winux_core::path::SynthesizedDevice::Full) => Err(io::Error::from_raw_os_error(28)),
+        Some(_) => std::fs::OpenOptions::new()
+            .write(true)
+            .open("NUL")
+            .map(|f| Box::new(f) as Box<dyn std::io::Write>),
+        None => std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(append)
+            .truncate(!append)
+            .open(resolve(ctx, operand))
+            .map(|f| Box::new(f) as Box<dyn std::io::Write>),
+    }
+}
+
 pub fn open_read_operand(ctx: &Ctx, operand: &str) -> io::Result<Box<dyn std::io::Read>> {
+    if let Some(dev) = winux_core::path::synthesized_device(operand) {
+        return Ok(Box::new(SynthDeviceReader::new(dev)));
+    }
     let path = resolve(ctx, operand);
     let text = path.to_string_lossy().into_owned();
     if crate::fs_win::is_winux_fifo_path(&text) {
         return crate::fs_win::open_fifo_read(&text).map(|r| Box::new(r) as Box<dyn std::io::Read>);
     }
     std::fs::File::open(path).map(|f| Box::new(f) as Box<dyn std::io::Read>)
+}
+
+/// `std::fs::read` for operands: the synthesized /dev/* devices
+/// (niubash#993 §5) and fifo bridges never reach a plain File::open.
+pub fn read_operand_all(ctx: &Ctx, operand: &str) -> io::Result<Vec<u8>> {
+    let mut r = open_read_operand(ctx, operand)?;
+    let mut buf = Vec::new();
+    r.read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 /// GNU strerror for a failed open of a literal operand, recovered from the
@@ -139,9 +219,7 @@ pub fn resolve(ctx: &Ctx, operand: impl AsRef<Path>) -> PathBuf {
             {
                 return literal_operand_path(&mapped);
             }
-            if mapped.trim_end_matches(['/', '\\'])
-                != s.trim_end_matches(['/', '\\'])
-            {
+            if mapped.trim_end_matches(['/', '\\']) != s.trim_end_matches(['/', '\\']) {
                 let joined = ctx.cwd.join(&mapped);
                 return literal_operand_path(&joined.to_string_lossy());
             }

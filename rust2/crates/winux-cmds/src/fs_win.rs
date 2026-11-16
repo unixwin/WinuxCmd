@@ -558,6 +558,16 @@ pub mod imp {
         if let Some(dev) = winux_core::path::resolve_pseudo_device(operand) {
             return dos_device_meta(dev);
         }
+        // niubash#993 §5: /dev/{zero,random,urandom,full} have no Win32
+        // object at all — report the character-device record the C++
+        // operand boundary hands `test -c`, `stat` and `ls`.
+        if winux_core::path::synthesized_device(operand).is_some() {
+            return Ok(FileMeta {
+                links: 1,
+                character_device: true,
+                ..FileMeta::default()
+            });
+        }
         let extended = api_path(ctx, operand);
         let mut meta = FileMeta::default();
         // symlink check first: affects both open flags and reporting

@@ -217,6 +217,52 @@ auto open_fifo_write_stream(std::wstring_view path) -> std::ofstream {
   return std::ofstream(file);
 }
 
+// niubash#993 §5: /dev/zero, /dev/random, /dev/urandom and reads of
+// /dev/full (Linux drivers/char/mem.c read_full yields zeros, same as
+// /dev/zero) have no Win32 object to open. A writer thread feeding an
+// anonymous CRT pipe gives the operand the same shape /dev/null gets
+// through NUL — a real, seekless, blocking byte stream — so every
+// open_binary_file caller (cat, head, wc, ...) reads the device
+// transparently. The pump exits on the first failed write, i.e. when the
+// reader closes, so `head -c 8 /dev/zero` leaves no straggler.
+auto open_synth_device_read_stream(native_path::SynthDev kind)
+    -> std::ifstream {
+  int fds[2] = {-1, -1};
+  if (_pipe(fds, static_cast<unsigned int>(kReadChunkSize), _O_BINARY) !=
+      0) {
+    return failed_ifstream(errno);
+  }
+  std::FILE* read_file = _fdopen(fds[0], "rb");
+  if (read_file == nullptr) {
+    const int open_error = errno;
+    _close(fds[0]);
+    _close(fds[1]);
+    return failed_ifstream(open_error);
+  }
+  std::thread([write_fd = fds[1], kind] {
+    std::vector<char> buffer(kReadChunkSize, '\0');
+    std::mt19937_64 rng;
+    if (kind == native_path::SynthDev::random) {
+      rng.seed(std::random_device{}());
+    }
+    for (;;) {
+      if (kind == native_path::SynthDev::random) {
+        for (size_t i = 0; i < buffer.size(); i += sizeof(rng())) {
+          const auto v = rng();
+          std::memcpy(buffer.data() + i, &v,
+                      std::min(sizeof(v), buffer.size() - i));
+        }
+      }
+      if (_write(write_fd, buffer.data(),
+                 static_cast<unsigned int>(buffer.size())) <= 0) {
+        break;
+      }
+    }
+    _close(write_fd);
+  }).detach();
+  return std::ifstream(read_file);
+}
+
 auto open_binary_file(std::string_view filename) -> std::ifstream {
   // /dev/stdin-family operands bind to the real fd 0 so piped input works
   // exactly like GNU (and a closed stdin reports failure, #1056/#973).
@@ -225,6 +271,12 @@ auto open_binary_file(std::string_view filename) -> std::ifstream {
       return std::ifstream(file);
     }
     return failed_ifstream(errno);
+  }
+  // niubash#993 §5: synthesized devices before the API operand — /dev/zero
+  // etc. normalize to a cwd-relative miss, not a real file.
+  if (const auto dev = native_path::synthesized_device(filename);
+      dev != native_path::SynthDev::none) {
+    return open_synth_device_read_stream(dev);
   }
   auto operand = native_path::make_api_path_operand(filename);
   if (int err = native_path::operand_file_open_error(operand)) {
@@ -252,6 +304,19 @@ auto create_binary_file(std::string_view filename, bool append = false)
       return std::ofstream(file);
     }
     return failed_ofstream(errno);
+  }
+  // niubash#993 §5: writes to /dev/zero, /dev/random and /dev/urandom
+  // discard like NUL; /dev/full fails the open with ENOSPC — GNU fails
+  // the first write instead, so the errno reaches the caller's diagnostic
+  // unchanged even though the verb differs ("cannot create" vs
+  // "write error"). dd keeps its own exact write-time ENOSPC path.
+  if (const auto dev = native_path::synthesized_device(filename);
+      dev != native_path::SynthDev::none) {
+    if (dev == native_path::SynthDev::full) {
+      errno = ENOSPC;
+      return failed_ofstream(ENOSPC);
+    }
+    return std::ofstream(std::filesystem::path(L"NUL"), std::ios::binary);
   }
   auto operand = native_path::make_api_path_operand(filename);
   if (int err = native_path::operand_file_open_error(operand, true)) {

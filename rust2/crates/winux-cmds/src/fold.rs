@@ -299,8 +299,7 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             // the one operand boundary (drive dialect, carrier colons,
             // shell tree — the 1.x native_path layer)
-            let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, &name));
-            match std::fs::File::open(&path) {
+            match crate::fsutil::open_read_operand(ctx, &name) {
                 Ok(mut f) => {
                     if fold_file(&mut f, io.stdout, width, break_spaces, count_bytes).is_err() {
                         let _ = writeln!(

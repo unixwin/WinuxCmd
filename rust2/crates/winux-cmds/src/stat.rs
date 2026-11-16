@@ -1487,6 +1487,21 @@ mod tests {
     }
 
     #[test]
+    fn synthesized_devices_are_char_special() {
+        // niubash#993 §5: /dev/{zero,urandom,full} have no Win32 object
+        // but answer the character-device record /dev/null gives.
+        let sc = setup("stat-devs");
+        for dev in ["/dev/zero", "/dev/urandom", "/dev/full"] {
+            let (r, out, _) = run_sc(&sc, &["-c", "%F", dev]);
+            assert_eq!(r, 0, "{dev} rc");
+            assert_eq!(out, "character special file\n", "{dev}");
+            let (r, out, _) = run_sc(&sc, &["-c", "%A", dev]);
+            assert_eq!(r, 0, "{dev} rc");
+            assert!(out.starts_with('c'), "{dev} %A = {out}");
+        }
+    }
+
+    #[test]
     fn printf_mode() {
         let sc = setup("stat-printf");
         let (r, out, _) = run_sc(&sc, &["--printf", "%n\\n", "reg"]);

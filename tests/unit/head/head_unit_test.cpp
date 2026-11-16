@@ -789,3 +789,39 @@ TEST(head, head_fifo_operand_all_but_last_line_issue1442) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "l1\nl2\n");
 }
+
+// [GNU] The kernel-synthesized devices stream infinite bytes to every
+// reader, not only to dd (niubash#993 §5): head takes its -c bytes and
+// the writer pump stops when the pipe closes.
+TEST(head, head_c_reads_synthesized_devices) {
+  TempDir tmp;
+
+  Pipeline zero;
+  zero.set_cwd(tmp.wpath());
+  zero.add(L"head.exe", {L"-c", L"8", L"/dev/zero"});
+  zero.add(L"wc.exe", {L"-c"});
+  auto rz = zero.run();
+  EXPECT_EQ(rz.exit_code, 0);
+  EXPECT_EQ_TEXT(rz.stdout_text, "8\n");
+
+  Pipeline rnd;
+  rnd.set_cwd(tmp.wpath());
+  rnd.add(L"head.exe", {L"-c", L"32", L"/dev/urandom"});
+  rnd.add(L"wc.exe", {L"-c"});
+  auto rr = rnd.run();
+  EXPECT_EQ(rr.exit_code, 0);
+  EXPECT_EQ_TEXT(rr.stdout_text, "32\n");
+}
+
+TEST(head, head_c_dev_zero_yields_nul_bytes) {
+  TempDir tmp;
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"head.exe", {L"-c", L"4", L"/dev/zero"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ(r.stdout_text.size(), 4u);
+  EXPECT_EQ(r.stdout_text, std::string(4, '\0'));
+}

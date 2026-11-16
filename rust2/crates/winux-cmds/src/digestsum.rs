@@ -1812,12 +1812,7 @@ fn target_open_reason(e: &std::io::Error, name: &str, ctx: &Ctx) -> String {
 /// plain open would read the marker's 7 bytes and strand the writer),
 /// everything else is a plain open.
 fn open_operand(ctx: &Ctx, name: &str) -> std::io::Result<Box<dyn std::io::Read>> {
-    let path = resolve(ctx, name);
-    let text = path.to_string_lossy().into_owned();
-    if crate::fs_win::is_winux_fifo_path(&text) {
-        return crate::fs_win::open_fifo_read(&text).map(|r| Box::new(r) as Box<dyn std::io::Read>);
-    }
-    std::fs::File::open(path).map(|f| Box::new(f) as Box<dyn std::io::Read>)
+    crate::fsutil::open_read_operand(ctx, name)
 }
 
 /// Read one check file (operand, `-` = stdin) and verify each of its

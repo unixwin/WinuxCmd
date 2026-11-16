@@ -76,7 +76,7 @@ pub fn tsort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 _ => {}
             }
-            match std::fs::read(&path) {
+            match crate::fsutil::read_operand_all(ctx, &name) {
                 Ok(buf) => buf,
                 Err(_) => {
                     // GNU: error (EXIT_FAILURE, errno, "%s", quotef (file));

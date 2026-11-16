@@ -97,13 +97,10 @@ fn tee_files(
         let opened: std::io::Result<Box<dyn Write>> = if crate::fs_win::is_winux_fifo_path(&path) {
             crate::fs_win::open_fifo_write(&path).map(|f| Box::new(f) as Box<dyn Write>)
         } else {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .append(append)
-                .truncate(!append)
-                .open(&path)
-                .map(|f| Box::new(f) as Box<dyn Write>)
+            // niubash#993 §5: open_write_operand also answers the
+            // synthesized devices — /dev/{zero,random,urandom} discard
+            // like NUL, /dev/full reports ENOSPC.
+            crate::fsutil::open_write_operand(ctx, name, append)
         };
         match opened {
             Ok(f) => dests.push(Dest {
@@ -212,6 +209,11 @@ fn tee_files(
 }
 
 fn reason_str(e: &std::io::Error) -> &'static str {
+    // niubash#993 §5: /dev/full opens fine on GNU and fails with ENOSPC —
+    // the errno survives in the raw os error where kind() flattens it.
+    if e.raw_os_error() == Some(28) {
+        return "No space left on device";
+    }
     match e.kind() {
         ErrorKind::NotFound => "No such file or directory",
         ErrorKind::PermissionDenied => "Permission denied",

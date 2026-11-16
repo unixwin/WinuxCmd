@@ -132,6 +132,18 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
         winfs::expand_lx(self.ctx, &self.api(name))
     }
 
+    /// niubash#993 §5: a kernel-synthesized device destination has no
+    /// Win32 object — /dev/{zero,random,urandom} discard like NUL and
+    /// /dev/full reports ENOSPC (112 = ERROR_DISK_FULL, which
+    /// winfs::reason spells "No space left on device").
+    fn open_dst(&self, dst: &str) -> Result<std::fs::File, winfs::DWORD> {
+        match winux_core::path::synthesized_device(dst) {
+            Some(winux_core::path::SynthesizedDevice::Full) => Err(112),
+            Some(_) => winfs::open_write("NUL"),
+            None => winfs::open_write(&self.api_write(dst)),
+        }
+    }
+
     pub fn lexists(&self, name: &str) -> bool {
         winfs::attributes(&self.api(name)).is_some()
     }
@@ -502,7 +514,7 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
                 preserve.timestamps = true;
             }
             self.verbose(src, dst, backup_name.as_deref());
-            if let Err(e) = winfs::open_write(&self.api_write(dst)) {
+            if let Err(e) = self.open_dst(dst) {
                 let m = tr!(
                     self.ctx,
                     "command.cp.error.cannot_create_regular",
@@ -923,20 +935,39 @@ impl<'a, 'b, 'c> Copier<'a, 'b, 'c> {
     // ------------------------------------------------------------------
 
     fn copy_bytes(&mut self, src: &str, dst: &str) -> Result<(), CopyError> {
-        let mut infile = winfs::open_read(&self.api_read(src)).map_err(CopyError::OpenRead)?;
-        let mut outfile = match winfs::open_write(&self.api_write(dst)) {
+        use std::io::Read as _;
+        // niubash#993 §5: device sources stream through the shared
+        // synthesized-device reader — winfs::open_read's Win32 path never
+        // sees them.
+        enum SrcIn {
+            File(std::fs::File),
+            Dev(Box<dyn std::io::Read>),
+        }
+        let mut infile = match winux_core::path::synthesized_device(src) {
+            Some(_) => SrcIn::Dev(
+                crate::fsutil::open_read_operand(self.ctx, src)
+                    .map_err(|_| CopyError::OpenRead(2))?,
+            ),
+            None => {
+                SrcIn::File(winfs::open_read(&self.api_read(src)).map_err(CopyError::OpenRead)?)
+            }
+        };
+        let mut outfile = match self.open_dst(dst) {
             Ok(f) => f,
             Err(_) if self.opts.force => {
                 // copy.c:1455: -f unlinks the destination and retries.
                 let _ = winfs::delete(&self.api(dst), false);
-                winfs::open_write(&self.api_write(dst)).map_err(CopyError::Create)?
+                self.open_dst(dst).map_err(CopyError::Create)?
             }
             Err(e) => return Err(CopyError::Create(e)),
         };
         let sparse = self.opts.sparse != Sparse::Never;
         let mut buf = vec![0u8; 256 * 1024];
         loop {
-            let n = winfs::read_chunk(&mut infile, &mut buf).map_err(|_| CopyError::Read)?;
+            let n = match &mut infile {
+                SrcIn::File(f) => winfs::read_chunk(f, &mut buf).map_err(|_| CopyError::Read)?,
+                SrcIn::Dev(r) => r.read(&mut buf).map_err(|_| CopyError::Read)?,
+            };
             if n == 0 {
                 break;
             }

@@ -110,7 +110,7 @@ pub fn rev_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         for operand in &p.positionals {
             let name = operand.to_string_lossy().into_owned();
             let mut data = Vec::new();
-            match std::fs::File::open(fsutil::resolve(ctx, &name)) {
+            match fsutil::open_read_operand(ctx, &name) {
                 Ok(mut f) => {
                     if std::io::copy(&mut f, &mut data).is_err() {
                         let _ = writeln!(io.stderr, "rev: {name}: read error");

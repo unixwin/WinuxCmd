@@ -908,7 +908,7 @@ pub fn join_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 return Err(());
             }
         } else {
-            match std::fs::read(resolve(ctx, name)) {
+            match crate::fsutil::read_operand_all(ctx, name) {
                 Ok(b) => buf = b,
                 Err(_) => {
                     if std::fs::metadata(resolve(ctx, name))
