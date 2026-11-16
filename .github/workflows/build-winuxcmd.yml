@@ -456,16 +456,35 @@ jobs:
   # ran rust2/gate/run-gate.sh, so the gate TSV rows — notably the
   # csplit/pathchk/ptx corpus PR #1613 left out of the ctest port — had no CI
   # execution path at all. #1616 wired a 93-row slice on a single job; this
-  # job runs the WHOLE corpus — 2649 rows in 82 tables plus 30 posix-mode
+  # job runs the WHOLE corpus — 4110 rows in 90 tables plus 30 posix-mode
   # rows — as a matrix sharded by command family, so one slow or hung family
   # cannot consume the workflow's budget:
   #   * every shard is sized from MEASURED wall clock, not guesswork:
-  #     `bash rust2/gate/run-gate.sh` (full corpus, X299, 2026-11-14,
-  #     rust2/target/gate-full/timing.tsv) measured 1509 s for all 2649 rows
-  #     across 11 family shards; the slowest shard is sort-num at 211 s
-  #     (3.5 min, 323 rows) and the posix shard at 121 s (30 rows), so even
-  #     a 3x hosted-runner slowdown plus the fixed overhead (artifact
-  #     download, driver build, WSL install) stays inside the 15-minute cap;
+  #     `bash rust2/gate/run-gate.sh` (full corpus, Xeon w5-3433 host,
+  #     2026-11-16, rust2/target/gate-full/timing.tsv) measured 2068 s for
+  #     all 4110 rows across 14 family shards; the slowest shard is process
+  #     at 207 s (3.5 min, 283 rows) and the posix shard at 118 s (30 rows),
+  #     so even a 3x hosted-runner slowdown plus the fixed overhead (artifact
+  #     download, driver build, WSL install) stays inside the 15-minute cap.
+  #     The four engines-* shards split their 619 s of
+  #     measured work so none exceeds the old long pole: sed 183 s, find
+  #     164 s, grep+egrep+fgrep 77 s, ls+mv+cp 195 s. The natural three-shard
+  #     grouping (find+grep+egrep+fgrep) measured 241 s and would have made
+  #     this new coverage the slowest shard in the matrix. A second run of
+  #     the four new shards measured 207/182/85/220 s, so plan on ~200 s
+  #     each with host noise of roughly 10%;
+  #   * the engines-* shards also close a real coverage hole: cp, egrep,
+  #     fgrep, find, grep, ls, mv and sed — 1269 rows, including the six
+  #     largest tables in the corpus — were claimed by no shard, so the
+  #     aggregate below reported them as "not run by any shard" and none had
+  #     ever executed in CI;
+  #   * known follow-up, not introduced here: find is the only table with
+  #     `sorted` rows (119), matrix-summary.py has no sorted branch, and
+  #     run-gate.sh's sorted comparator reads unset $r_out/$g_out (so its
+  #     own run admits those rows on empty==empty). Consequently the
+  #     dashboard counts those 119 rows as FAIL once find runs here. That is
+  #     a pre-existing gate-tool gap for a separate lane; the matrix cannot
+  #     cover find without exposing it;
   #   * the aggregate `rust2-gate` job fails the run if a shard artifact is
   #     missing, a shard job did not succeed, or a case table on disk is not
   #     claimed by any shard, so the shard list cannot silently rot when a
@@ -500,8 +519,8 @@ jobs:
   rust2-gate-shards:
     runs-on: ${{ matrix.runner }}
     needs: build-windows
-    # The corpus is 1509 s of gate work on the reference host across 11
-    # family shards; the slowest shard is 211 s. The ceiling covers the fixed
+    # The corpus is 2068 s of gate work on the reference host across 14
+    # family shards; the slowest shard is 207 s. The ceiling covers the fixed
     # overhead (artifact download, driver build, WSL install) on a hosted
     # runner and still fails a hung shard as a timeout, not a 6-hour job.
     timeout-minutes: 15
@@ -547,6 +566,22 @@ jobs:
           - runner: windows-2025
             shard: system-accounts
             commands: "sync users groups id who pinky getconf date"
+          # The content engines had no shard until 2026-11-16, so cp, egrep,
+          # fgrep, find, grep, ls, mv and sed never ran in CI. Sizes are the
+          # same full-corpus run as the job header: each of these four stays
+          # below the matrix's old 211 s long pole.
+          - runner: windows-2025
+            shard: engines-text
+            commands: "sed"
+          - runner: windows-2025
+            shard: engines-find
+            commands: "find"
+          - runner: windows-2025
+            shard: engines-search
+            commands: "grep egrep fgrep"
+          - runner: windows-2025
+            shard: engines-fs
+            commands: "ls mv cp"
           - runner: windows-2025
             shard: posix
             commands: "--posix-mode"
