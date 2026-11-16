@@ -279,6 +279,26 @@ fn interactive_and_no_clobber_are_last_wins() {
 }
 
 #[test]
+fn no_clobber_emits_gnu_deprecation_warning() {
+    // niubash#993 S10 ruling (#1788): the audit expected `cp -n` to be
+    // silent, but the real oracle — probed WSL Ubuntu
+    // `cp (GNU coreutils) 9.4` — prints this deprecation warning
+    // (added in coreutils 9.2). Pin the warning so it can't be dropped.
+    let sc = ScratchCtx::new("cp-n-warn");
+    fs::write(sc.path("a"), b"A").unwrap();
+    fs::write(sc.path("b"), b"B").unwrap();
+    let (rc, _, err) = run(&sc, &["-n", "a", "b"]);
+    assert_eq!(rc, 0);
+    assert_eq!(
+        err,
+        "cp: warning: behavior of -n is non-portable and may change in \
+         future; use --update=none instead\n"
+    );
+    // ... and -n still skips the existing destination, GNU-style.
+    assert_eq!(fs::read(sc.path("b")).unwrap(), b"B");
+}
+
+#[test]
 fn no_clobber_skips_existing_and_copies_new() {
     let sc = ScratchCtx::new("cp-n");
     fs::write(sc.path("a"), b"A").unwrap();
