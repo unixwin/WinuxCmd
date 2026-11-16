@@ -12,6 +12,11 @@
 //!
 //! GNU rejects any operand: `hostid: extra operand 'X'` plus the try-help
 //! line, rc 1.
+//!
+//! hostid declares no options of its own: main() delegates to
+//! `parse_gnu_standard_options_only` (hostid.c:63-65), which accepts only the
+//! long `--help` / `--version`. There is no short help or version letter, so
+//! `-V` / `-v` are getopt's `invalid option -- 'V'` usage error, rc 1.
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -37,18 +42,11 @@ fn machine_id_hex(ctx: &Ctx) -> String {
 pub fn hostid_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // getopt: unknown options are usage errors; --help/--version win
     // wherever they appear (the branded text is the dispatcher's job).
-    let opts = [
-        argopt::OptSpec {
-            short: Some('v'),
-            long: "version",
-            takes_value: false,
-        },
-        argopt::OptSpec {
-            short: Some('V'),
-            long: "version",
-            takes_value: false,
-        },
-    ];
+    // hostid registers no option-table entries: GNU's
+    // parse_gnu_standard_options_only (hostid.c:63-65) offers only the long
+    // --help/--version, so every short letter (-V, -v, -h, ...) is an
+    // "invalid option" usage error.
+    let opts: [argopt::OptSpec; 0] = [];
     let p = match argopt::parse("hostid", args, &opts, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
@@ -123,6 +121,39 @@ mod tests {
         assert_eq!(r, 1);
         assert!(err.contains("hostid: extra operand 'xyz'"));
         assert!(err.contains("Try 'hostid --help' for more information."));
+    }
+
+    /// GNU hostid has no short help/version letter: `parse_gnu_standard_options_only`
+    /// (hostid.c:63-65) accepts only the long forms, and getopt reports every
+    /// other letter as an invalid option (probed coreutils 9.4: `-V` and `-v`
+    /// both print `invalid option` and exit 1).
+    #[test]
+    fn short_version_is_invalid_option() {
+        let (r, out, err) = run(&["-V"]);
+        assert_eq!(r, 1);
+        assert_eq!(out, "");
+        assert_eq!(
+            err,
+            "hostid: invalid option -- 'V'\nTry 'hostid --help' for more information.\n"
+        );
+
+        let (r, out, err) = run(&["-v"]);
+        assert_eq!(r, 1);
+        assert_eq!(out, "");
+        assert_eq!(
+            err,
+            "hostid: invalid option -- 'v'\nTry 'hostid --help' for more information.\n"
+        );
+    }
+
+    #[test]
+    fn long_version_is_accepted() {
+        // The dispatcher owns the branded version text; the library form just
+        // reports success, as it does for --help.
+        let (r, out, err) = run(&["--version"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "");
+        assert_eq!(err, "");
     }
 
     #[test]
