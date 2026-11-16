@@ -1304,8 +1304,7 @@ impl<'a, 'c, 'e> Runner<'a, 'c, 'e> {
             self.error(&format!("{name}: exited with status 255; aborting"));
             return Err(self.fatal(124));
         }
-        if code >= 0x8000_0000 {
-            let sig = ntstatus_signal(code);
+        if let Some(sig) = child_death_signal(code) {
             self.error(&format!("{name}: terminated by signal {sig}"));
             return Err(self.fatal(125));
         }
@@ -1848,6 +1847,44 @@ fn wait_any(running: &[Running]) -> usize {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+}
+
+/// The POSIX signal number behind a Windows-shaped child death, or `None` when
+/// `code` is an ordinary exit status.
+///
+/// GNU reads the wait status (findutils 4.9.0 xargs/xargs.c:1493
+/// `wait_for_proc`): `WIFSIGNALED` reports `terminated by signal N` and leaves
+/// through `error (XARGS_EXIT_CLIENT_FATAL_SIG, ...)` (:1584-1586), i.e. 125
+/// (:204); `WIFSTOPPED` takes the same status (:1581-1583); every other nonzero
+/// normal exit only sets `child_error = XARGS_EXIT_CLIENT_EXIT_NONZERO` = 123
+/// (:1587-1588). 255 is the one exit status with its own branch, 124 (:1578).
+///
+/// Windows keeps no wait status: `ExitStatus::code` is the bare 32-bit exit
+/// value, and the only shape the OS itself produces for a death the process did
+/// not choose is an NTSTATUS exception code - 0xC000_0005 access violation,
+/// 0xC000_013A control-C and friends - always with the high bit set. That shape
+/// is what a POSIX `WIFSIGNALED` would have observed, so it is the only one
+/// classified as a signal death.
+///
+/// The 128+N range is deliberately *not* decoded. A POSIX shell on this
+/// platform cannot die from a signal, so it re-encodes the death as an exit
+/// status, and `sh -c 'kill -9 $$'` (137) is byte-identical to `sh -c 'exit
+/// 137'` from the parent's side; nothing in the exit value separates them.
+/// GNU answers 125 + `terminated by signal 9` for the first and a silent 123
+/// for the second (oracle: `printf 'a\n' | xargs sh -c 'exit 137'` -> rc 123,
+/// no stderr), so decoding 129..=192 would invent a diagnostic and abort the
+/// whole run - GNU keeps running the remaining children - for a child that
+/// legitimately exited 130/137/143. It would also contradict the #1319 ruling
+/// that pins 1..=254 -> 123 (tests/unit/xargs/xargs_unit_test.cpp:1338-1356;
+/// C++ `map_child_exit_status`, src/commands/xargs.cpp:1403), and xa137 is
+/// scored Rust-vs-C++ on exactly this shape: both sides must answer 123. The
+/// signal fidelity Windows cannot express is lost uniformly instead of being
+/// guessed back for one ambiguous range.
+fn child_death_signal(code: u32) -> Option<u32> {
+    if code < 0x8000_0000 {
+        return None;
+    }
+    Some(ntstatus_signal(code))
 }
 
 /// The POSIX signal class of an NTSTATUS-shaped exit code.
@@ -2731,6 +2768,36 @@ mod tests {
         assert_eq!(e, "xargs: cmd: terminated by signal 11\n");
     }
 
+    /// 128+N is a shell re-encoding, not an observation Windows can make: the
+    /// child's exit value is identical whether it was killed by signal 9 or ran
+    /// `exit 137`, and GNU returns a silent 123 for the latter (findutils 4.9.0
+    /// xargs.c:1587-1588). The C++ leg pins the same ruling for 130/143 (#1319,
+    /// tests/unit/xargs/xargs_unit_test.cpp:1338-1356), so xa137 - scored
+    /// Rust-vs-C++ on this exact shape - must see 123 on both sides, never a
+    /// fabricated "terminated by signal N" plus 125.
+    #[cfg(windows)]
+    #[test]
+    fn shell_128_plus_n_stays_an_exit_status() {
+        // 128 itself, the whole 129..=192 range a shell uses for 128+N, and the
+        // 193..=254 tail are all ordinary statuses: 123, no diagnostic.
+        for status in ["128", "129", "130", "137", "143", "192", "193", "254"] {
+            let (r, _, e) = run("a\n", &["cmd", "/c", "exit", status]);
+            assert_eq!((r, e.as_str()), (123, ""), "exit {status}");
+        }
+        // The other two paths stay pinned here so one test names all three.
+        let (r, _, e) = run("a\n", &["cmd", "/c", "exit", "255"]);
+        assert_eq!(
+            (r, e.as_str()),
+            (124, "xargs: cmd: exited with status 255; aborting\n")
+        );
+        // 0xC0000005, the NTSTATUS shape the OS itself reports.
+        let (r, _, e) = run("a\n", &["cmd", "/c", "exit", "-1073741819"]);
+        assert_eq!(
+            (r, e.as_str()),
+            (125, "xargs: cmd: terminated by signal 11\n")
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn process_slot_var_and_batch_children() {
@@ -2783,6 +2850,14 @@ mod tests {
         assert_eq!(ntstatus_signal(0xC000_013A), 2);
         assert_eq!(ntstatus_signal(0xC000_0409), 6);
         assert_eq!(ntstatus_signal(0xDEAD_BEEF), 9);
+        // The one classifier child_done uses: only the NTSTATUS shape is a
+        // signal death. An exit status never decodes, 128+N included.
+        assert_eq!(child_death_signal(0xC000_0005), Some(11));
+        assert_eq!(child_death_signal(0xC000_013A), Some(2));
+        assert_eq!(child_death_signal(0xDEAD_BEEF), Some(9));
+        for code in [0u32, 1, 3, 128, 129, 130, 137, 143, 192, 193, 254, 255] {
+            assert_eq!(child_death_signal(code), None, "code {code}");
+        }
     }
 
     #[test]
