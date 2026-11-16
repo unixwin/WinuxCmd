@@ -187,10 +187,16 @@ fn display_source_dir(ctx: &Ctx, value: &str) -> String {
 fn display_join(dir: &str, name: &str) -> String {
     if dir.is_empty() {
         name.to_string()
-    } else if dir.ends_with('/') {
-        format!("{dir}{name}")
     } else {
-        format!("{dir}/{name}")
+        // GNU joins dest_dir and the template with exactly one separator:
+        // file_name_concat() never emits the trailer run, so `-p D//`
+        // prints `D/<name>` (probed coreutils 9.4, D/ and D/// alike).
+        let trimmed = dir.trim_end_matches('/');
+        if trimmed.is_empty() {
+            format!("/{name}")
+        } else {
+            format!("{trimmed}/{name}")
+        }
     }
 }
 
@@ -272,20 +278,19 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 
     // (PathBuf, display string): the display keeps the operand/env value
     // as given so output matches what the user handed in (GNU prints the
-    // destination prefix verbatim)
+    // destination prefix verbatim). Resolution goes through winux_core
+    // tmp_base — NOT a local env loop: the loop trusted TEMP/TMP verbatim,
+    // and a Git Bash parent exports them as the MSYS form "/tmp" itself,
+    // which circularly resolved /tmp to /tmp and failed every -p /tmp
+    // creation on the CI runner (mk16, fs-dirs shard). tmp_base skips
+    // POSIX-spelled candidates and falls back to GetTempPathW (which
+    // skips directories that do not exist), landing on the real per-user
+    // temp; the display prints the resolved NATIVE forward-slash form
+    // (the 1.x getenv_path contract: normalize_win_shell_path).
     let default_dir = || -> (std::path::PathBuf, String) {
-        for key in ["TMPDIR", "TEMP", "TMP"] {
-            let hit = winux_core::win32_env_get(ctx.env, key)
-                .map(|v| v.to_string_lossy().into_owned())
-                .filter(|s| !s.is_empty());
-            if let Some(d) = hit {
-                // Every default-directory source prints the NATIVE
-                // forward-slash form: the 1.x getenv_path applied
-                // normalize_win_shell_path (a POSIX TMPDIR=/c/... printed
-                // C:/...) and GetTempPathW already returns a native path.
-                let _ = key;
-                return (resolve(ctx, &d), display_source_dir(ctx, &d));
-            }
+        if let Some(base) = winux_core::path::tmp_base(ctx.env) {
+            let d = base.clone();
+            return (resolve(ctx, &d), display_source_dir(ctx, &d));
         }
         (
             ctx.cwd.clone(),
@@ -314,6 +319,19 @@ pub fn mktemp_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             } else {
                 default_dir()
             }
+        } else if let Some(mapped) = winux_core::path::tmp_namespace_map(ctx.env, &explicit) {
+            // mk16-p-dir (fs-dirs gate row, exit face): a -p DIR spelling
+            // inside the machine-level temp namespace is mapped by
+            // tmp_namespace_map (/tmp = tmp_base, /var/tmp =
+            // <tmp_base>/var/tmp; niubash#94) even when no shell root is
+            // configured. GNU uses the operand as dest_dir verbatim
+            // (mktemp.c:293-309) and prints it (mktemp.c:341) — the gate's
+            // root-less shape has no /tmp mount behind resolve(), so the
+            // generic branch joined the spelling onto the cwd drive and
+            // creation failed (r_rc=1 where GNU's real /tmp gives 0). The
+            // display still echoes the caller's spelling (#1141), exactly
+            // the operand GNU echoes.
+            (resolve(ctx, &mapped), explicit)
         } else {
             // #1141: -p/--tmpdir echoes the caller's dialect (/d/...,
             // /cygdrive/d/..., D:/...) while creation uses the resolved
@@ -593,6 +611,60 @@ mod tests {
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
         let r = mktemp_cmd(&owned, &mut io.split(), &ctx).unwrap();
         (r, io.out(), io.err())
+    }
+
+    #[test]
+    fn p_dir_bare_tmp_namespace_creates_via_tmp_base() {
+        // mk16-p-dir gate row (exit face): `-p /tmp` with NO shell root —
+        // shell_tree_map applies its install-root gate before the temp
+        // namespace, so the generic resolve left the spelling POSIX and
+        // creation failed (r_rc=1 where GNU's shape has a real /tmp and
+        // rc=0). The -p operand now goes through tmp_namespace_map, the
+        // owner of the /tmp and /var/tmp mapping (GNU mktemp.c:293-309
+        // uses dest_dir verbatim; mktemp.c:341 prints it).
+        let sc = ScratchCtx::new("mktemp-p-tmp");
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let base = winux_core::path::tmp_base(&*ctx.env).expect("tmp_base must answer");
+        // GNU's fixture has a real /var/tmp; provide the sibling directory
+        // so the mapping's `<base>/var/tmp` target is a directory.
+        let var_tmp = std::path::PathBuf::from(&base).join("var").join("tmp");
+        std::fs::create_dir_all(&var_tmp).expect("create var/tmp fixture");
+
+        for (operand, expected_tail) in [
+            ("/tmp", std::path::PathBuf::from(&base)),
+            ("/var/tmp", var_tmp.clone()),
+            // trailing separators name the same directory (GNU's
+            // file_name_concat collapses them in the echoed dest_name)
+            ("/tmp/", std::path::PathBuf::from(&base)),
+            ("/var/tmp//", var_tmp.clone()),
+        ] {
+            let mut io = MemIo::new("");
+            let owned: Vec<OsString> = ["-p", operand, "gateXXXXXX"]
+                .iter()
+                .map(Into::into)
+                .collect();
+            let r = mktemp_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            let out = io.out();
+            assert_eq!(r, 0, "operand {operand}: err={}", io.err());
+            // the displayed prefix is the caller's spelling, GNU-style
+            let shown_root = if operand.starts_with("/var/tmp") {
+                "/var/tmp/"
+            } else {
+                "/tmp/"
+            };
+            let created = out.trim();
+            assert!(created.starts_with(shown_root), "{operand}: {created}");
+            assert!(!created.contains("//"), "{operand}: {created}");
+            let tail = &created[shown_root.len()..];
+            let resolved = expected_tail.join(tail);
+            assert!(
+                resolved.exists(),
+                "{operand}: {} must exist",
+                resolved.display()
+            );
+            std::fs::remove_file(&resolved).ok();
+        }
     }
 
     #[test]
