@@ -173,21 +173,6 @@ auto constexpr CP_OPTIONS = std::array{
 namespace cp_pipeline {
 namespace cp = core::pipeline;
 
-auto append_expanded_source(std::vector<std::string>& source_paths,
-                            std::string_view arg) -> void {
-  std::string source(arg);
-  if (contains_wildcard(source)) {
-    auto glob_result = glob_expand(source);
-    if (glob_result.expanded) {
-      for (const auto& file : glob_result.files) {
-        source_paths.push_back(wstring_to_utf8(file));
-      }
-      return;
-    }
-  }
-  source_paths.push_back(std::move(source));
-}
-
 auto normalize_path_separators(std::string path) -> std::string {
   std::ranges::replace(path, '/', '\\');
   return path;
@@ -253,7 +238,6 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
     -> cp::Result<std::pair<std::vector<std::string>, std::string>> {
   std::vector<std::string> sourcePaths;
   std::string destPath;
-  const bool strip_slashes = ctx.get<bool>("--strip-trailing-slashes", false);
 
   // Get target directory if specified
   std::string target_dir = ctx.get<std::string>("--target-directory", "");
@@ -281,7 +265,7 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
 
     destPath = target_dir;
     for (auto arg : ctx.positionals) {
-      append_expanded_source(sourcePaths, arg);
+      sourcePaths.emplace_back(arg);
     }
     if (sourcePaths.empty()) {
       return std::unexpected(
@@ -300,15 +284,9 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
     }
 
     for (size_t i = 0; i < ctx.positionals.size() - 1; ++i) {
-      append_expanded_source(sourcePaths, ctx.positionals[i]);
+      sourcePaths.emplace_back(ctx.positionals[i]);
     }
     destPath = std::string(ctx.positionals.back());
-  }
-
-  if (strip_slashes) {
-    for (auto& src : sourcePaths) {
-      src = strip_trailing_slashes(std::move(src));
-    }
   }
 
   if (sourcePaths.empty()) {
@@ -324,9 +302,9 @@ auto validate_arguments(const CommandContext<CP_OPTIONS.size()>& ctx)
 // ----------------------------------------------
 auto check_destination(
     const std::pair<std::vector<std::string>, std::string>& paths,
-    bool no_target_directory, bool parents)
+    bool no_target_directory, bool parents, bool strip_slashes)
     -> cp::Result<std::tuple<std::vector<std::string>, std::string, bool>> {
-  const auto& [sourcePaths, destPath] = paths;
+  auto [sourcePaths, destPath] = paths;
 
   DWORD attr = native_path::attributes_w(api_operand_w(destPath));
   bool destIsDir = !no_target_directory && (attr != INVALID_FILE_ATTRIBUTES) &&
@@ -345,6 +323,14 @@ auto check_destination(
                              "': No such file or directory");
     }
     return std::unexpected("target '" + destPath + "': Not a directory");
+  }
+
+  // [GNU] coreutils cp.c: remove_trailing_slashes only strips trailing
+  // slashes from source file names when copying into a target directory.
+  if (destIsDir && strip_slashes) {
+    for (auto& src : sourcePaths) {
+      src = strip_trailing_slashes(std::move(src));
+    }
   }
 
   return std::tuple{sourcePaths, destPath, destIsDir};
@@ -2429,9 +2415,11 @@ auto process_command(const CommandContext<N>& ctx) -> cp::Result<bool> {
   if (auto attrs = parse_preserve_attrs(ctx); !attrs) {
     return std::unexpected(attrs.error());
   }
+  const bool strip_slashes = ctx.get<bool>("--strip-trailing-slashes", false);
   return validate_arguments(ctx)
       .and_then([&](std::pair<std::vector<std::string>, std::string> paths) {
-        return check_destination(paths, no_target_directory, parents);
+        return check_destination(paths, no_target_directory, parents,
+                                 strip_slashes);
       })
       .and_then([&](std::tuple<std::vector<std::string>, std::string, bool>
                         pathsAndDir) {
