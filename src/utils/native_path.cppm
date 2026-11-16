@@ -176,9 +176,29 @@ inline auto nativeize_base_w(std::wstring_view base) -> std::wstring {
 inline auto tmp_base_w() -> std::wstring {
   for (const auto* name : {L"TMPDIR", L"TEMP", L"TMP"}) {
     std::wstring candidate = read_env_w(name);
-    if (!candidate.empty()) return nativeize_base_w(candidate);
+    // #1769: a POSIX-spelled value (leading '/') cannot name a Windows
+    // directory. Under a Git Bash parent TEMP/TMP arrive as the MSYS form
+    // "/tmp" itself — trusting it maps /tmp right back onto /tmp and
+    // sends every temp-file operand to a path that does not exist (the
+    // rust2 port's winux-core path.rs tmp_base fix; the CI gate's
+    // mk16-p-dir finding). Skip it; niubash#94's TMPDIR > TEMP > TMP
+    // priority continues over the remaining candidates.
+    if (!candidate.empty() && candidate.front() != L'/') {
+      return nativeize_base_w(candidate);
+    }
   }
-  return {};
+  // Every candidate was POSIX-spelled — the Git Bash shard env is exactly
+  // that (TMPDIR unset, TEMP/TMP = /tmp). niubash#94's intent, a usable
+  // per-user temporary namespace, is served by the Windows default
+  // per-user temp path. This last-resort arm reads process state through
+  // GetTempPathW — its own TMP/TEMP/USERPROFILE walk over the same env
+  // block — which the candidate loop above deliberately does not consult;
+  // the read is confined to this arm on purpose, mirroring path.rs.
+  std::array<wchar_t, 8192> buffer{};
+  const DWORD written =
+      GetTempPathW(static_cast<DWORD>(buffer.size()), buffer.data());
+  if (written == 0 || written > buffer.size()) return {};
+  return nativeize_base_w(std::wstring_view(buffer.data(), written));
 }
 
 inline auto home_parent_w() -> std::wstring {
