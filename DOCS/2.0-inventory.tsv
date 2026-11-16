@@ -19,7 +19,7 @@ cmp	690	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:
 col	522	mixed(iostream+win32-console)	none	none	audited:deviates	unit+differential:15	3	c++-only	deferred(#1488)	c++-1.x	#1488 (wave3)
 column	1038	mixed(iostream+win32-console)	none	none	audited:deviates	unit+differential:18	3	c++-only	deferred(#1488)	c++-1.x	#1488 (wave3)
 comm	590	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:2	3	c++-only	deferred(#1488)	c++-1.x	#1488 (wave3)
-cp	207	mixed(iostream+win32-console+win32-direct)	errno	none	audited:clean	unit+differential:3	2	wired	rust2-wired	rust2	#1488 cp wire; #1647/#1648/#1693 (GATE-REPORT.md)
+cp	2490	mixed(iostream+win32-console+win32-direct)	errno	none	audited:clean	unit+differential:3	2	c++-only	deferred(#1488)	c++-1.x	#1757 revert; #1488 (Rust cp library on main)
 cpio	1127	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates	unit	4	c++-only	deferred(#1488)	c++-1.x	#1488 (wave4)
 csplit	786	mixed(iostream+win32-console)	none	none	audited:clean	unit	3	rust-ready	deferred(#1488)	rust2-ready	#1488 (wave3 gate green; wiring pending)
 cut	679	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:3	W2	wired	rust2-wired	rust2	#1488 (wave-W2 wired; GATE-REPORT.md)
