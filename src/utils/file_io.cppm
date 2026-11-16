@@ -342,6 +342,21 @@ auto stdin_is_bad() -> bool {
   return _lseek(0, 0, SEEK_CUR) == -1 && errno == EBADF;
 }
 
+// [GNU] A directory on standard input reads as EISDIR, not EOF (#1803):
+// the CRT read fails (EINVAL) but std::cin reports it as failbit|eofbit
+// with bad() false, so the stream state alone cannot tell it from clean
+// EOF — and the _lseek probe above cannot either (seeking a directory
+// handle succeeds). Probe the handle itself instead: only a real
+// directory handle reports FILE_ATTRIBUTE_DIRECTORY here (pipes and
+// consoles fail the query, regular files report no DIRECTORY bit).
+auto stdin_is_directory() -> bool {
+  HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+  if (hIn == nullptr || hIn == INVALID_HANDLE_VALUE) return false;
+  BY_HANDLE_FILE_INFORMATION info{};
+  return GetFileInformationByHandle(hIn, &info) &&
+         (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
 // Unix filters consume fd 0 as a byte stream, but the CRT opens it in text
 // mode by default: reads then stop at the first 0x1A (Ctrl-Z) byte and
 // collapse CRLF to LF, so a piped payload silently loses data while the

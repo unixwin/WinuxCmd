@@ -829,3 +829,118 @@ TEST(cat, cat_show_tabs_after_long_run_issue1127) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, run + "^Ix\nnext^Iline\n");
 }
+
+// #1803: a directory bound to stdin must report EISDIR (rc 1), not silent
+// EOF (rc 0). The Pipeline harness can only feed stdin through a pipe, so
+// these nails spawn cat.exe directly with a directory handle (opened with
+// FILE_FLAG_BACKUP_SEMANTICS, the shape a shell binds for `cat < dir` /
+// `exec 0<dir; cat`) as the child's stdin and capture stdout/stderr
+// through pipes.
+namespace {
+struct DirStdinResult {
+  int exit_code = -1;
+  std::string stdout_text;
+  std::string stderr_text;
+};
+
+std::string read_pipe_to_eof(HANDLE h) {
+  std::string out;
+  char buf[4096];
+  DWORD got = 0;
+  while (ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0) {
+    out.append(buf, got);
+  }
+  return out;
+}
+
+DirStdinResult run_cat_with_dir_stdin(const std::filesystem::path& dir,
+                                      const std::vector<std::wstring>& args) {
+  DirStdinResult result;
+  SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+  HANDLE hDir = CreateFileW(
+      dir.wstring().c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &sa,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  EXPECT_NE(hDir, INVALID_HANDLE_VALUE);
+  if (hDir == INVALID_HANDLE_VALUE) return result;
+  HANDLE out_r = nullptr, out_w = nullptr, err_r = nullptr, err_w = nullptr;
+  EXPECT_TRUE(CreatePipe(&out_r, &out_w, &sa, 0));
+  EXPECT_TRUE(CreatePipe(&err_r, &err_w, &sa, 0));
+  SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
+
+  std::filesystem::path exe = ProjectPaths::exe(L"cat.exe");
+  std::vector<std::wstring> full_args = args;
+  if (!std::filesystem::exists(exe)) {
+    // #1438: no cat.exe entry in the default edition — reach it through
+    // the multicall verb like Pipeline does.
+    exe = ProjectPaths::exe(L"winuxcmd.exe");
+    full_args.insert(full_args.begin(), L"cat");
+  }
+  std::wstring cmdline = L"\"" + exe.wstring() + L"\"";
+  for (const auto& a : full_args) {
+    cmdline += L" \"";
+    cmdline += a;
+    cmdline += L"\"";
+  }
+
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = hDir;
+  si.hStdOutput = out_w;
+  si.hStdError = err_w;
+  PROCESS_INFORMATION pi{};
+  std::vector<wchar_t> cmd(cmdline.begin(), cmdline.end());
+  cmd.push_back(L'\0');
+  EXPECT_TRUE(CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, 0,
+                             nullptr, nullptr, &si, &pi));
+  if (pi.hProcess == nullptr) return result;
+  CloseHandle(out_w);
+  CloseHandle(err_w);
+  CloseHandle(hDir);
+  // The child writes at most one diagnostic line; draining after spawn
+  // cannot deadlock on the pipe buffer.
+  result.stdout_text = read_pipe_to_eof(out_r);
+  result.stderr_text = read_pipe_to_eof(err_r);
+  CloseHandle(out_r);
+  CloseHandle(err_r);
+  EXPECT_EQ(WaitForSingleObject(pi.hProcess, 30000), WAIT_OBJECT_0);
+  DWORD rc = 0;
+  EXPECT_TRUE(GetExitCodeProcess(pi.hProcess, &rc));
+  result.exit_code = static_cast<int>(rc);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  return result;
+}
+}  // namespace
+
+TEST(cat, issue1803_dir_on_stdin_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+  auto r = run_cat_with_dir_stdin(tmp.path / "indir", {});
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("cat: -: Is a directory") !=
+              std::string::npos);
+}
+
+TEST(cat, issue1803_dir_on_stdin_dash_operand_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+  auto r = run_cat_with_dir_stdin(tmp.path / "indir", {L"-"});
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("cat: -: Is a directory") !=
+              std::string::npos);
+}
+
+TEST(cat, issue1803_dir_on_stdin_dev_stdin_operand_reports_is_a_directory) {
+  TempDir tmp;
+  tmp.mkdir("indir");
+  auto r = run_cat_with_dir_stdin(tmp.path / "indir", {L"/dev/stdin"});
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("cat: /dev/stdin: Is a directory") !=
+              std::string::npos);
+}

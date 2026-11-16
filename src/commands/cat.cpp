@@ -498,6 +498,16 @@ REGISTER_COMMAND(cat, "cat",
                           const CommandContext<CAT_OPTIONS.size()> &ctx,
                           CatState &state) -> bool {
     if (path == "-") {
+      // [GNU] a directory on stdin reads as EISDIR (cat.c:186), not EOF
+      // (#1803): the CRT read fails but std::cin reports failbit|eofbit
+      // with bad() false, so the post-read bad() check below can never
+      // fire — probe the handle before streaming.
+      if (file_io::stdin_is_directory()) {
+        safeErrorPrintLn(winux::i18n::format(
+            "command.cat.error.is_a_directory", "cat: {}: Is a directory",
+            path));
+        return false;
+      }
       process_stream(std::cin, ctx, state);
       if (std::cin.bad()) {
         // [GNU] error (0, errno, "%s", quotef (infile)) (cat.c:186):
@@ -517,6 +527,15 @@ REGISTER_COMMAND(cat, "cat",
         safeErrorPrint("cat: ");
         safeErrorPrint(path);
         safeErrorPrint(": No such file or directory\n");
+        return false;
+      }
+      // [GNU] same EISDIR-on-stdin rule as the "-" operand (#1803), named
+      // through the operand as typed (GNU: "cat: /dev/stdin: Is a
+      // directory").
+      if (file_io::stdin_is_directory()) {
+        safeErrorPrintLn(winux::i18n::format(
+            "command.cat.error.is_a_directory", "cat: {}: Is a directory",
+            path));
         return false;
       }
       process_stream(std::cin, ctx, state);
