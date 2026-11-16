@@ -49,6 +49,10 @@ auto constexpr PS_OPTIONS = std::array{
     OPTION("-w", "", "wide output (do not truncate command lines)"),
     // [EXT]
     OPTION("", "--no-headers", "print no header line"),
+    // [EXT] Cygwin/Git-Bash face (niubash#993 S5): list every Windows
+    // process system-wide in the PID..WINPID..STIME COMMAND layout.
+    OPTION("-W", "--windows", "show Windows processes, including those "
+                              "outside the shell session"),
     // [EXT]
     OPTION("", "--sort", "sort by column (e.g., +pid, -rss)", STRING_TYPE),
     // [GNU] -V: version shorthand (probed: `ps -V`).
@@ -71,6 +75,7 @@ struct ProcessInfo {
   SIZE_T private_bytes;
   int priority;
   int thread_count;
+  DWORD uid = 0;
   DWORD session_id = 0;
   bool has_console = false;
 };
@@ -84,6 +89,7 @@ struct Config {
   bool no_headers = false;
   bool select_associated = false;
   bool lift_tty_restriction = false;
+  bool windows_listing = false;
   std::vector<DWORD> pid_filter;
   std::vector<std::string> format_fields;
   std::string user_filter;
@@ -99,12 +105,14 @@ struct HandleCloser {
 };
 using unique_handle = std::unique_ptr<HANDLE, HandleCloser>;
 
-// Get user name from process handle
-auto get_process_user(HANDLE h_process) -> std::wstring {
+// Get user name and account-SID RID from process handle. The RID is the
+// uid Cygwin's ps prints for the same account (its uid derivation is the
+// SID's last sub-authority).
+auto get_process_user(HANDLE h_process) -> std::pair<std::wstring, DWORD> {
   HANDLE h_token = nullptr;
 
   if (!OpenProcessToken(h_process, TOKEN_QUERY, &h_token)) {
-    return L"UNKNOWN";
+    return {L"UNKNOWN", 0};
   }
 
   // Use RAII for token handle
@@ -113,15 +121,24 @@ auto get_process_user(HANDLE h_process) -> std::wstring {
   DWORD size = 0;
   GetTokenInformation(h_token, TokenUser, nullptr, 0, &size);
   if (size == 0) {
-    return L"UNKNOWN";
+    return {L"UNKNOWN", 0};
   }
 
   std::vector<BYTE> buffer(size);
   if (!GetTokenInformation(h_token, TokenUser, buffer.data(), size, &size)) {
-    return L"UNKNOWN";
+    return {L"UNKNOWN", 0};
   }
 
   auto* token_user = reinterpret_cast<TOKEN_USER*>(buffer.data());
+  DWORD rid = 0;
+  if (auto* count = GetSidSubAuthorityCount(token_user->User.Sid);
+      count != nullptr && *count > 0) {
+    if (auto* sub = GetSidSubAuthority(token_user->User.Sid, *count - 1);
+        sub != nullptr) {
+      rid = *sub;
+    }
+  }
+
   wchar_t name[256] = {0};
   wchar_t domain[256] = {0};
   DWORD name_len = 256;
@@ -130,10 +147,10 @@ auto get_process_user(HANDLE h_process) -> std::wstring {
 
   if (LookupAccountSidW(nullptr, token_user->User.Sid, name, &name_len, domain,
                         &domain_len, &sid_type)) {
-    return std::wstring(name);
+    return {std::wstring(name), rid};
   }
 
-  return L"UNKNOWN";
+  return {L"UNKNOWN", rid};
 }
 
 // Get process command line with safer approach
@@ -257,7 +274,9 @@ auto enumerate_processes() -> cp::Result<std::vector<ProcessInfo>> {
 
     if (h_process.get() && h_process.get() != INVALID_HANDLE_VALUE) {
       // Get user
-      info.user = get_process_user(h_process.get());
+      auto [user, rid] = get_process_user(h_process.get());
+      info.user = std::move(user);
+      info.uid = rid;
 
       // Get full path
       info.full_path = get_process_path(h_process.get());
@@ -415,6 +434,7 @@ auto build_config(const CommandContext<PS_OPTIONS.size()>& ctx)
   cfg.all_processes = ctx.get<bool>("-e", false) || ctx.get<bool>("-A", false);
   cfg.select_associated = ctx.get<bool>("-a", false);
   cfg.lift_tty_restriction = ctx.get<bool>("-x", false);
+  cfg.windows_listing = ctx.get<bool>("-W", false);
 
   cfg.full_format = ctx.get<bool>("-f", false);
   cfg.long_format = ctx.get<bool>("-l", false);
@@ -510,50 +530,72 @@ auto sort_processes(std::vector<ProcessInfo>& processes,
   }
 }
 
-// Print processes in simple format
+// STIME the way Cygwin/Git-Bash ps prints it: HH:MM:SS for a process
+// started today, "Mon  D" for an older one.
+auto format_stime(const FILETIME& ft) -> std::wstring {
+  if (ft.dwLowDateTime == 0 && ft.dwHighDateTime == 0) return L"";
+
+  FILETIME local_ft;
+  SYSTEMTIME st;
+  if (!FileTimeToLocalFileTime(&ft, &local_ft) ||
+      !FileTimeToSystemTime(&local_ft, &st)) {
+    return L"";
+  }
+
+  SYSTEMTIME now;
+  GetLocalTime(&now);
+
+  wchar_t buffer[32];
+  if (st.wYear == now.wYear && st.wMonth == now.wMonth &&
+      st.wDay == now.wDay) {
+    swprintf_s(buffer, L"%02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
+  } else {
+    constexpr std::array<std::wstring_view, 12> kMonths = {
+        L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun",
+        L"Jul", L"Aug", L"Sep", L"Oct", L"Nov", L"Dec"};
+    swprintf_s(buffer, L"%.*s %2d", static_cast<int>(kMonths[st.wMonth - 1].size()),
+               std::wstring(kMonths[st.wMonth - 1]).c_str(), st.wDay);
+  }
+  return buffer;
+}
+
+// The COMMAND column: native image path for Windows processes, the
+// shell-mount spelling (/usr/bin/...) for processes inside the shell
+// root — the same distinction Cygwin makes for its own processes.
+auto ps_command_text(const ProcessInfo& proc) -> std::wstring {
+  std::wstring command =
+      proc.full_path.empty() ? proc.name : proc.full_path;
+  if (auto display =
+          native_path::shell_tree_display(native_path::to_utf8(command))) {
+    command = native_path::from_utf8(*display);
+  }
+  return command;
+}
+
+// Print processes in the Cygwin/Git-Bash layout (niubash#993 S5):
+//   PID PPID PGID WINPID TTY UID STIME COMMAND
+// niubash has no second PID namespace, so PID == WINPID == the real
+// Windows PID (Cygwin's +0x400000 marker only separates its synthetic
+// pid space); PGID is 0 — Windows has no process groups in this face.
 auto print_simple(const std::vector<ProcessInfo>& processes, bool no_headers,
                   bool wide_output = true) -> void {
   if (!no_headers) {
-    safePrintLn(L"  PID TTY          TIME CMD");
+    safePrintLn(
+        L"      PID    PPID    PGID     WINPID   TTY         UID    STIME "
+        L"COMMAND");
   }
 
   for (const auto& proc : processes) {
-    // Simple format: PID, TTY, TIME, CMD
-    std::wstring line;
-
-    // PID (5 chars, right aligned)
-    wchar_t pid_buf[16];
-    swprintf_s(pid_buf, L"%5lu", proc.pid);
-    line += pid_buf;
-    line += L" ";
-
-    // TTY (always ? on Windows)
-    line += L"?        ";
-
-    // TIME (CPU time)
-    ULARGE_INTEGER kernel, user;
-    kernel.LowPart = proc.kernel_time.dwLowDateTime;
-    kernel.HighPart = proc.kernel_time.dwHighDateTime;
-    user.LowPart = proc.user_time.dwLowDateTime;
-    user.HighPart = proc.user_time.dwHighDateTime;
-
-    ULONGLONG total_100ns = kernel.QuadPart + user.QuadPart;
-    ULONGLONG total_sec = total_100ns / 10000000ULL;
-
-    wchar_t time_buf[16];
-    swprintf_s(time_buf, L"%02llu:%02llu:%02llu", total_sec / 3600,
-               (total_sec % 3600) / 60, total_sec % 60);
-    line += time_buf;
-    line += L" ";
-
-    // CMD (truncate if not wide output)
-    if (!wide_output && proc.name.size() > 80) {
-      line += proc.name.substr(0, 77) + L"...";
-    } else {
-      line += proc.name;
+    std::wstring command = ps_command_text(proc);
+    if (!wide_output && command.size() > 80) {
+      command = command.substr(0, 77) + L"...";
     }
 
-    safePrintLn(line);
+    const std::wstring stime = format_stime(proc.create_time);
+    wchar_t line[128];
+    swprintf_s(line, L"%9lu %7lu %7lu %10lu  %-8s %7lu %8s ", proc.pid,
+               proc.ppid, 0UL, proc.pid, L"?", proc.uid, stime.c_str());
+    safePrintLn(std::wstring(line) + command);
   }
 }
 
@@ -847,7 +889,8 @@ auto run(const Config& cfg) -> int {
   // -x lifts the session restriction (same user, every session);
   // -a selects every process that has a session, for any user. An
   // explicit PID list is itself the selection and bypasses this.
-  if (!cfg.all_processes && cfg.pid_filter.empty()) {
+  // -W selects the whole Windows process table, like Cygwin.
+  if (!cfg.all_processes && !cfg.windows_listing && cfg.pid_filter.empty()) {
     DWORD my_session = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &my_session);
 
@@ -859,7 +902,7 @@ auto run(const Config& cfg) -> int {
       target_user.clear();
     } else {
       // Default: show current user's processes
-      target_user = get_process_user(GetCurrentProcess());
+      target_user = get_process_user(GetCurrentProcess()).first;
     }
 
     auto it = std::remove_if(
@@ -912,6 +955,7 @@ REGISTER_COMMAND(ps, "ps", "ps [options]",
                  "Report a snapshot of the current processes.\n"
                  "Shows information about running processes on Windows.",
                  "  ps\n"
+                 "  ps -W\n"
                  "  ps -ef\n"
                  "  ps aux\n"
                  "  ps | grep explorer",

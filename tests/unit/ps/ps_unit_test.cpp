@@ -270,3 +270,66 @@ TEST(ps, ps_garbage_operand_rejected) {
 }
 
 // --version not supported
+
+// [niubash#993 S5] `ps` and `ps -W` use the Cygwin/Git-Bash listing
+// face: PID PPID PGID WINPID TTY UID STIME COMMAND.
+TEST(ps, ps_default_lists_winpid_column) {
+  Pipeline p;
+  p.add(L"ps.exe", {});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("PID    PPID    PGID     WINPID") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("STIME COMMAND") != std::string::npos);
+}
+
+// [niubash#993 S5] `-W` is accepted and selects the whole Windows
+// process table, not just the invoker's session.
+TEST(ps, ps_windows_flag_lists_all_processes) {
+  Pipeline p;
+  p.add(L"ps.exe", {L"-W"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("WINPID") != std::string::npos);
+  size_t lines = 0;
+  for (const char ch : r.stdout_text) {
+    if (ch == '\n') ++lines;
+  }
+  EXPECT_GT(lines, 20u);
+}
+
+// [niubash#993 S5] `-W -p <pid>` still filters against the Windows PID.
+TEST(ps, ps_windows_pid_filter_finds_current_process) {
+  Pipeline p;
+  const auto pid = std::to_wstring(GetCurrentProcessId());
+  const auto pid_text = std::to_string(GetCurrentProcessId());
+  p.add(L"ps.exe", {L"-W", L"-p", pid, L"--no-headers"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(pid_text) != std::string::npos);
+}
+
+// [niubash#993 S5] WINPID == PID: the real Windows process id of the
+// row's process (niubash has no second pid namespace).
+TEST(ps, ps_windows_winpid_column_matches_pid) {
+  Pipeline p;
+  const auto pid = std::to_wstring(GetCurrentProcessId());
+  const auto pid_text = std::to_string(GetCurrentProcessId());
+  p.add(L"ps.exe", {L"-W", L"-p", pid, L"--no-headers"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  // Row shape: <pid> <ppid> <pgid> <winpid> ... — the first and fourth
+  // numeric fields must both be the current pid.
+  const auto pos = r.stdout_text.find(pid_text);
+  ASSERT_NE(pos, std::string::npos);
+  const auto after = r.stdout_text.find(pid_text, pos + pid_text.size());
+  EXPECT_TRUE(after != std::string::npos);
+}
