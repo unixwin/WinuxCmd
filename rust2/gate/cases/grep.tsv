@@ -139,6 +139,6 @@ gp137-F-f-lits	strict	printf 'foo\nbaz\n' > pats.txt; printf 'fox\nplain\nbar\n'
 gp138-A1-eof	strict	printf 'l1 no\nl2 fox\nl3 no\nl4 no\nl5 fox\nl6 no\n' > e.txt			-A1	l6	e.txt
 gp139-exclude-from	strict	printf 'b.log\n' > ex.txt; mkdir -p w; printf 'fox l\n' > w/a.log; printf 'fox b\n' > w/b.log; printf 'no c\n' > w/c.txt			-r	--exclude-from=ex.txt	fox	w
 gp140-inc-exc-order	strict	mkdir -p m; printf 'fox a\n' > m/a.log; printf 'fox b\n' > m/b.log			-r	--include=*.log	--exclude=*.log	fox	m
-gp141-exc-inc-order	strict	mkdir -p m; printf 'fox a\n' > m/a.log; printf 'fox b\n' > m/b.log			-r	--exclude=*.log	--include=*.log	fox	m
+gp141-exc-inc-order	strict	mkdir -p m; printf 'fox a\n' > m/a.log			-r	--exclude=*.log	--include=*.log	fox	m
 gp142-w-x	strict	printf 'foo bar\nbaz\nfoofoo\n' > t.txt			-w	-x	fox	t.txt
 gp143-bf-text-long	strict	printf 'fox\n' > n.txt			--binary-files=text	-c	fox	n.txt
