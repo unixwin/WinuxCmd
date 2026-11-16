@@ -29,6 +29,22 @@ TEST(hostid, hostid_version_succeeds) {
   EXPECT_TRUE(r.stderr_text.empty());
 }
 
+// [#1802] hostid takes no short options: GNU coreutils reports
+// "hostid: invalid option -- 'h'" and exits 1 instead of printing help
+// (empty optstring, hostid.c:63-65). Same shape for any other letter.
+TEST(hostid, hostid_short_h_rejected_issue1802) {
+  Pipeline p;
+  p.add(L"hostid.exe", {L"-h"});
+
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  EXPECT_EXIT_CODE(r, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("invalid option -- 'h'") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'hostid --help'") != std::string::npos);
+}
+
 // [#1215] hostid takes no operands: GNU coreutils reports
 // "hostid: extra operand 'extra'" and exits 1 instead of printing the answer.
 TEST(hostid, hostid_extra_operand_rejected_issue1215) {

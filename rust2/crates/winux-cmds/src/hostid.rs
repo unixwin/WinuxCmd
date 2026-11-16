@@ -16,12 +16,18 @@
 //! hostid declares no options of its own: main() delegates to
 //! `parse_gnu_standard_options_only` (hostid.c:63-65), which accepts only the
 //! long `--help` / `--version`. There is no short help or version letter, so
-//! `-V` / `-v` are getopt's `invalid option -- 'V'` usage error, rc 1.
+//! `-h` / `-V` / `-v` are getopt's `invalid option -- 'x'` usage errors,
+//! rc 1. The shared `argopt::H_REJECT_SPEC` marker keeps the shared parser
+//! from hijacking a bare `-h` into `--help`, and `rejected_short_h` reports
+//! it. `--help` / `--version` print the probed GNU 9.4 text (help body plus
+//! `gnuhelp::footer`, version via `gnuhelp::coreutils_version`); the first
+//! one in argv order wins.
 
 use std::ffi::OsString;
 use std::io::Write;
 
-use crate::argopt;
+use crate::argopt::{self, OptSpec};
+use crate::gnuhelp;
 use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
 
 /// FNV-1a 64 over the machine name; lower 32 bits are the host id.
@@ -39,22 +45,57 @@ fn machine_id_hex(ctx: &Ctx) -> String {
     format!("{:08x}", (hash & 0xFFFF_FFFF) as u32)
 }
 
+/// `--help` body verbatim from `env hostid --help` under WSL coreutils 9.4,
+/// minus the shared gnuhelp::footer tail.
+const HOSTID_HELP_BODY: &str = r#"Usage: hostid [OPTION]
+Print the numeric identifier (in hexadecimal) for the current host.
+
+      --help        display this help and exit
+      --version     output version information and exit
+
+"#;
+
 pub fn hostid_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
-    // getopt: unknown options are usage errors; --help/--version win
-    // wherever they appear (the branded text is the dispatcher's job).
-    // hostid registers no option-table entries: GNU's
-    // parse_gnu_standard_options_only (hostid.c:63-65) offers only the long
-    // --help/--version, so -V / -v are getopt's "invalid option -- 'V'"
-    // usage errors (rc 1). A lone -h still takes argopt's bare-h -> --help
-    // mapping; that pre-existing divergence is recorded in the ho12 note row
-    // and HELP-SURFACE.md (RC-ONLY), not fixed by this row.
-    let opts: [argopt::OptSpec; 0] = [];
+    // GNU hostid registers no -h short option: a bare `-h` is getopt's
+    // "invalid option -- 'h'" (hostid.c:63-65, empty optstring), not --help.
+    // The marker spec keeps argopt's bare-h -> --help mapping from firing;
+    // rejected_short_h reports it before the help/version branch, so
+    // `--help -h` still prints help (first help/version in argv order wins,
+    // the #1573 sequential contract) while `-h --help` fails rc 1.
+    let opts: [OptSpec; 1] = [argopt::H_REJECT_SPEC];
     let p = match argopt::parse("hostid", args, &opts, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
-    if p.has("help") || p.has("version") {
-        return Ok(0);
+    if let Some(status) = argopt::rejected_short_h(ctx, io, "hostid", &p, 1) {
+        return Ok(status);
+    }
+    // GNU exits at the first --help/--version getopt_long encounters; the
+    // ordered find reproduces that for `--version --help` (version wins).
+    if let Some(which) = p
+        .flags
+        .iter()
+        .find(|f| f.as_str() == argopt::HELP || f.as_str() == argopt::VERSION)
+    {
+        return Ok(match which.as_str() {
+            "help" => {
+                write!(
+                    io.stdout,
+                    "{}{}",
+                    HOSTID_HELP_BODY,
+                    gnuhelp::footer("hostid", "hostid invocation")
+                )?;
+                0
+            }
+            _ => {
+                write!(
+                    io.stdout,
+                    "{}",
+                    gnuhelp::coreutils_version("hostid", "Jim Meyering")
+                )?;
+                0
+            }
+        });
     }
     if !p.positionals.is_empty() {
         // [GNU] hostid.c: any operand is rejected with the try-help frame.
@@ -148,16 +189,63 @@ mod tests {
         );
     }
 
+    /// GNU hostid has no -h short option either (empty optstring): a bare
+    /// `-h` is getopt's `invalid option -- 'h'`, rc 1 — not a help alias
+    /// (probed coreutils 9.4; ho12, WinuxCmd #1802). Any other single
+    /// letter behaves the same way (`-x`).
     #[test]
-    fn long_version_is_accepted() {
-        // GNU prints the version banner and exits 0. This library form only
-        // reports the status: the banner text is still an open help-surface
-        // gap (HELP-SURFACE.md logs hostid --version as EMPTY-HELP), so the
-        // test pins the contract this layer owns, not the missing text.
+    fn short_h_is_invalid_option() {
+        for flag in ["-h", "-x"] {
+            let (r, out, err) = run(&[flag]);
+            assert_eq!(r, 1, "{flag}");
+            assert_eq!(out, "", "{flag}");
+            assert_eq!(
+                err,
+                format!(
+                    "hostid: invalid option -- '{}'\nTry 'hostid --help' for more information.\n",
+                    &flag[1..]
+                ),
+                "{flag}"
+            );
+        }
+    }
+
+    /// The #1573 sequential contract on the -h marker: `-h` before
+    /// `--help` still fails (getopt hits -h first), `--help` before `-h`
+    /// still prints help (getopt exits at --help, the rest unchecked).
+    #[test]
+    fn h_help_ordering_follows_argv() {
+        let (r, out, err) = run(&["-h", "--help"]);
+        assert_eq!(r, 1);
+        assert_eq!(out, "");
+        assert!(err.contains("invalid option -- 'h'"));
+
+        let (r, out, err) = run(&["--help", "-h"]);
+        assert_eq!(r, 0);
+        assert!(out.starts_with("Usage: hostid [OPTION]\n"));
+        assert_eq!(err, "");
+    }
+
+    /// [GNU] `--help`/`--version` print the probed coreutils 9.4 text,
+    /// rc 0 (strict rows ho05/ho06; the product exe shows its branded
+    /// form through the dispatcher's interception instead).
+    #[test]
+    fn gnu_help_version_surface() {
+        let (r, out, err) = run(&["--help"]);
+        assert_eq!(r, 0);
+        assert_eq!(err, "");
+        assert!(out.starts_with(
+            "Usage: hostid [OPTION]\nPrint the numeric identifier (in hexadecimal) for the current host.\n"
+        ));
+        assert!(out.contains("      --help        display this help and exit\n"));
+        assert!(out.contains("      --version     output version information and exit\n"));
+        assert!(out.ends_with("info '(coreutils) hostid invocation'\n"));
+
         let (r, out, err) = run(&["--version"]);
         assert_eq!(r, 0);
-        assert_eq!(out, "");
         assert_eq!(err, "");
+        assert!(out.starts_with("hostid (GNU coreutils) 9.4\n"));
+        assert!(out.ends_with("Written by Jim Meyering.\n"));
     }
 
     #[test]

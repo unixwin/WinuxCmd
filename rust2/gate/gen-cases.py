@@ -1855,7 +1855,7 @@ hostid_rows = [
     ("ho09-help-extra", "win", "", "", "", ["--help", "xyz"]),
     ("ho10-version-extra", "win", "", "", "", ["--version", "xyz"]),
     ("ho11-dash-operand", "exit", "", "", "", ["-"]),
-    ("ho12-short-help", "note", "", "", "", ["-h"]),
+    ("ho12-short-help", "win", "", "", "", ["-h"]),
     ("ho13-short-version", "win", "", "", "", ["-V"]),
     ("ho14-double-dash-help", "win", "", "", "", ["--", "--help"]),
     ("ho15-bogus-after-operand", "exit", "", "", "", ["xyz", "--bogus"]),
