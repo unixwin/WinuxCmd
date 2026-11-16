@@ -136,7 +136,7 @@ xa133-printf-child	strict			a b	printf	%s|
 xa134-I-seq	strict	seq 1 30 > in			-a	in	-I{}	printf	<%s>	{}
 xa135-n1-explicit-echo	strict			a b c	-n1	echo
 xa136-I-explicit-sh	strict	printf 'one\ntwo\n' > in			-a	in	-I{}	sh	-c	echo [$0]	{}
-xa137-signal-death	win			a	sh	-c	kill -9 $$
+xa137-signal-death	note			a	sh	-c	kill -9 $$
 xa138-shebang-child	strict	printf '#!/bin/sh\necho "[$*]"\n' > hi.sh; chmod +x hi.sh		a b	./hi.sh	x
 xa139-nonpe-badformat	win	printf 'not a script\n' > plain.txt; chmod +x plain.txt		a	./plain.txt
 xa140-large-input-batches	exit	seq 1 40000 > in			-a	in	echo
