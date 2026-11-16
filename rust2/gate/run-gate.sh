@@ -178,11 +178,21 @@ fi
 mkdir -p "$ART/scratch" "$GNU_MIRROR"
 
 # ---- symlink capability probe (SKIP accounting, prompt 19) ----
-# Case setups build symlink fixtures with `ln -s`. On a Windows host without
-# SeCreateSymbolicLinkPrivilege the Windows sides get EPERM and run against a
-# missing operand, so such a row measures the host, not the command. Probe
-# once with the same `ln` the setup uses, keep the verdict in the artifact
-# dir (parallel shards must not share it), and label affected rows skipped.
+# Case setups build symlink fixtures with `ln -s`. MSYS's default
+# winsymlinks mode does not fail when the host lacks
+# SeCreateSymbolicLinkPrivilege: it silently COPIES the target and exits 0,
+# so a setup's `ln -s ... || mklink /J ...` fallback never runs and the
+# Windows side scores a directory copy against GNU's symlink (run
+# 43894576822: `-type l` printed nothing and `%y` printed `d` for the
+# fixture). nativestrict makes `ln -s` create a real symlink or fail, so a
+# host with the privilege gets the real fixture and a host without it falls
+# through to the row's own junction fallback.
+export MSYS="${MSYS:+$MSYS:}winsymlinks:nativestrict"
+
+# Probe once with the same `ln` the setup uses. On a host without the
+# privilege ln now fails here, so affected rows are labeled skipped instead
+# of measuring the host; keep the verdict in the artifact dir (parallel
+# shards must not share it).
 SYMLINK_CAP=0
 _symprobe="$ART/.symlink-probe"
 rm -rf "$_symprobe"; mkdir -p "$_symprobe"
@@ -611,8 +621,24 @@ run_case() {
     local ok=0 note=""
     case "$mode" in
         strict)     [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
-        sorted)     [ "$(printf '%s' "$r_out" | LC_ALL=C sort)" = "$(printf '%s' "$g_out" | LC_ALL=C sort)" ] \
-                        && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
+        sorted)
+            # Order-insensitive byte comparison of the captured stdout files.
+            # This branch used to read $r_out/$g_out, which are never assigned:
+            # under `set -u` every sorted row compared "" == "" and passed
+            # vacuously. Sort from the files, not from shell variables, so NUL
+            # bytes, line endings and large outputs stay intact. GATE_SORT_BIN
+            # lets a host where a product applet shadows the harness's coreutils
+            # pin a real sort (CI's Git Bash resolves GNU sort); the default is
+            # plain `sort`. The sorted verdict is written to the ledger's r=g
+            # field, which matrix-summary.py re-derives with the same rule.
+            local sort_bin="${GATE_SORT_BIN:-sort}"
+            if [ -f "$scase.rust/.out" ] && [ -f "$GNU_MIRROR/$id/.out" ] \
+               && LC_ALL=C "$sort_bin" "$scase.rust/.out" > "$scase.rust/.out.sorted" \
+               && LC_ALL=C "$sort_bin" "$GNU_MIRROR/$id/.out" > "$GNU_MIRROR/$id/.out.sorted" \
+               && cmp -s "$scase.rust/.out.sorted" "$GNU_MIRROR/$id/.out.sorted"; then
+                gnu_out_match=yes
+                [ "$r_rc" = "$g_rc" ] && ok=1
+            fi ;;
         exit)       [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         win)        [ "$r_rc" = "$c_rc" ] && ok=1 ;;
         posix)      [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;

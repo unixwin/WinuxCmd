@@ -71,6 +71,11 @@ def verdict(row):
         return "record"
     if mode == "strict":
         ok = row["g_out_eq"] and row["r_rc"] == row["g_rc"]
+    elif mode == "sorted":
+        # run-gate.sh sorts the captured stdout files before comparing and
+        # records that order-insensitive verdict in the ledger's r=g field,
+        # so the re-derivation is the strict rule (sorted bytes AND rc).
+        ok = row["g_out_eq"] and row["r_rc"] == row["g_rc"]
     elif mode == "exit":
         ok = row["r_rc"] == row["g_rc"]
     elif mode == "win":

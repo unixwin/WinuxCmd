@@ -3037,6 +3037,12 @@ grep_rows = [
     ("gp138-A1-eof", "strict",
      "printf 'l1 no\\nl2 fox\\nl3 no\\nl4 no\\nl5 fox\\nl6 no\\n' > e.txt",
      "", "", ["-A1", "l6", "e.txt"]),
+    # gp141: a recursive walk's line order is the filesystem's (ext4 hash
+    # order emits b.log before a.log, NTFS emits name order), so its fixture
+    # keeps exactly ONE surviving line. The single .log file still exercises
+    # the include-after-exclude polarity: without --include it is hidden.
+    # The other strict -r rows already emit zero or one line (gp139's c.txt
+    # has no match and is never printed).
     ("gp139-exclude-from", "strict",
      "printf 'b.log\\n' > ex.txt; mkdir -p w; printf 'fox l\\n' > w/a.log;"
      " printf 'fox b\\n' > w/b.log; printf 'no c\\n' > w/c.txt",
@@ -3046,7 +3052,7 @@ grep_rows = [
      "", "",
      ["-r", "--include=*.log", "--exclude=*.log", "fox", "m"]),
     ("gp141-exc-inc-order", "strict",
-     "mkdir -p m; printf 'fox a\\n' > m/a.log; printf 'fox b\\n' > m/b.log",
+     "mkdir -p m; printf 'fox a\\n' > m/a.log",
      "", "",
      ["-r", "--exclude=*.log", "--include=*.log", "fox", "m"]),
     ("gp142-w-x", "strict", GREP_T_SETUP, "", "", ["-w", "-x", "fox", "t.txt"]),

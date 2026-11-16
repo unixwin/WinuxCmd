@@ -319,6 +319,57 @@ fn pattern_sources() {
 }
 
 #[test]
+fn include_exclude_order_last_match_wins() {
+    // GNU grep 3.11: --include/--exclude are one ordered exclude list. The
+    // LAST option that matches decides; a name no option matches is included
+    // iff the FIRST option was --exclude. Probed both orders in WSL:
+    //   --exclude=*.log --include=*.log -> all three names searched
+    //   --include=*.log --exclude=*.log -> none searched, rc 1
+    // The stdout assertion is order-insensitive: recursive walk order is the
+    // filesystem's, not grep's.
+    let sc = ScratchCtx::new("grep-inc-exc-order");
+    std::fs::create_dir_all(sc.path("m")).unwrap();
+    std::fs::write(sc.path("m/a.log"), "fox a\n").unwrap();
+    std::fs::write(sc.path("m/b.log"), "fox b\n").unwrap();
+    std::fs::write(sc.path("m/c.txt"), "fox c\n").unwrap();
+    let run = |args: &[&str]| {
+        let mut m = MemIo::new("");
+        let rc = grep_cmd(&os(args), &mut m.split(), &sc.ctx()).unwrap();
+        (rc, m.out(), m.err())
+    };
+    let sorted = |s: String| {
+        let mut v: Vec<&str> = s.lines().collect();
+        v.sort_unstable();
+        v.join("\n")
+    };
+
+    let (rc, out, err) = run(&[
+        "-r",
+        "--exclude=*.log",
+        "--include=*.log",
+        "fox",
+        "m",
+    ]);
+    assert_eq!(rc, 0);
+    assert_eq!(err, "");
+    assert_eq!(
+        sorted(out),
+        "m/a.log:fox a\nm/b.log:fox b\nm/c.txt:fox c"
+    );
+
+    let (rc, out, err) = run(&[
+        "-r",
+        "--include=*.log",
+        "--exclude=*.log",
+        "fox",
+        "m",
+    ]);
+    assert_eq!(rc, 1);
+    assert_eq!(out, "");
+    assert_eq!(err, "");
+}
+
+#[test]
 fn files_recursion_and_selection_rules() {
     let sc = ScratchCtx::new("grep-r");
     std::fs::create_dir_all(sc.path("d/sub")).unwrap();
