@@ -888,13 +888,13 @@ fn walk(
                 } else {
                     total += size;
                 }
-                let passes = threshold_passes(cfg, size);
+                let passes = threshold_passes(cfg, threshold_value(cfg, size));
                 if cfg.all && passes && file_depth_ok {
                     print_row(cfg, size, &child_rel, child_time, zone, out);
                 }
             }
         }
-        let passes = threshold_passes(cfg, total);
+        let passes = threshold_passes(cfg, threshold_value(cfg, total));
         let within_depth = cfg.max_depth.map(|md| depth <= md).unwrap_or(true);
         if (!cfg.separate_dirs || passes) && within_depth && (passes || total == 0) {
             print_row(cfg, total, display, latest, zone, out);
@@ -920,11 +920,24 @@ fn walk(
     } else {
         None
     };
-    let passes = threshold_passes(cfg, size);
+    let passes = threshold_passes(cfg, threshold_value(cfg, size));
     if passes {
         print_row(cfg, size, display, time, zone, out);
     }
     Walked { size, latest: time }
+}
+
+/// The size in the unit the threshold compares (du.c:718-726 compares
+/// opt_threshold against dui_to_print.size — the value duinfo_set already
+/// scaled for printing, not the raw byte count): under -h/--si the
+/// output block is 1 so the raw bytes compare, otherwise the block form
+/// ceiling-divides by --block-size exactly like display_size's number.
+fn threshold_value(cfg: &DuConfig, v: u64) -> u64 {
+    if cfg.human || cfg.si || cfg.block_size <= 1 {
+        v
+    } else {
+        v.div_ceil(cfg.block_size)
+    }
 }
 
 fn threshold_passes(cfg: &DuConfig, size: u64) -> bool {
@@ -1160,6 +1173,108 @@ fn parse_block_size(raw: &str) -> Option<(u64, String)> {
     Some((value.checked_mul(multiplier)?, display))
 }
 
+/// The failure shapes of gnulib xstrtol-error.c xstrtol_error, each with
+/// its own msgid and exit status EXIT_FAILURE (no try-help line).
+enum ThresholdErr {
+    /// LONGINT_INVALID: "invalid --threshold argument 'X'"
+    Invalid,
+    /// LONGINT_INVALID_SUFFIX_CHAR(_WITH_OVERFLOW):
+    /// "invalid suffix in --threshold argument 'X'"
+    InvalidSuffix,
+    /// LONGINT_OVERFLOW: "--threshold argument 'X' too large"
+    Overflow,
+}
+
+/// coreutils du.c:899-903 xstrtoimax(optarg, NULL, 0, &opt_threshold,
+/// "kKmMGTPEZYRQ0") — gnulib xstrtol.c __xstrtol with that suffix set:
+/// strtol first (leading whitespace skipped, optional sign, base 10),
+/// a missing number before a valid suffix means 1 ("k" == 1024), a
+/// single suffix char scales by 1024^n (case-sensitive, exactly the C
+/// switch's set: k/K=1, M/m=2, G/g=3, T/t=4, P=5, E=6, Z=7, Y=8, R=9,
+/// Q=10), and the '0' flag admits a second suffix — "iB" keeps the
+/// 1024 base, "B" (or obsolescent "D") switches to 1000^n. Trailing
+/// garbage after a scaled value is an invalid suffix; strtol ERANGE is
+/// an overflow.
+fn parse_threshold(raw: &str) -> Result<i64, ThresholdErr> {
+    const SUFFIX_SET: &str = "kKmMGTPEZYRQ0";
+    let t = raw.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let (neg, rest) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let digits_end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let (digits, tail) = rest.split_at(digits_end);
+
+    // strtol consumed nothing: a lone suffix means 1, otherwise invalid.
+    let mut value: i128 = if digits.is_empty() {
+        let first = tail.as_bytes().first().copied().unwrap_or(b'\0');
+        if first != 0 && SUFFIX_SET.as_bytes().contains(&first) {
+            1
+        } else {
+            return Err(ThresholdErr::Invalid);
+        }
+    } else {
+        digits.parse::<i128>().map_err(|_| ThresholdErr::Overflow)?
+    };
+
+    if !tail.is_empty() {
+        let first = tail.as_bytes()[0];
+        if !SUFFIX_SET.as_bytes().contains(&first) {
+            return Err(ThresholdErr::InvalidSuffix);
+        }
+        // xstrtol's switch is case-sensitive; '0' as a first suffix is
+        // unreachable (strtol ate it with the digits).
+        let exponent: u32 = match first {
+            b'k' | b'K' => 1,
+            b'M' | b'm' => 2,
+            b'G' | b'g' => 3,
+            b'T' | b't' => 4,
+            b'P' => 5,
+            b'E' => 6,
+            b'Z' => 7,
+            b'Y' => 8,
+            b'R' => 9,
+            b'Q' => 10,
+            _ => return Err(ThresholdErr::InvalidSuffix),
+        };
+        // The '0' flag: an optional second suffix can change the base.
+        let mut base: i128 = 1024;
+        let mut consumed = 1;
+        let rb = tail.as_bytes();
+        if SUFFIX_SET.as_bytes().contains(&b'0') {
+            match rb.get(1) {
+                Some(b'i') if rb.get(2) == Some(&b'B') => {
+                    consumed = 3;
+                }
+                Some(&b'B') | Some(&b'D') => {
+                    base = 1000;
+                    consumed = 2;
+                }
+                _ => {}
+            }
+        }
+        let pow = match base.checked_pow(exponent) {
+            Some(p) => p,
+            None => return Err(ThresholdErr::Overflow),
+        };
+        let scaled = match value.checked_mul(pow) {
+            Some(v) => v,
+            None => return Err(ThresholdErr::Overflow),
+        };
+        value = scaled;
+        let rest_tail = &tail[consumed..];
+        if !rest_tail.is_empty() {
+            return Err(ThresholdErr::InvalidSuffix);
+        }
+    }
+
+    let signed = if neg { -value } else { value };
+    i64::try_from(signed).map_err(|_| ThresholdErr::Overflow)
+}
+
 pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // --time[=WORD] is GNU optional_argument: strip the value-carrying
     // spelling before argopt (argopt::extract_optional_long_values), the
@@ -1393,25 +1508,64 @@ pub fn du_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
         }
     }
+    // du.c:1004-1008: --all with --summarize is rejected before any
+    // walk; usage(EXIT_FAILURE) appends the try-help line to stderr.
+    if p.has("all") && p.has("summarize") {
+        let _ = writeln!(
+            io.stderr,
+            "du: {}",
+            tr!(
+                ctx,
+                "command.du.error.summarize_conflict",
+                "cannot both summarize and show all entries"
+            )
+        );
+        let _ = writeln!(io.stderr, "Try 'du --help' for more information.");
+        return Ok(1);
+    }
     if p.has("summarize") {
         cfg.max_depth = Some(0);
     }
     if let Some(raw) = p.value_of("threshold") {
-        match raw.parse::<i64>() {
-            Ok(v) => cfg.threshold = Some(v),
-            Err(_) => {
-                let _ = writeln!(
-                    io.stderr,
-                    "du: {}",
-                    tr!(
-                        ctx,
-                        "command.du.error.invalid_threshold",
-                        "invalid --threshold argument '{size}'",
-                        size = raw
-                    )
-                );
-                return Ok(1);
+        // du.c:906-912: after a LONGINT_OK parse, a zero with a leading
+        // '-' is rejected with the LITERAL '-0' in the message, however
+        // the zero was spelled ("-00" errors as '-0' too).
+        let failed: Option<(&str, &str)> = match parse_threshold(raw) {
+            Ok(v) => {
+                if v == 0 && raw.starts_with('-') {
+                    Some(("invalid_threshold", "-0"))
+                } else {
+                    cfg.threshold = Some(v);
+                    None
+                }
             }
+            Err(ThresholdErr::Invalid) => Some(("invalid_threshold", raw)),
+            Err(ThresholdErr::InvalidSuffix) => Some(("invalid_threshold_suffix", raw)),
+            Err(ThresholdErr::Overflow) => Some(("threshold_too_large", raw)),
+        };
+        if let Some((key, shown)) = failed {
+            let msg = match key {
+                "invalid_threshold_suffix" => tr!(
+                    ctx,
+                    "command.du.error.invalid_threshold_suffix",
+                    "invalid suffix in --threshold argument '{size}'",
+                    size = shown
+                ),
+                "threshold_too_large" => tr!(
+                    ctx,
+                    "command.du.error.threshold_too_large",
+                    "--threshold argument '{size}' too large",
+                    size = shown
+                ),
+                _ => tr!(
+                    ctx,
+                    "command.du.error.invalid_threshold",
+                    "invalid --threshold argument '{size}'",
+                    size = shown
+                ),
+            };
+            let _ = writeln!(io.stderr, "du: {msg}");
+            return Ok(1);
         }
     }
     if let Some(style) = p.value_of("time-style") {
@@ -2211,6 +2365,87 @@ mod files0_from_tests {
         assert!(err.contains("du: extra operand 'c'"));
         assert!(err.contains("file operands cannot be combined with --files0-from"));
         assert!(err.contains("Try 'du --help' for more information."));
+    }
+
+    // ---- baseline-gate du rows (du.c:899-913 / du.c:1004-1008, #1462) ----
+
+    #[test]
+    fn threshold_neg_zero_rejected_with_literal_message() {
+        // Oracle probe (GNU 9.4): rc 1, a SINGLE stderr line — xstrtol_fatal
+        // never appends try-help — carrying the literal '-0'.
+        let sc = ScratchCtx::new("du-t-neg0");
+        fixture(&sc);
+        let (r, out, err) = run(&sc, &["--threshold=-0", "."]);
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert_eq!(err, "du: invalid --threshold argument '-0'\n");
+        // "-00" spells zero negatively too; GNU still prints the literal.
+        let (r, _, err) = run(&sc, &["--threshold=-00", "."]);
+        assert_eq!(r, 1);
+        assert_eq!(err, "du: invalid --threshold argument '-0'\n");
+        // A plain 0 stays legal (du.c checks the SIGN, not the value alone).
+        let (r, _, err) = run(&sc, &["--threshold=0", "."]);
+        assert_eq!(r, 0, "{err}");
+    }
+
+    #[test]
+    fn summarize_all_conflict_matches_oracle_wording() {
+        // Oracle probe: error line + usage(EXIT_FAILURE)'s try-help line,
+        // rc 1, no stdout (du.c:1004-1008).
+        let sc = ScratchCtx::new("du-as-conflict");
+        fixture(&sc);
+        let (r, out, err) = run(&sc, &["-a", "-s", "."]);
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert_eq!(
+            err,
+            "du: cannot both summarize and show all entries\n\
+             Try 'du --help' for more information.\n"
+        );
+        let (r, _, _) = run(&sc, &["--all", "--summarize", "."]);
+        assert_eq!(r, 1);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn threshold_compares_in_print_units() {
+        // du.c:718-726 compares opt_threshold against dui_to_print.size —
+        // the SCALED value display_size prints, not raw bytes. Probed:
+        // an all-small tree elides every row at -1 (each operand carries
+        // one 4K cluster = 4 blocks > 1) and shows them at -1024; the
+        // pre-fix gate compared raw bytes and never printed a negative
+        // threshold row at all.
+        let sc = ScratchCtx::new("du-t-units");
+        fixture(&sc);
+        let (r, out, err) = run(&sc, &["--threshold=-1", "."]);
+        assert_eq!(r, 0, "{err}");
+        assert!(out.is_empty(), "{out}");
+        let (r, out, err) = run(&sc, &["--threshold=-1024", "."]);
+        assert_eq!(r, 0, "{err}");
+        assert!(out.contains('.'), "{out}");
+    }
+
+    #[test]
+    fn threshold_suffixes_follow_xstrtol() {
+        // gnulib xstrtol.c __xstrtol with "kKmMGTPEZYRQ0": binary single
+        // suffixes, a lone suffix means 1, "iB"/"B" second suffixes, and
+        // the three xstrtol_error msgids byte-for-byte.
+        let sc = ScratchCtx::new("du-t-suffix");
+        fixture(&sc);
+        let (r, out, err) = run(&sc, &["--threshold=-1k", "."]);
+        assert_eq!(r, 0, "{err}");
+        assert!(out.contains('.'), "{out}");
+        let (r, _, err) = run(&sc, &["--threshold=k", "."]);
+        assert_eq!(r, 0, "{err}");
+        let (r, _, err) = run(&sc, &["--threshold=1kx", "."]);
+        assert_eq!(r, 1);
+        assert_eq!(err, "du: invalid suffix in --threshold argument '1kx'\n");
+        let (r, _, err) = run(&sc, &["--threshold=99999999999999999999999", "."]);
+        assert_eq!(r, 1);
+        assert_eq!(
+            err,
+            "du: --threshold argument '99999999999999999999999' too large\n"
+        );
     }
 
     // ---- #1670: followed-directory identity dedup (PR #1730 parity) ----
