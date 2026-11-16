@@ -1502,6 +1502,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_file_reports_regular_empty_file() {
+        // niubash#993 S9 ruling (#1787): the audit expected GNU's
+        // "regular empty file" for `: > f` — WinuxCmd already emits it.
+        // Pin the exact audit repro so the wording can't regress.
+        let sc = setup("stat-empty");
+        std::fs::write(sc.path("f"), "").unwrap();
+        let (r, out, _) = run_sc(&sc, &["-c", "%F", "f"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "regular empty file\n");
+        let (_, out, _) = run_sc(&sc, &["-c", "%F", "reg"]);
+        assert_eq!(out, "regular file\n");
+    }
+
+    #[test]
     fn printf_mode() {
         let sc = setup("stat-printf");
         let (r, out, _) = run_sc(&sc, &["--printf", "%n\\n", "reg"]);
