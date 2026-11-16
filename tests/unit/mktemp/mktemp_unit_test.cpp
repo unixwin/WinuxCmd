@@ -85,7 +85,11 @@ TEST(mktemp, mktemp_default_template_uses_tmpdir_env_as_native_path) {
   // legal output, not a defect.
   auto created_path = std::filesystem::u8path(created);
   EXPECT_TRUE(std::filesystem::exists(created_path));
-  EXPECT_TRUE(std::filesystem::equivalent(created_path.parent_path(), out_dir));
+  // string-form comparison (not equivalent()): a failure prints BOTH
+  // paths, which is the only way to diagnose a runner whose temp
+  // resolution lands somewhere unexpected (CI: parent != TMPDIR).
+  EXPECT_EQ(created_path.parent_path().lexically_normal().string(),
+            out_dir.lexically_normal().string());
 }
 
 TEST(mktemp, mktemp_custom_prefix) {
