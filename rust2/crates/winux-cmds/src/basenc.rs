@@ -162,7 +162,7 @@ fn run(name: &str, codec: &b64core::Codec, args: &[OsString], io: &mut Io, ctx: 
             if shown == "-" {
                 std::io::copy(&mut io.stdin, &mut input)?;
             } else {
-                match std::fs::File::open(resolve(ctx, &shown)) {
+                match crate::fsutil::open_read_operand(ctx, &shown) {
                     Ok(mut f) => {
                         std::io::copy(&mut f, &mut input)?;
                     }

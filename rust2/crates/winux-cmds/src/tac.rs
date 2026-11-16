@@ -259,7 +259,7 @@ pub fn tac_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             buf
         } else {
-            match std::fs::File::open(resolve(ctx, file)) {
+            match crate::fsutil::open_read_operand(ctx, file) {
                 Ok(mut f) => {
                     let mut buf = Vec::new();
                     if f.read_to_end(&mut buf).is_err() {

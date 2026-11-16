@@ -42,7 +42,7 @@ pub(crate) struct Settings {
 
 enum Src {
     Stdin,
-    File(BufReader<File>),
+    File(BufReader<Box<dyn std::io::Read>>),
 }
 
 enum AppendItem {
@@ -482,7 +482,7 @@ impl<'a> Exec<'a> {
             {
                 return Ok(());
             }
-            if let Ok(mut f) = File::open(&path) {
+            if let Ok(mut f) = crate::fsutil::open_read_operand(self.ctx, &sname) {
                 let _ = f.read_to_end(&mut data);
             }
         }
@@ -700,7 +700,7 @@ impl<'a> Exec<'a> {
                 });
             }
         }
-        let f = match File::open(&path) {
+        let f = match fsutil::open_read_operand(self.ctx, &name) {
             Ok(f) => f,
             Err(e) => {
                 let reason = fsutil::gnu_open_reason(self.ctx, &name, &e, false);

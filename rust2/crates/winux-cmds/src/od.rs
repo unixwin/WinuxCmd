@@ -1396,10 +1396,20 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // (probed: `od nosuch` prints only the diagnostic; `od /dev/null`
     // still prints 0000000 because the stream opened).
     let mut opened_any = false;
+    // Bound the slurp when -N caps the dump (niubash#993 §5): /dev/zero
+    // &co. are infinite streams — od.c reads at most end_offset bytes, so
+    // `od -N8 /dev/zero` terminates here too.
+    let read_cap = limit.map(|n| n.saturating_add(skip));
     for file in &files {
         if file == "-" {
             opened_any = true;
-            if io.stdin.read_to_end(&mut input).is_err() {
+            let capped = match read_cap {
+                Some(cap) => std::io::Read::by_ref(&mut io.stdin)
+                    .take(cap)
+                    .read_to_end(&mut input),
+                None => io.stdin.read_to_end(&mut input),
+            };
+            if capped.is_err() {
                 let _ = writeln!(
                     io.stderr,
                     "od: {}",
@@ -1415,7 +1425,11 @@ pub fn od_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match crate::fsutil::open_read_operand(ctx, file) {
                 Ok(mut f) => {
                     opened_any = true;
-                    if f.read_to_end(&mut input).is_err() {
+                    let read_result = match read_cap {
+                        Some(cap) => std::io::Read::take(&mut f, cap).read_to_end(&mut input),
+                        None => f.read_to_end(&mut input),
+                    };
+                    if read_result.is_err() {
                         if std::fs::metadata(resolve(ctx, file))
                             .map(|m| m.is_dir())
                             .unwrap_or(false)

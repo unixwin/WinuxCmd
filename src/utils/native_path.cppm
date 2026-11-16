@@ -889,6 +889,30 @@ export auto resolve_pseudo_device_w(std::wstring_view path)
   return std::nullopt;
 }
 
+// POSIX device files with NO Win32 object at all (niubash#993 §5): Linux
+// synthesizes /dev/zero, /dev/random, /dev/urandom and /dev/full in the
+// kernel (drivers/char/mem.c), so there is no DOS device to fold them onto
+// the way /dev/null folds onto NUL. The operand boundary answers their
+// existence/type here, and file_io synthesizes their stream content:
+// reads of zero/random/urandom (and of full, which reads as zeros on
+// Linux) are infinite streams; writes to zero/random/urandom discard like
+// NUL; writes to full fail ENOSPC. dd already synthesized these locally —
+// this makes the same answer reach every tool.
+export enum class SynthDev : int { none, zero, random, full };
+
+export auto synthesized_device_w(std::wstring_view path) -> SynthDev {
+  if (path == L"/dev/zero") return SynthDev::zero;
+  if (path == L"/dev/urandom" || path == L"/dev/random") {
+    return SynthDev::random;
+  }
+  if (path == L"/dev/full") return SynthDev::full;
+  return SynthDev::none;
+}
+
+export auto synthesized_device(std::string_view path) -> SynthDev {
+  return synthesized_device_w(from_utf8(path));
+}
+
 // True when the operand is a bare DOS device name.
 //
 // Device names resolve through the Win32 device namespace, which the \\?\
@@ -933,6 +957,7 @@ export auto is_dos_device_name_w(std::wstring_view path) -> bool {
 // reports /dev/null as a character special file, so `test -c /dev/null` is true
 // and `test -b /dev/null` is false there; both predicates need this answer.
 export auto is_character_device_w(std::wstring_view path) -> bool {
+  if (synthesized_device_w(path) != SynthDev::none) return true;
   if (auto pseudo = resolve_pseudo_device_w(path)) {
     return is_dos_device_name_w(*pseudo);
   }

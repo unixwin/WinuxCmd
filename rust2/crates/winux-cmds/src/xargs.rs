@@ -1952,7 +1952,7 @@ pub(crate) fn run_with_tty(
     }
 
     // input source: -a FILE frees stdin for the children (GNU keep_stdin)
-    let mut file: Option<std::fs::File> = None;
+    let mut file: Option<Box<dyn std::io::Read>> = None;
     let mut child_stdin = ChildStdin::Null;
     let mut empty_input = std::io::empty();
     let mut dir_input = false;
@@ -1968,7 +1968,7 @@ pub(crate) fn run_with_tty(
                 // xargs' getc loop takes as end of input (probed rc 0).
                 dir_input = true;
             } else {
-                match std::fs::File::open(&native) {
+                match crate::fsutil::open_read_operand(ctx, &path) {
                     Ok(f) => file = Some(f),
                     Err(e) => {
                         let reason = fsutil::gnu_open_reason(ctx, &path, &e, false);
@@ -2030,7 +2030,7 @@ pub(crate) fn run_with_tty(
         let src: &mut dyn Read = if dir_input {
             &mut empty_input
         } else if let Some(f) = file.as_mut() {
-            f
+            &mut **f
         } else {
             &mut **stdin
         };

@@ -196,3 +196,29 @@ TEST(test, test_long_option_operand_is_a_nonempty_string) {
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stderr_text, "");
 }
+
+// [GNU] The kernel-synthesized devices are character devices
+// (niubash#993 §5): -e/-c true, -f/-d/-x false.
+TEST(test, test_synthesized_devices_are_character_devices) {
+  TempDir tmp;
+
+  Pipeline c;
+  c.set_cwd(tmp.wpath());
+  c.add(L"test.exe", {L"-c", L"/dev/zero"});
+  EXPECT_EQ(c.run().exit_code, 0);
+
+  Pipeline e;
+  e.set_cwd(tmp.wpath());
+  e.add(L"test.exe", {L"-e", L"/dev/full"});
+  EXPECT_EQ(e.run().exit_code, 0);
+
+  Pipeline f;
+  f.set_cwd(tmp.wpath());
+  f.add(L"test.exe", {L"-f", L"/dev/zero"});
+  EXPECT_EQ(f.run().exit_code, 1);
+
+  Pipeline x;
+  x.set_cwd(tmp.wpath());
+  x.add(L"test.exe", {L"-x", L"/dev/urandom"});
+  EXPECT_EQ(x.run().exit_code, 1);
+}

@@ -551,7 +551,7 @@ pub fn expand_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 _ => {}
             }
-            match std::fs::read(resolve(ctx, file)) {
+            match crate::fsutil::read_operand_all(ctx, file) {
                 Ok(b) => b,
                 Err(_) => {
                     let _ = writeln!(

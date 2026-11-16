@@ -2394,7 +2394,7 @@ fn append_one_input(
             );
             return Err(2);
         }
-        match std::fs::File::open(&native) {
+        match crate::fsutil::open_read_operand(ctx, file) {
             Ok(mut f) => {
                 if f.read_to_end(buf).is_err() {
                     let _ = writeln!(

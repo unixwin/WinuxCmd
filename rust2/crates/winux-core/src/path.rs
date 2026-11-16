@@ -205,11 +205,37 @@ pub fn resolve_pseudo_device(path: &str) -> Option<&'static str> {
     None
 }
 
+/// native_path.cppm synthesized_device_w (niubash#993 §5): Linux
+/// synthesizes /dev/zero, /dev/random, /dev/urandom and /dev/full in the
+/// kernel (drivers/char/mem.c), so there is no DOS device to fold them
+/// onto the way /dev/null folds onto NUL. The operand boundary answers
+/// their class here; the metadata layer reports a character device and
+/// the stream layer synthesizes their content (reads of /dev/full yield
+/// zeros like read_full; writes to it fail ENOSPC).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SynthesizedDevice {
+    Zero,
+    Random,
+    Full,
+}
+
+pub fn synthesized_device(path: &str) -> Option<SynthesizedDevice> {
+    match path {
+        "/dev/zero" => Some(SynthesizedDevice::Zero),
+        "/dev/urandom" | "/dev/random" => Some(SynthesizedDevice::Random),
+        "/dev/full" => Some(SynthesizedDevice::Full),
+        _ => None,
+    }
+}
+
 /// native_path.cppm:924 is_character_device_w: whether the operand denotes
 /// a Windows character device, directly or through a POSIX pseudo-device.
 /// GNU reports /dev/null as a character special file (`test -c /dev/null`
 /// is true, `test -b /dev/null` false).
 pub fn is_character_device(path: &str) -> bool {
+    if synthesized_device(path).is_some() {
+        return true;
+    }
     match resolve_pseudo_device(path) {
         Some(dev) => is_dos_device_name(dev),
         None => is_dos_device_name(path),
