@@ -91,6 +91,7 @@
   "command.cal.option.year": "display the whole year",
   "command.cal.synopsis": "cal [OPTION] [[MONTH] YEAR]",
   "command.cat.description": "Concatenate FILE(s) to standard output.\nWith no FILE, or when FILE is -, read standard input.\n\nExamples:\n  cat f g  Output f's contents, then g's contents.\n  cat      Copy standard input to standard output.",
+  "command.cat.error.is_a_directory": "cat: {}: Is a directory",
   "command.cat.synopsis": "concatenate files and print on the standard output",
   "command.chattr.description": "Change Windows file attributes.\nSupported flags are R,H,S,A,I,T,O for readonly, hidden, system, archive, not indexed, temporary, and offline.\n[DIFFERS] Attribute flags differ from GNU chattr (Linux ext4).",
   "command.chattr.option.force": "suppress most error messages",
