@@ -407,10 +407,12 @@ TEST(ls,
   writable.add(L"ls.exe", {L"-l", L"plain.txt"});
   auto writable_result = writable.run();
 
+  // #1777 single mode model: a plain file is 0644 like stat -c %a and
+  // find -perm already reported (not the old all-777 shape).
   EXPECT_EQ(writable_result.exit_code, 0);
   EXPECT_TRUE(
       std::regex_search(writable_result.stdout_text,
-                        std::regex(R"(^-rwxrwxrwx\s+\d+\s+.*plain\.txt\n?$)")));
+                        std::regex(R"(^-rw-r--r--\s+\d+\s+.*plain\.txt\n?$)")));
 
   DWORD attrs = GetFileAttributesW((tmp.path / "plain.txt").wstring().c_str());
   EXPECT_NE(attrs, INVALID_FILE_ATTRIBUTES);
@@ -429,7 +431,24 @@ TEST(ls,
   EXPECT_EQ(readonly_result.exit_code, 0);
   EXPECT_TRUE(
       std::regex_search(readonly_result.stdout_text,
-                        std::regex(R"(^-r-xr-xr-x\s+\d+\s+.*plain\.txt\n?$)")));
+                        std::regex(R"(^-r--r--r--\s+\d+\s+.*plain\.txt\n?$)")));
+}
+
+TEST(ls, ls_long_format_executable_extension_file_is_755_like_stat) {
+  TempDir tmp;
+  tmp.write("tool.exe", "content");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-l", L"tool.exe"});
+  auto r = p.run();
+
+  // #1777: the exec-extension class is 0755, agreeing with `test -x`,
+  // `find -perm -u+x` and `stat -c %a` on the same file.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(
+      std::regex_search(r.stdout_text,
+                        std::regex(R"(^-rwxr-xr-x\s+\d+\s+.*tool\.exe\n?$)")));
 }
 
 TEST(ls, ls_long_format_uses_windows_writable_permission_shape_for_directory) {
@@ -441,10 +460,12 @@ TEST(ls, ls_long_format_uses_windows_writable_permission_shape_for_directory) {
   writable.add(L"ls.exe", {L"-ld", L"dir"});
   auto writable_result = writable.run();
 
+  // #1777 single mode model: directories are 0755 like stat already
+  // reported.
   EXPECT_EQ(writable_result.exit_code, 0);
   EXPECT_TRUE(
       std::regex_search(writable_result.stdout_text,
-                        std::regex(R"(^drwxrwxrwx\s+\d+\s+.*dir\n?$)")));
+                        std::regex(R"(^drwxr-xr-x\s+\d+\s+.*dir\n?$)")));
 
   DWORD attrs = GetFileAttributesW((tmp.path / "dir").wstring().c_str());
   EXPECT_NE(attrs, INVALID_FILE_ATTRIBUTES);
@@ -3428,8 +3449,8 @@ TEST(ls, ls_block_size_scales_s_and_total_on_windows) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("total 4\n") == 0);
-  EXPECT_TRUE(r.stdout_text.find("1 -rwxrwxrwx") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("3 -rwxrwxrwx") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 -rw-r--r--") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("3 -rw-r--r--") != std::string::npos);
   EXPECT_TRUE(std::regex_search(
       r.stdout_text,
       std::regex(
@@ -3446,9 +3467,9 @@ TEST(ls, ls_block_size_scales_s_and_total_on_windows) {
 
   EXPECT_EQ(bytes_result.exit_code, 0);
   EXPECT_TRUE(bytes_result.stdout_text.find("total 4096\n") == 0);
-  EXPECT_TRUE(bytes_result.stdout_text.find("1024 -rwxrwxrwx") !=
+  EXPECT_TRUE(bytes_result.stdout_text.find("1024 -rw-r--r--") !=
               std::string::npos);
-  EXPECT_TRUE(bytes_result.stdout_text.find("3072 -rwxrwxrwx") !=
+  EXPECT_TRUE(bytes_result.stdout_text.find("3072 -rw-r--r--") !=
               std::string::npos);
 }
 
@@ -3464,8 +3485,8 @@ TEST(ls, ls_k_option_scales_s_and_total_on_windows) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.find("total 4\n") == 0);
-  EXPECT_TRUE(r.stdout_text.find("1 -rwxrwxrwx") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("3 -rwxrwxrwx") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("1 -rw-r--r--") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("3 -rw-r--r--") != std::string::npos);
   EXPECT_TRUE(std::regex_search(
       r.stdout_text,
       std::regex(

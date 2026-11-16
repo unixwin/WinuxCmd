@@ -138,11 +138,16 @@ struct StatEntry {
     /// #1038 fifo marker (GNU lstat() S_IFIFO shape: type "fifo", mode
     /// 0o10644/0o10444, st_size 0 — 1.x stat.cpp:438-446).
     fifo: bool,
+    /// #1777 exec-bit face of the shared mode model: true when the
+    /// operand actually statted (`resolved`) carries an executable
+    /// extension — the same modemap::EXEC_EXTS set `test -x` and
+    /// `find -perm/-executable` honor.
+    exec: bool,
     owner: (String, String),
     group: (String, String),
 }
 
-fn mode_word(meta: &fs_win::FileMeta, fifo: bool) -> u32 {
+fn mode_word(meta: &fs_win::FileMeta, fifo: bool, exec: bool) -> u32 {
     // 1.x Windows value model: regular 0644 (0444 when read-only),
     // directories 0755, symlinks 0777 (GNU's a1ff). A fifo marker reports
     // the GNU lstat() shape: S_IFIFO | 0644 (0444 when read-only) —
@@ -162,18 +167,26 @@ fn mode_word(meta: &fs_win::FileMeta, fifo: bool) -> u32 {
     } else {
         0o100000 // S_IFREG
     };
-    let perms = if meta.is_dir {
-        0o755
-    } else if meta.read_only {
-        0o444
+    // #1777 one mode model across the stat family (niubash#993 §3;
+    // find/entry.rs::mode is the canonical shape): character devices are
+    // 0666, directories and executable-extension files are 0755, other
+    // regulars 0644; the READONLY attribute clears the write bits —
+    // including on directories, which previously kept 0755.
+    let perms = if meta.character_device {
+        0o666
     } else {
-        0o644
+        let base = if meta.is_dir || exec { 0o755 } else { 0o644 };
+        if meta.read_only {
+            base & !0o222
+        } else {
+            base
+        }
     };
     type_bits | perms
 }
 
-fn access_string(meta: &fs_win::FileMeta, fifo: bool) -> String {
-    let m = mode_word(meta, fifo);
+fn access_string(meta: &fs_win::FileMeta, fifo: bool, exec: bool) -> String {
+    let m = mode_word(meta, fifo, exec);
     let type_char = match m & 0o170000 {
         0o140000 => 's',
         0o120000 => 'l',
@@ -274,7 +287,7 @@ fn field_for(
     ctx_failed: &mut bool,
 ) -> Field {
     let m = &entry.meta;
-    let mw = mode_word(m, entry.fifo);
+    let mw = mode_word(m, entry.fifo, entry.exec);
     Field::Str(match letter {
         'n' => entry.name.clone(),
         'N' => {
@@ -293,7 +306,7 @@ fn field_for(
             s
         }
         'F' => file_type_name(m, entry.fifo),
-        'A' => access_string(m, entry.fifo),
+        'A' => access_string(m, entry.fifo, entry.exec),
         'a' => return Field::Oct(mw & 0o7777),
         'f' => format!("{:04x}", mw),
         's' => return Field::Dec(m.size),
@@ -847,8 +860,8 @@ fn render_default(
     writeln!(
         out,
         "Access: ({:04o}/{})  Uid: ({}/{})   Gid: ({}/{})",
-        mode_word(m, entry.fifo) & 0o7777,
-        access_string(m, entry.fifo),
+        mode_word(m, entry.fifo, entry.exec) & 0o7777,
+        access_string(m, entry.fifo, entry.exec),
         pad_left(uid.to_string(), 5),
         pad_left(owner_name, 8),
         pad_left(gid.to_string(), 5),
@@ -1154,11 +1167,20 @@ pub fn stat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             if fifo {
                 meta.size = 0;
             }
+            let exec = std::path::Path::new(&resolved)
+                .extension()
+                .map(|x| {
+                    crate::modemap::EXEC_EXTS
+                        .iter()
+                        .any(|e| x.to_string_lossy().eq_ignore_ascii_case(e))
+                })
+                .unwrap_or(false);
             let entry = StatEntry {
                 name: op.clone(),
                 resolved,
                 meta,
                 fifo,
+                exec,
                 owner,
                 group,
             };
@@ -1444,6 +1466,24 @@ mod tests {
         let (r, out, _) = run_sc(&sc, &["-c", "%F", "/dev/tty"]);
         assert_eq!(r, 0, "/dev/tty rc");
         assert_eq!(out, "character special file\n");
+    }
+
+    #[test]
+    fn mode_model_exec_ext_and_device() {
+        // #1777 single mode model (niubash#993 §3): an executable-extension
+        // file reports 0755, a plain regular file 0644, a character device
+        // 0666 — the same answer `test -x`, `find -perm` and `ls -l` give.
+        let sc = setup("stat-mode-model");
+        std::fs::write(sc.path("tool.exe"), "x").unwrap();
+        let (r, out, _) = run_sc(&sc, &["-c", "%a|%A", "tool.exe"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "755|-rwxr-xr-x\n");
+        let (r, out, _) = run_sc(&sc, &["-c", "%a|%A", "reg"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "644|-rw-r--r--\n");
+        let (r, out, _) = run_sc(&sc, &["-c", "%a|%A", "/dev/null"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "666|crw-rw-rw-\n");
     }
 
     #[test]

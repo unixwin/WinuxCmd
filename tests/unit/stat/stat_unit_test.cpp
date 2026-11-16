@@ -136,6 +136,15 @@ TEST(stat, stat_format_common_fields) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stdout_text.starts_with("regular file|644|-rw-r--r--|"));
+
+  // #1777 single mode model: exec-extension file -> 0755, device -> 0666
+  tmp.write("tool.exe", "x");
+  Pipeline pexe;
+  pexe.set_cwd(tmp.wpath());
+  pexe.add(L"stat.exe", {L"-c", L"%a|%A", L"tool.exe"});
+  auto re = pexe.run();
+  EXPECT_EQ(re.exit_code, 0);
+  EXPECT_TRUE(re.stdout_text.starts_with("755|-rwxr-xr-x"));
   EXPECT_TRUE(r.stdout_text.ends_with("\n"));
 
   auto last_separator = r.stdout_text.find_last_of('|');
