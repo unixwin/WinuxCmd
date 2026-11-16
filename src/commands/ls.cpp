@@ -494,7 +494,10 @@ auto normalize_lookup_path(const std::wstring &path) -> std::wstring {
 auto resolve_bare_exe_operand_w(const std::wstring &path) -> std::wstring {
   if (path.empty()) return path;
   if (path.back() == L'/' || path.back() == L'\\') return path;
-  if (native_path::resolve_pseudo_device_w(path)) return path;
+  if (native_path::resolve_pseudo_device_w(path) ||
+      native_path::synthesized_device_w(path) != native_path::SynthDev::none) {
+    return path;
+  }
   const size_t slash = path.find_last_of(L"/\\");
   const size_t dot = path.find_last_of(L'.');
   if (dot != std::wstring::npos &&
@@ -549,8 +552,13 @@ auto probe_path(const std::wstring &path) -> PathProbe {
   // but have no directory entry, so both probes above fail.  Report them as
   // existing plain files so "ls /dev/null" lists instead of failing with
   // ENOENT (uutils #6540).
+  // niubash#993 §5: the kernel-synthesized devices (/dev/zero,
+  // /dev/random, /dev/urandom, /dev/full) have no Win32 object at all —
+  // same character-device answer as the DOS-backed pseudo-devices.
   if (!probe.attributes_valid && !probe.found &&
-      native_path::resolve_pseudo_device_w(lookup_path)) {
+      (native_path::resolve_pseudo_device_w(lookup_path) ||
+       native_path::synthesized_device_w(lookup_path) !=
+           native_path::SynthDev::none)) {
     // FILE_ATTRIBUTE_DEVICE marks the entry as a character device so the
     // long-format listing renders a 'c' type like GNU ("crw-rw-rw-").
     probe.attributes = FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_DEVICE;
@@ -3805,6 +3813,14 @@ auto list_directory(const std::string &path,
     HANDLE hFind = FindFirstFileW(lookup_operand.extended.c_str(), &dir_data);
 
     if (hFind == INVALID_HANDLE_VALUE) {
+      // -d on a device operand (pseudo or kernel-synthesized, §5): no
+      // directory entry exists to enumerate, but the device itself is a
+      // file operand — GNU lists it.
+      if (native_path::resolve_pseudo_device_w(lookup_wpath) ||
+          native_path::synthesized_device_w(lookup_wpath) !=
+              native_path::SynthDev::none) {
+        return list_file(path, ctx);
+      }
       return std::unexpected("cannot access '" + path +
                              "': No such file or directory");
     }
@@ -4316,7 +4332,14 @@ auto list_file(const std::string &path,
     // directory that no FindFirstFileW pattern can express; stat it through
     // the boundary and synthesize the metadata record instead of reporting
     // ENOENT (#1145).
-    if (!native_path::resolve_pseudo_device_w(resolved_lookup_wpath)) {
+    // niubash#993 §5: the kernel-synthesized devices (/dev/zero, ...) are
+    // character devices with no Win32 object — same branch as the
+    // DOS-backed pseudo-devices.
+    const bool synthesized_device =
+        native_path::synthesized_device_w(resolved_lookup_wpath) !=
+        native_path::SynthDev::none;
+    if (!native_path::resolve_pseudo_device_w(resolved_lookup_wpath) &&
+        !synthesized_device) {
       WIN32_FILE_ATTRIBUTE_DATA root_data{};
       const std::wstring &normalized = metadata_operand.normalized;
       const bool is_drive_root =

@@ -3694,6 +3694,33 @@ TEST(ls, ls_long_format_lists_dev_null_as_char_device) {
   EXPECT_TRUE(r.stdout_text.find("/dev/null") != std::string::npos);
 }
 
+// [GNU] The kernel-synthesized devices have no Win32 object but answer
+// the same character-device record as /dev/null (niubash#993 §5).
+TEST(ls, ls_long_format_lists_synthesized_devices_as_char_devices) {
+  TempDir tmp;
+
+  for (const char *dev :
+       {"/dev/zero", "/dev/urandom", "/dev/random", "/dev/full"}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"ls.exe", {L"-l", std::wstring(dev, dev + std::strlen(dev))});
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(
+        std::regex_search(r.stdout_text, std::regex(R"(^c)")));
+    EXPECT_TRUE(r.stdout_text.find(dev) != std::string::npos);
+  }
+
+  Pipeline d;
+  d.set_cwd(tmp.wpath());
+  d.add(L"ls.exe", {L"-ld", L"/dev/zero"});
+  auto rd = d.run();
+  EXPECT_EQ(rd.exit_code, 0);
+  EXPECT_TRUE(
+      std::regex_search(rd.stdout_text, std::regex(R"(^c)")));
+}
+
 // [GNU] "ls -lL dir" still lists a dangling symlink member with '?'
 // placeholder columns ("l?????????"), reports "cannot access", and exits 1
 // (minor problem) rather than 2 (#387).

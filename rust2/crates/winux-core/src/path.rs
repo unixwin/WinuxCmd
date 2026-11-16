@@ -205,11 +205,37 @@ pub fn resolve_pseudo_device(path: &str) -> Option<&'static str> {
     None
 }
 
+/// native_path.cppm synthesized_device_w (niubash#993 §5): Linux
+/// synthesizes /dev/zero, /dev/random, /dev/urandom and /dev/full in the
+/// kernel (drivers/char/mem.c), so there is no DOS device to fold them
+/// onto the way /dev/null folds onto NUL. The operand boundary answers
+/// their class here; the metadata layer reports a character device and
+/// the stream layer synthesizes their content (reads of /dev/full yield
+/// zeros like read_full; writes to it fail ENOSPC).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SynthesizedDevice {
+    Zero,
+    Random,
+    Full,
+}
+
+pub fn synthesized_device(path: &str) -> Option<SynthesizedDevice> {
+    match path {
+        "/dev/zero" => Some(SynthesizedDevice::Zero),
+        "/dev/urandom" | "/dev/random" => Some(SynthesizedDevice::Random),
+        "/dev/full" => Some(SynthesizedDevice::Full),
+        _ => None,
+    }
+}
+
 /// native_path.cppm:924 is_character_device_w: whether the operand denotes
 /// a Windows character device, directly or through a POSIX pseudo-device.
 /// GNU reports /dev/null as a character special file (`test -c /dev/null`
 /// is true, `test -b /dev/null` false).
 pub fn is_character_device(path: &str) -> bool {
+    if synthesized_device(path).is_some() {
+        return true;
+    }
     match resolve_pseudo_device(path) {
         Some(dev) => is_dos_device_name(dev),
         None => is_dos_device_name(path),
@@ -623,6 +649,27 @@ pub fn shell_tree_display(env: &dyn EnvSource, native: &str, include_home: bool)
         return None;
     }
     under(&home_parent(env)?, "/home")
+}
+
+/// The Git Bash display spelling of a native absolute path (niubash#993
+/// section 7): shell-tree mounts keep their POSIX name (/usr/bin, /tmp),
+/// everything else takes the /c/ drive form — the single spelling
+/// realpath, readlink -f and the shell's pwd share under MSYS. Relative
+/// and already-POSIX spellings pass through unchanged.
+pub fn shell_display_path(env: &dyn EnvSource, native: &str) -> String {
+    if let Some(display) = shell_tree_display(env, native, false) {
+        return display;
+    }
+    let value = native.replace('\\', "/");
+    let bytes = value.as_bytes();
+    if value.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        let mut out = String::with_capacity(value.len() + 1);
+        out.push('/');
+        out.push((bytes[0] as char).to_ascii_lowercase());
+        out.push_str(&value[2..]);
+        return out;
+    }
+    value
 }
 
 // ---------------------------------------------------------------------------

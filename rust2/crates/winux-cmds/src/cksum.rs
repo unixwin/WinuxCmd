@@ -536,7 +536,7 @@ fn read_input(ctx: &Ctx, io: &mut Io, input: &str) -> Result<Vec<u8>, String> {
     if meta.as_ref().is_ok_and(|m| m.is_dir()) {
         return Err("Is a directory".to_string());
     }
-    std::fs::File::open(&native)
+    crate::fsutil::open_read_operand(ctx, input)
         .map_err(|e| gnu_open_reason(ctx, input, &e, false))
         .and_then(|mut f| {
             let mut buf = Vec::new();

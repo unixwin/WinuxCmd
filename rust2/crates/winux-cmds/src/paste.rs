@@ -407,19 +407,10 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         } else {
             // the one operand boundary (drive dialect, carrier colons,
             // shell tree — the 1.x native_path layer)
-            let path = crate::fs_win::api_path(ctx, op);
-            // #1038 fifo bridge: a `!<fifo>` marker operand is a named
-            // pipe behind an on-disk file — GNU paste opens it O_RDONLY
-            // (blocking until a writer arrives) through the rendezvous,
-            // NOT through the plain open below, which would read the 7
-            // marker bytes as content (the wave3a CI regression; 1.x
-            // open_binary_file took the same marker branch, 442d65bb).
-            let opened: std::io::Result<Box<dyn Read>> = if crate::fs_win::is_winux_fifo_path(&path)
-            {
-                crate::fs_win::open_fifo_read(&path).map(|r| Box::new(r) as Box<dyn Read>)
-            } else {
-                std::fs::File::open(&path).map(|f| Box::new(f) as Box<dyn Read>)
-            };
+            // #1038 fifo bridge and the niubash#993 §5 synthesized
+            // devices both live inside open_read_operand (a plain open
+            // here would read the 7 marker bytes and strand the writer).
+            let opened: std::io::Result<Box<dyn Read>> = crate::fsutil::open_read_operand(ctx, op);
             match opened {
                 Ok(f) => sources.push(Slot {
                     src: Rc::new(RefCell::new(Some(f))),

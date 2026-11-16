@@ -1974,3 +1974,24 @@ TEST(cp, issue1726_empty_source_cannot_stat) {
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "keep.txt"));
   EXPECT_FALSE(std::filesystem::exists(tmp.path / "dst.txt"));
 }
+
+// [GNU] /dev/full fails the copy with ENOSPC while /dev/zero is a
+// discarding destination (niubash#993 §5).
+TEST(cp, cp_to_synthesized_devices) {
+  TempDir tmp;
+  tmp.write("src.txt", "payload");
+
+  Pipeline full;
+  full.set_cwd(tmp.wpath());
+  full.add(L"cp.exe", {L"src.txt", L"/dev/full"});
+  auto rf = full.run();
+  EXPECT_NE(rf.exit_code, 0);
+  EXPECT_TRUE(rf.stderr_text.find("No space left on device") !=
+              std::string::npos);
+
+  Pipeline zero;
+  zero.set_cwd(tmp.wpath());
+  zero.add(L"cp.exe", {L"src.txt", L"/dev/zero"});
+  auto rz = zero.run();
+  EXPECT_EQ(rz.exit_code, 0);
+}

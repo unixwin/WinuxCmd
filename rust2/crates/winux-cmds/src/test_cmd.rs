@@ -539,6 +539,15 @@ fn same_file(ctx: &Ctx, a: &str, b: &str) -> bool {
     if da.is_some() || db.is_some() {
         return da.is_some() && da == db;
     }
+    // niubash#993 §5: synthesized devices carry no canonical device name —
+    // identity is the operand spelling, and random != urandom on Linux.
+    let (sa, sb) = (
+        winux_core::path::synthesized_device(a).is_some(),
+        winux_core::path::synthesized_device(b).is_some(),
+    );
+    if sa || sb {
+        return sa && sb && a == b;
+    }
     match (
         std::fs::canonicalize(resolve(ctx, std::path::Path::new(a))),
         std::fs::canonicalize(resolve(ctx, std::path::Path::new(b))),
@@ -635,6 +644,9 @@ fn unary_operator(
 fn is_dos_device_operand(arg: &str) -> bool {
     winux_core::path::resolve_pseudo_device(arg).is_some()
         || winux_core::path::is_dos_device_name(arg)
+        // niubash#993 §5: kernel-synthesized devices have no Win32 object
+        // either, so the same synthesized record answers their file tests.
+        || winux_core::path::synthesized_device(arg).is_some()
 }
 
 /// CreateFileW open-probe for a device operand (winux-core
@@ -642,6 +654,12 @@ fn is_dos_device_operand(arg: &str) -> bool {
 /// CRT/GetFileAttributesW path — both reject device names outright; the
 /// probe is shared with stat's dos_device_meta).
 fn dos_device_exists(arg: &str) -> bool {
+    // /dev/{zero,random,urandom,full} exist on Linux without a Win32
+    // object to probe (niubash#993 §5) — the operand itself is the
+    // existence proof.
+    if winux_core::path::synthesized_device(arg).is_some() {
+        return true;
+    }
     let probe = winux_core::path::resolve_pseudo_device(arg).unwrap_or(arg);
     winux_core::path::imp::probe_dos_device(probe)
 }

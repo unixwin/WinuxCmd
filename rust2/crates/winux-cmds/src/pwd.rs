@@ -66,6 +66,11 @@ pub fn pwd_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     } else {
         physical.to_string_lossy().into_owned()
     };
+    // niubash#993 section 7: pwd, realpath and readlink -f share one
+    // display spelling — the shell mount name (or /c/ drive form) Git
+    // Bash prints, never the backslashed Win32 spelling. An env PWD that
+    // is already POSIX-spelled passes through unchanged.
+    let result = winux_core::path::shell_display_path(ctx.env, &result);
     writeln!(io.stdout, "{result}")?;
     Ok(0)
 }
@@ -120,7 +125,14 @@ mod tests {
         let args = ["-L".into()];
         let r = super::pwd_cmd(&args, &mut io.split(), &ctx).unwrap();
         assert_eq!(r, 0);
-        assert_eq!(io.out(), format!("{}\n", sc.dir.to_string_lossy()));
+        // §7: the env PWD echoes in the shell display spelling.
+        assert_eq!(
+            io.out(),
+            format!(
+                "{}\n",
+                winux_core::path::shell_display_path(ctx.env, &sc.dir.to_string_lossy())
+            )
+        );
 
         // invalid PWD falls back silently to physical
         let mut io = MemIo::new("");

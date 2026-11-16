@@ -876,8 +876,7 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             // the one operand boundary (drive dialect, carrier colons,
             // shell tree — the 1.x native_path layer)
-            let path = std::path::PathBuf::from(crate::fs_win::api_path(ctx, op));
-            match std::fs::read(&path) {
+            match crate::fsutil::read_operand_all(ctx, op) {
                 Ok(data) => {
                     let mut f = make_fmt(
                         &data,

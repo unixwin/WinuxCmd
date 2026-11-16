@@ -155,6 +155,45 @@ inline std::wstring extended_path_preserving(const std::wstring &path) {
   return L"\\\\?\\" + absolute;
 }
 
+// The leaf stem being a DOS device name with an extension ("NUL.txt")
+// makes GetFullPathNameW resolve the stem onto the device namespace —
+// "C:\dir\NUL.txt" comes back as "\\.\NUL" (#1333, the same rule the
+// product's native_path::to_extended_path handles). A fixture write
+// routed through the collapsed spelling lands on the device itself, so
+// the file the test meant to plant never exists; absolutize lexically.
+inline bool has_device_stem_with_extension(const std::wstring &path) {
+  const size_t sep = path.find_last_of(L"\\/");
+  const std::wstring_view leaf =
+      sep == std::wstring::npos
+          ? std::wstring_view(path)
+          : std::wstring_view(path).substr(sep + 1);
+  const size_t dot = leaf.find(L'.');
+  if (dot == std::wstring_view::npos || dot == 0) return false;
+  const std::wstring_view stem = leaf.substr(0, dot);
+  static constexpr std::wstring_view kDevices[] = {
+      L"NUL",    L"CON",    L"PRN",    L"AUX",    L"CONIN$",
+      L"CONOUT$", L"COM1",   L"COM2",   L"COM3",   L"COM4",
+      L"COM5",   L"COM6",   L"COM7",   L"COM8",   L"COM9",
+      L"LPT1",   L"LPT2",   L"LPT3",   L"LPT4",   L"LPT5",
+      L"LPT6",   L"LPT7",   L"LPT8",   L"LPT9"};
+  for (const auto device : kDevices) {
+    if (stem.size() != device.size()) continue;
+    bool equal = true;
+    for (size_t i = 0; i < stem.size(); ++i) {
+      wchar_t a = stem[i];
+      wchar_t b = device[i];
+      if (a >= L'a' && a <= L'z') a = static_cast<wchar_t>(a - L'a' + L'A');
+      if (b >= L'a' && b <= L'z') b = static_cast<wchar_t>(b - L'a' + L'A');
+      if (a != b) {
+        equal = false;
+        break;
+      }
+    }
+    if (equal) return true;
+  }
+  return false;
+}
+
 inline std::wstring extended_path(const std::filesystem::path &path) {
   auto native = path.wstring();
   if (native.rfind(L"\\\\?\\", 0) == 0) return native;
@@ -162,7 +201,8 @@ inline std::wstring extended_path(const std::filesystem::path &path) {
   // GetFullPathNameW strips trailing '.'/' ' components onto the DOS
   // sibling (#1283), so names in that family are absolutized lexically
   // instead; every other spelling keeps the API result unchanged.
-  if (has_literal_dot_space_component(native)) {
+  if (has_literal_dot_space_component(native) ||
+      has_device_stem_with_extension(native)) {
     return extended_path_preserving(native);
   }
 

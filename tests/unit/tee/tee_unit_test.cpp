@@ -183,3 +183,25 @@ TEST(tee, tee_dash_p_still_legal_issue1355) {
   EXPECT_EXIT_CODE(r, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "hi\n");
 }
+
+// [GNU] /dev/full reports ENOSPC, /dev/zero discards (niubash#993 §5).
+TEST(tee, tee_synthesized_device_destinations) {
+  TempDir tmp;
+
+  Pipeline full;
+  full.set_cwd(tmp.wpath());
+  full.set_stdin("x\n");
+  full.add(L"tee.exe", {L"/dev/full"});
+  auto rf = full.run();
+  EXPECT_EXIT_CODE(rf, 1);
+  EXPECT_TRUE(rf.stderr_text.find("No space left on device") !=
+              std::string::npos);
+
+  Pipeline zero;
+  zero.set_cwd(tmp.wpath());
+  zero.set_stdin("x\n");
+  zero.add(L"tee.exe", {L"/dev/zero"});
+  auto rz = zero.run();
+  EXPECT_EXIT_CODE(rz, 0);
+  EXPECT_EQ_TEXT(rz.stdout_text, "x\n");
+}
