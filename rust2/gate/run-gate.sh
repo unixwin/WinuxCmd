@@ -611,8 +611,24 @@ run_case() {
     local ok=0 note=""
     case "$mode" in
         strict)     [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
-        sorted)     [ "$(printf '%s' "$r_out" | LC_ALL=C sort)" = "$(printf '%s' "$g_out" | LC_ALL=C sort)" ] \
-                        && [ "$r_rc" = "$g_rc" ] && ok=1 ;;
+        sorted)
+            # Order-insensitive byte comparison of the captured stdout files.
+            # This branch used to read $r_out/$g_out, which are never assigned:
+            # under `set -u` every sorted row compared "" == "" and passed
+            # vacuously. Sort from the files, not from shell variables, so NUL
+            # bytes, line endings and large outputs stay intact. GATE_SORT_BIN
+            # lets a host where a product applet shadows the harness's coreutils
+            # pin a real sort (CI's Git Bash resolves GNU sort); the default is
+            # plain `sort`. The sorted verdict is written to the ledger's r=g
+            # field, which matrix-summary.py re-derives with the same rule.
+            local sort_bin="${GATE_SORT_BIN:-sort}"
+            if [ -f "$scase.rust/.out" ] && [ -f "$GNU_MIRROR/$id/.out" ] \
+               && LC_ALL=C "$sort_bin" "$scase.rust/.out" > "$scase.rust/.out.sorted" \
+               && LC_ALL=C "$sort_bin" "$GNU_MIRROR/$id/.out" > "$GNU_MIRROR/$id/.out.sorted" \
+               && cmp -s "$scase.rust/.out.sorted" "$GNU_MIRROR/$id/.out.sorted"; then
+                gnu_out_match=yes
+                [ "$r_rc" = "$g_rc" ] && ok=1
+            fi ;;
         exit)       [ "$r_rc" = "$g_rc" ] && ok=1 ;;
         win)        [ "$r_rc" = "$c_rc" ] && ok=1 ;;
         posix)      [ "$gnu_out_match" = yes ] && [ "$r_rc" = "$g_rc" ] && ok=1 ;;

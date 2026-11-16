@@ -478,13 +478,12 @@ jobs:
   #     largest tables in the corpus — were claimed by no shard, so the
   #     aggregate below reported them as "not run by any shard" and none had
   #     ever executed in CI;
-  #   * known follow-up, not introduced here: find is the only table with
-  #     `sorted` rows (119), matrix-summary.py has no sorted branch, and
-  #     run-gate.sh's sorted comparator reads unset $r_out/$g_out (so its
-  #     own run admits those rows on empty==empty). Consequently the
-  #     dashboard counts those 119 rows as FAIL once find runs here. That is
-  #     a pre-existing gate-tool gap for a separate lane; the matrix cannot
-  #     cover find without exposing it;
+  #   * find's 119 `sorted` rows are compared for real: run-gate.sh sorts the
+  #     captured stdout files (order-insensitive, file-based so NUL bytes and
+  #     large outputs stay intact) and writes that verdict into the ledger's
+  #     r=g field, which matrix-summary.py re-derives with the strict rule.
+  #     Both tools used to compare empty strings (the branch read unset
+  #     $r_out/$g_out), so find's sorted rows had never been measured;
   #   * the aggregate `rust2-gate` job fails the run if a shard artifact is
   #     missing, a shard job did not succeed, or a case table on disk is not
   #     claimed by any shard, so the shard list cannot silently rot when a
