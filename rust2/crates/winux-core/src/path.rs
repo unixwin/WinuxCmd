@@ -434,26 +434,57 @@ fn native_parent(path: &str) -> Option<String> {
 /// TMP (the per-user temporary namespace, niubash#94 — never a fixed
 /// location under a possibly non-writable install root).
 ///
-/// POSIX-spelled values (leading `/`) are skipped: when the driver runs
-/// under Git Bash, TEMP/TMP arrive as the MSYS form `/tmp` itself — a
-/// circular mapping that would resolve /tmp to /tmp and send every
-/// temp-file command (mktemp, …) to a non-existent Windows path (the CI
-/// gate's mk16-p-dir finding). The C++ tmp_base_w reads the Windows env
-/// block the same way and trusts it; we keep niubash#94's priority but
-/// fall through a value that cannot name a Windows directory. When every
-/// candidate is POSIX-spelled — the gate-shard env is exactly that
+/// POSIX-spelled values (leading `/`) are resolved through the dialect's
+/// fold chain before adoption: the /cygdrive/X, /mnt/X and MSYS /X drive
+/// forms name real Windows directories and are adopted when the folded
+/// path exists (a test harness feeds TMPDIR exactly as /c/Users/... —
+/// the mk16 CI finding), while /tmp and /var/tmp fall through because
+/// shell_tree_map maps them THROUGH this function (the circular mapping
+/// that once sent every temp-file command to a non-existent Windows
+/// path — the mk16-p-dir finding). The C++ tmp_base_w reads the Windows
+/// env block the same way and trusts it; we keep niubash#94's priority
+/// but fall through a value that cannot name a Windows directory. When
+/// every candidate is unusable — the gate-shard env is exactly that
 /// (TMPDIR unset, TEMP/TMP = /tmp) — niubash#94's intent ("a usable
 /// per-user temporary namespace") is served by the Windows default
 /// per-user temp path via GetTempPathW, which itself skips candidates
 /// that do not exist, landing on USERPROFILE when TMP/TEMP are unusable.
-/// This reads process state, which the library otherwise never does; it
-/// is confined to this last-resort arm and documented here on purpose.
+/// The fold/existence probe reads process state and the filesystem,
+/// which the library otherwise never does; it is confined to the
+/// POSIX-spelled candidate arms and documented here on purpose.
 pub fn tmp_base(env: &dyn EnvSource) -> Option<String> {
     for name in ["TMPDIR", "TEMP", "TMP"] {
         if let Some(v) = win32_env_get(env, name) {
             let v = v.to_string_lossy().into_owned();
-            if !v.is_empty() && !v.starts_with('/') {
+            if v.is_empty() {
+                continue;
+            }
+            if !v.starts_with('/') {
                 return Some(nativeize_base(&v));
+            }
+            // POSIX-spelled value. The dialect can still name a real
+            // Windows directory: /cygdrive/X and /mnt/X fold onto the
+            // drive form and /X folds onto X:\ (normalize_api_operand_w's
+            // fold chain, #1145 #1172 #1231). The mk16 CI failure was
+            // exactly a TMPDIR spelled as /c/Users/... being discarded
+            // here, which dropped mktemp onto the runner's TEMP root even
+            // though TMPDIR named an existing directory. Adopt the fold
+            // only when it names an existing directory — a stale value
+            // from a removed workspace must not hijack the temp root —
+            // and fall through otherwise. /tmp and /var/tmp stay
+            // unadopted: shell_tree_map maps them THROUGH this function,
+            // so honoring them here would be the circular mapping the
+            // mk16-p-dir finding removed. That keeps niubash#94's intent
+            // (a usable per-user temporary namespace) while honoring
+            // every POSIX spelling the dialect can actually resolve.
+            let folded = fold_posix_drive_prefix(&v)
+                .and_then(|prefix| fold_drive_dialect(&prefix))
+                .or_else(|| fold_drive_dialect(&v));
+            if let Some(native) = folded {
+                if std::path::Path::new(&native).is_dir() {
+                    return Some(nativeize_base(&native));
+                }
+                continue;
             }
         }
     }
@@ -1005,18 +1036,60 @@ mod tests {
         // leg had a real /tmp and the rust2 side did not). The fallback
         // must name a Windows path, never a POSIX spelling.
         let e = env(&[("WINUXSH_ROOT", r"D:\r")]);
-        let mapped = shell_tree_map(&e, "/tmp").as_deref().unwrap_or_default();
+        let mapped = shell_tree_map(&e, "/tmp");
+        let mapped = mapped.as_deref().unwrap_or_default();
         assert!(
             !mapped.is_empty(),
             "GetTempPathW fallback must yield a base"
         );
         assert!(mapped.contains(':'), "Windows path expected: {mapped}");
         assert!(!mapped.starts_with('/'), "no POSIX-form fallback: {mapped}");
-        let mapped_x = shell_tree_map(&e, "/tmp/x").as_deref().unwrap_or_default();
+        let mapped_x = shell_tree_map(&e, "/tmp/x");
+        let mapped_x = mapped_x.as_deref().unwrap_or_default();
         assert!(
             mapped_x.contains(':') && !mapped_x.starts_with('/'),
             "{mapped_x}"
         );
+    }
+
+    // ---- tmp_base POSIX-spelled adoption (mk16 CI finding, #1792) ----
+
+    #[test]
+    fn tmp_base_adopts_resolvable_posix_drive_forms() {
+        // A harness feeds TMPDIR in the MSYS drive spelling (/c/...).
+        // The fold chain (/cygdrive/X, /mnt/X -> /X -> X:\, #1145 #1172
+        // #1231) resolves it to the native path; because that path names
+        // an existing directory, tmp_base must ADOPT it — the blunt
+        // starts-with('/') skip discarded it and dropped mktemp onto the
+        // runner's TEMP root instead (the #1792 CI diagnostic's lhs).
+        let real = std::env::temp_dir();
+        let native = real.to_string_lossy().into_owned();
+        let b = native.as_bytes();
+        assert!(b.len() >= 3 && b[1] == b':', "real temp: {native}");
+        let drive = (b[0] as char).to_ascii_lowercase();
+        let posix = format!("/{drive}{}", native[2..].replace('\\', "/"));
+        let e = env(&[("TMPDIR", posix.as_str())]);
+        assert_eq!(
+            tmp_base(&e).as_deref(),
+            Some(nativeize_base(&native).as_str()),
+            "TMPDIR={posix} must resolve and adopt"
+        );
+    }
+
+    #[test]
+    fn tmp_base_falls_through_unusable_posix_values() {
+        // A spelling that folds but names no existing directory (stale
+        // workspace) must not hijack the base: fall through to TEMP.
+        let e = env(&[("TMPDIR", "/d/zzz-nonexistent-wc-tmp"), ("TEMP", r"C:\t")]);
+        assert_eq!(tmp_base(&e).as_deref(), Some(r"C:\t"));
+        // A drive that does not exist on the machine likewise falls
+        // through instead of being adopted.
+        let e = env(&[("TMPDIR", "/q/zzz-nonexistent-wc-tmp"), ("TEMP", r"C:\t2")]);
+        assert_eq!(tmp_base(&e).as_deref(), Some(r"C:\t2"));
+        // /tmp is circular (shell_tree_map maps /tmp THROUGH tmp_base):
+        // never adopt, always fall through — the mk16-p-dir contract.
+        let e = env(&[("TMPDIR", "/tmp"), ("TMP", r"C:\k")]);
+        assert_eq!(tmp_base(&e).as_deref(), Some(r"C:\k"));
     }
 
     // ---- /home (native_path.cppm:269) ----
