@@ -1605,7 +1605,7 @@
   "command.ls.error.columns_width": "ignoring invalid width in environment variable COLUMNS: ‘{value}’",
   "command.ls.error.dired_zero": "--dired and --zero are incompatible",
   "command.ls.error.invalid_argument": "invalid argument '{value}' for '{option}'",
-  "command.ls.error.invalid_line_width": "invalid line width ‘{value}’",
+  "command.ls.error.invalid_line_width": "invalid line width: ‘{value}’",
   "command.ls.error.invalid_option": "invalid option -- '{opt}'",
   "command.ls.error.invalid_tab_size": "invalid tab size: '{value}'",
   "command.ls.error.invalid_time_style_format": "invalid time style format '{value}'",
