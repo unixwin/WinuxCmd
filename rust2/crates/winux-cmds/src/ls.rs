@@ -2157,6 +2157,24 @@ struct Probe {
 
 fn probe_path(ctx: &Ctx, path: &str) -> Probe {
     let lookup = resolve_bare_exe(ctx, &normalize_lookup_path(path));
+    // POSIX pseudo-devices have no directory entry in the Win32 namespace
+    // (`api_path` folds /dev/null onto NUL, whose FindFirstFileW record is
+    // a regular 0-byte file). Answer them at the operand boundary and keep
+    // the operand spelling, the way `stat` already does (#1779, #1643):
+    // /dev/null plus the kernel-synthesized /dev/zero|random|urandom|full
+    // are character devices (`crw-rw-rw-`).
+    if winux_core::path::resolve_pseudo_device(&lookup).is_some()
+        || winux_core::path::synthesized_device(&lookup).is_some()
+    {
+        return Probe {
+            fd: Fd {
+                attrs: ATTR_NORMAL | ATTR_DEVICE,
+                ..Fd::default()
+            },
+            found: true,
+            attrs_valid: true,
+        };
+    }
     let ext = api_path(ctx, &lookup);
     if let Some(fd) = plat::find_first(&ext) {
         return Probe {
@@ -2172,17 +2190,6 @@ fn probe_path(ctx: &Ctx, path: &str) -> Probe {
                 ..Fd::default()
             },
             found: false,
-            attrs_valid: true,
-        };
-    }
-    if let Some(dev) = winux_core::path::resolve_pseudo_device(&lookup) {
-        let _ = dev;
-        return Probe {
-            fd: Fd {
-                attrs: ATTR_NORMAL | ATTR_DEVICE,
-                ..Fd::default()
-            },
-            found: true,
             attrs_valid: true,
         };
     }
