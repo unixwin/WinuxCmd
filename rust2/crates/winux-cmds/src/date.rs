@@ -2,12 +2,29 @@
 //! against WSL coreutils 9.4 (rust2/target/probe/w5-date.sh, w5-tz.sh).
 //!
 //! Deterministic core (everything the gate can compare):
-//! * `-d DATE` parse subset — ISO `YYYY-MM-DD[ HH:MM[:SS]]`, `@EPOCH`
-//!   (negative allowed), trailing relative adjustments (`+ N unit`,
-//!   `- N unit`, `N unit ago`; month/year are calendar units — probed:
-//!   Jan 31 + 1 month -> Mar 2, overflow rolls; Mar 1 - 1 day -> Feb 29
-//!   in 2020), explicit `UTC`/`GMT` zone suffix; bare wall times are
-//!   interpreted in the effective zone (TZ env / system local).
+//! * `-d DATE` parse subset — ISO `YYYY-MM-DD[ HH:MM[:SS]]`, the 'T'
+//!   date/time separator, `@EPOCH` (negative allowed), explicit
+//!   `UTC`/`GMT`/`Z` suffix; bare wall times are interpreted in the
+//!   effective zone (TZ env / system local).
+//! * Relative forms anchored on now (parse-datetime.y `rel`/`hybrid`):
+//!   `+N unit`, `-N unit`, bare `N unit`, chained signed groups
+//!   (`+1 day +2 hours`), `<N unit> ago` (negates only the group it
+//!   follows), `now`, `today`, `tomorrow`, `yesterday`,
+//!   `next|last|this UNIT`, and `<base> [+-] N unit` on an explicit date
+//!   (both `+ 1 day` and glued `+1 day`). Month/year are calendar units —
+//!   probed: Jan 31 + 1 month -> Mar 2, overflow rolls; Mar 1 - 1 day ->
+//!   Feb 29 in 2020. Units: second/minute/hour/day/fortnight/week/month/
+//!   year.
+//! * Time-of-day-only operands (parse-datetime.y `digits_to_date_time` and
+//!   `time`/`iso_8601_time`): `H`, `HH`, `HHMM`, `H:M[:S]`, optional
+//!   `am`/`pm`, and a trailing military-zone letter (`T` = UTC-7, so probed
+//!   `1024t` = 17:24 UTC; `Z` = UTC). The civil date comes from now.
+//! * NOT part of the port's subset (documented boundary, tracked by the
+//!   date-parse-datetime issue): weekday/month names (`monday`,
+//!   `next monday`, `Jan 2 2020`), combined day+time operands
+//!   (`tomorrow 10:00`), `TZ="..."` prefixes, nanoseconds in the input,
+//!   ordinal/`YYYYMMDD` numeric date forms, and named zones beyond
+//!   UTC/GMT/Z. Those stay `invalid date` rather than being approximated.
 //! * `+FORMAT` strftime subset — probed conversions; GNU's unknown-
 //!   conversion rule prints the token literally (probed `%Q` -> `%Q`).
 //! * `-u`, `-R`, `-I[=FMT]`/`--iso-8601`, `--rfc-3339`, `--rfc-email`,
@@ -681,45 +698,259 @@ struct ParsedDate {
     ss: i64,
     /// @EPOCH (wall fields are UTC) or an explicit UTC/GMT/Z suffix
     force_utc: bool,
-    /// "<N unit> ago" anchors on now
+    /// The operand is anchored on `now` (`+N unit`, `tomorrow`, `now + …`)
     from_now: bool,
     rels: Vec<RelAmount>,
+    /// Time-of-day-only operand (`HH`, `HHMM`, `HH:MM[:SS][am|pm]`): the
+    /// civil date comes from `now` at resolve time.
+    time_only: Option<(i64, i64, i64)>,
+    /// Military-zone letter attached to a time-only operand, in seconds
+    /// east of UTC (parse-datetime.y military_table: T = -7h, Z = 0).
+    zone_override: Option<i64>,
+}
+
+impl ParsedDate {
+    /// An operand whose base is the current instant (parse-datetime.y
+    /// `rel` with no date part).
+    fn anchored_on_now(rels: Vec<RelAmount>) -> Self {
+        ParsedDate {
+            y: 1970,
+            m: 1,
+            d: 1,
+            hh: 0,
+            mm: 0,
+            ss: 0,
+            force_utc: true,
+            from_now: true,
+            rels,
+            time_only: None,
+            zone_override: None,
+        }
+    }
+}
+
+/// Unit word -> (exact seconds, calendar kind); parse-datetime.y
+/// time_units_table plus the `fortnight` alias.
+fn rel_unit(word: &str) -> Option<(i64, CalUnit)> {
+    match word.trim_end_matches('s') {
+        "second" | "sec" => Some((1, CalUnit::None)),
+        "minute" | "min" => Some((60, CalUnit::None)),
+        "hour" => Some((3600, CalUnit::None)),
+        "day" => Some((86400, CalUnit::Day)),
+        "fortnight" => Some((14 * 86400, CalUnit::Day)),
+        "week" => Some((7 * 86400, CalUnit::Week)),
+        "month" => Some((0, CalUnit::Month)),
+        "year" => Some((0, CalUnit::Year)),
+        _ => None,
+    }
+}
+
+/// Military time-zone letter (parse-datetime.y:1193 military_table).
+/// `J` is not a zone (`{ "J", 'J', 0 }` is a literal, not tZONE).
+fn military_offset(letter: u8) -> Option<i64> {
+    let hours = match letter.to_ascii_uppercase() {
+        b'A' => 1,
+        b'B' => 2,
+        b'C' => 3,
+        b'D' => 4,
+        b'E' => 5,
+        b'F' => 6,
+        b'G' => 7,
+        b'H' => 8,
+        b'I' => 9,
+        b'K' => 10,
+        b'L' => 11,
+        b'M' => 12,
+        b'N' => -1,
+        b'O' => -2,
+        b'P' => -3,
+        b'Q' => -4,
+        b'R' => -5,
+        b'S' => -6,
+        b'T' => -7,
+        b'U' => -8,
+        b'V' => -9,
+        b'W' => -10,
+        b'X' => -11,
+        b'Y' => -12,
+        b'Z' => 0,
+        _ => return None,
+    };
+    Some(hours * 3600)
 }
 
 fn parse_rel_groups(s: &str) -> Option<Vec<RelAmount>> {
+    let toks: Vec<&str> = s.split_whitespace().collect();
     let mut out = Vec::new();
-    let mut it = s.split_whitespace();
-    while let Some(tok) = it.next() {
-        let n: i64 = tok.parse().ok()?;
-        let unit = it.next()?.trim_end_matches('s');
-        let (unit_seconds, calendar) = match unit {
-            "second" | "sec" => (1, CalUnit::None),
-            "minute" | "min" => (60, CalUnit::None),
-            "hour" => (3600, CalUnit::None),
-            "day" => (86400, CalUnit::Day),
-            "week" => (7 * 86400, CalUnit::Week),
-            "month" => (0, CalUnit::Month),
-            "year" => (0, CalUnit::Year),
-            _ => return None,
-        };
-        // GNU chains groups ("2 years 3 months"); a joining +/- belongs to
-        // the caller's split and is tolerated, anything else is a failure
-        if let Some(extra) = it.next() {
-            if extra != "+" && extra != "-" {
+    let mut i = 0usize;
+    while i < toks.len() {
+        // A sign may be glued to the number ("+1") or a separate token
+        // ("+ 1"), matching parse-datetime.y's tSNUMBER rule.
+        let mut sign = 1i64;
+        let mut tok = toks[i];
+        if tok == "+" || tok == "-" {
+            if tok == "-" {
+                sign = -1;
+            }
+            i += 1;
+            if i >= toks.len() {
                 return None;
             }
+            tok = toks[i];
         }
+        let n: i64 = tok.parse().ok()?;
+        i += 1;
+        if i >= toks.len() {
+            return None;
+        }
+        let (unit_seconds, calendar) = rel_unit(toks[i])?;
+        i += 1;
         out.push(RelAmount {
-            count: n,
+            count: sign * n,
             unit_seconds,
             calendar,
         });
     }
-    Some(out)
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Row of `parse-datetime.y` `relative_time_table` for today/tomorrow/
+/// yesterday (all three keep the current time of day).
+fn keyword_day(s: &str) -> Option<i64> {
+    match s {
+        "today" => Some(0),
+        "tomorrow" => Some(1),
+        "yesterday" => Some(-1),
+        _ => None,
+    }
+}
+
+/// `next UNIT` / `last UNIT` / `this UNIT` (parse-datetime.y
+/// relative_time_table's tDAY_SHIFT arm).
+fn parse_named_relative(s: &str) -> Option<Vec<RelAmount>> {
+    let mut it = s.split_whitespace();
+    let head = it.next()?;
+    let unit = it.next()?;
+    if it.next().is_some() {
+        return None;
+    }
+    let count = match head {
+        "next" => 1,
+        "last" => -1,
+        "this" => 0,
+        _ => return None,
+    };
+    let (unit_seconds, calendar) = rel_unit(unit)?;
+    Some(vec![RelAmount {
+        count,
+        unit_seconds,
+        calendar,
+    }])
+}
+
+/// Parse a time-of-day-only operand (`HH`, `HHMM`, `HH:MM[:SS]`), with an
+/// optional meridian (`am`/`pm`) and military-zone letter. Returns the wall
+/// fields and the parsed zone override in seconds east. Mirrors
+/// parse-datetime.y `digits_to_date_time` (<=2 digits = hour, 3-4 = HHMM)
+/// plus the `time`/`iso_8601_time` colon forms.
+fn parse_time_only(s: &str) -> Option<((i64, i64, i64), Option<i64>)> {
+    let mut body = s;
+    let mut meridian: Option<bool> = None;
+    let mut zone: Option<i64> = None;
+    let lower = body.to_ascii_lowercase();
+    if lower.len() > 2 && (lower.ends_with("am") || lower.ends_with("pm")) {
+        meridian = Some(lower.ends_with("pm"));
+        body = body[..body.len() - 2].trim_end();
+    } else if body.len() >= 2 && body.as_bytes()[body.len() - 1].is_ascii_alphabetic() {
+        zone = Some(military_offset(body.as_bytes()[body.len() - 1])?);
+        body = body[..body.len() - 1].trim_end();
+    }
+    if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit() || b == b':') {
+        return None;
+    }
+    let (mut hh, mut mm, mut ss) = (0i64, 0i64, 0i64);
+    if body.contains(':') {
+        let parts: Vec<&str> = body.split(':').collect();
+        if parts.len() < 2 || parts.len() > 3 {
+            return None;
+        }
+        hh = parts[0].parse().ok()?;
+        mm = parts[1].parse().ok()?;
+        if parts.len() == 3 {
+            ss = parts[2].parse().ok()?;
+        }
+    } else {
+        if body.len() > 4 {
+            return None;
+        }
+        let v: i64 = body.parse().ok()?;
+        if body.len() <= 2 {
+            hh = v;
+        } else {
+            hh = v / 100;
+            mm = v % 100;
+        }
+    }
+    if let Some(pm) = meridian {
+        if !(1..=12).contains(&hh) {
+            return None;
+        }
+        hh = match (pm, hh) {
+            (false, 12) => 0,
+            (true, 12) => 12,
+            (false, h) => h,
+            (true, h) => h + 12,
+        };
+    }
+    if hh > 23 || mm > 59 || ss > 59 {
+        return None;
+    }
+    Some(((hh, mm, ss), zone))
+}
+
+/// Split `<base> <relative groups>` at the first space whose suffix is a
+/// well-formed relative list. Used for hybrid forms like
+/// `2020-01-02 03:04:05 UTC +1 day` (the sign may be glued to the number).
+fn split_base_rels(s: &str) -> Option<(&str, Vec<RelAmount>)> {
+    for (pos, ch) in s.char_indices() {
+        if ch != ' ' {
+            continue;
+        }
+        let head = s[..pos].trim_end();
+        let tail = s[pos + 1..].trim_start();
+        if head.is_empty() {
+            continue;
+        }
+        if let Some(rels) = parse_rel_groups(tail) {
+            return Some((head, rels));
+        }
+    }
+    None
 }
 
 fn parse_date_string(s: &str) -> Option<ParsedDate> {
     let s = s.trim();
+    // GNU: an empty -d operand is today at midnight (parse-datetime.y
+    // accepts the empty grammar and 00:00 is the default time).
+    if s.is_empty() {
+        return Some(ParsedDate {
+            y: 1970,
+            m: 1,
+            d: 1,
+            hh: 0,
+            mm: 0,
+            ss: 0,
+            force_utc: true,
+            from_now: false,
+            rels: Vec::new(),
+            time_only: Some((0, 0, 0)),
+            zone_override: None,
+        });
+    }
     // @EPOCH (probed @0/@1234567890/@-1)
     if let Some(rest) = s.strip_prefix('@') {
         let epoch: i64 = rest.trim().parse().ok()?;
@@ -736,39 +967,78 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
             force_utc: true,
             from_now: false,
             rels: Vec::new(),
+            time_only: None,
+            zone_override: None,
         });
     }
-    let mut rels: Vec<RelAmount> = Vec::new();
-    let mut from_now = false;
-    // "<N unit> ago" anchors on now (probed shape)
+    if s == "now" {
+        return Some(ParsedDate::anchored_on_now(Vec::new()));
+    }
+    // "<N unit> ago" negates only the group the suffix follows (probed:
+    // "+1 day 2 hours ago" = +1 day -2 hours).
     if let Some(rest) = s.strip_suffix(" ago") {
-        rels = parse_rel_groups(rest)?;
-        for r in &mut rels {
-            r.count = -r.count;
+        let mut rels = parse_rel_groups(rest)?;
+        if let Some(last) = rels.last_mut() {
+            last.count = -last.count;
         }
-        from_now = true;
+        return Some(ParsedDate::anchored_on_now(rels));
+    }
+    // A lone relative expression: "+1 day", "1 day", "+1 day +2 hours".
+    if let Some(rels) = parse_rel_groups(s) {
+        return Some(ParsedDate::anchored_on_now(rels));
+    }
+    if let Some(named) = parse_named_relative(s) {
+        return Some(ParsedDate::anchored_on_now(named));
+    }
+    if let Some(days) = keyword_day(s) {
+        return Some(ParsedDate::anchored_on_now(vec![RelAmount {
+            count: days,
+            unit_seconds: 86400,
+            calendar: CalUnit::Day,
+        }]));
+    }
+    // time-of-day only (digits_to_date_time / iso time rules)
+    if let Some((tod, zone)) = parse_time_only(s) {
         return Some(ParsedDate {
             y: 1970,
             m: 1,
             d: 1,
-            hh: 0,
-            mm: 0,
-            ss: 0,
-            force_utc: true,
-            from_now,
-            rels,
+            hh: tod.0,
+            mm: tod.1,
+            ss: tod.2,
+            force_utc: false,
+            from_now: false,
+            rels: Vec::new(),
+            time_only: Some(tod),
+            zone_override: zone,
         });
     }
-    // "<base> + N unit[ + ...]" / "<base> - N unit"
+    // "<base> [+-] N unit[ ...]": the relative tail may be glued to its sign
+    // ("… UTC +1 day") or separated ("… UTC + 1 day"), so split at the
+    // first space whose suffix parses as relative groups (parse-datetime.y
+    // hybrid: digits_to_date_time then relunit).
     let mut base = s;
-    if let Some(pos) = s.find(" + ") {
-        base = &s[..pos];
-        rels = parse_rel_groups(&s[pos + 3..])?;
-    } else if let Some(pos) = s.find(" - ") {
-        base = &s[..pos];
-        rels = parse_rel_groups(&s[pos + 3..])?;
-        for r in &mut rels {
-            r.count = -r.count;
+    let mut rels: Vec<RelAmount> = Vec::new();
+    if let Some((b, r)) = split_base_rels(s) {
+        base = b;
+        rels = r;
+        // base keywords share the now anchor with any tail groups
+        if base == "now" {
+            return Some(ParsedDate::anchored_on_now(rels));
+        }
+        if let Some(days) = keyword_day(base) {
+            let mut all = vec![RelAmount {
+                count: days,
+                unit_seconds: 86400,
+                calendar: CalUnit::Day,
+            }];
+            all.extend(rels);
+            return Some(ParsedDate::anchored_on_now(all));
+        }
+        if let Some(named) = parse_named_relative(base) {
+            let mut all = named;
+            all.extend(rels);
+            return Some(ParsedDate::anchored_on_now(all));
         }
     }
     // explicit trailing zone word (probed "… UTC")
@@ -778,6 +1048,17 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
         if *last == "UTC" || *last == "GMT" || *last == "Z" {
             force_utc = true;
             words.pop();
+        }
+    }
+    // ISO 8601 allows 'T' (or 't') between the date and time halves
+    // (probed 2020-01-02T03:04:05); only a date-shaped left side is split.
+    let mut normalized = String::new();
+    if let Some(idx) = base.find(|c| c == 'T' || c == 't') {
+        let head = &base[..idx];
+        let tail = &base[idx + 1..];
+        if head.matches('-').count() == 2 && tail.starts_with(|c: char| c.is_ascii_digit()) {
+            normalized = format!("{head} {tail}");
+            words = normalized.split_whitespace().collect();
         }
     }
     // ISO: Y-M-D [H:M[:S]]
@@ -809,14 +1090,31 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
         mm,
         ss,
         force_utc,
-        from_now,
+        from_now: false,
         rels,
+        time_only: None,
+        zone_override: None,
     })
 }
 
 /// Build the epoch of a parsed date under `zone` and apply the relative
 /// adjustments.
 fn resolve_parsed(p: &ParsedDate, zone: &TimeZone, now_epoch: i64) -> DateTime {
+    if let Some((hh, mm, ss)) = p.time_only {
+        // Time-of-day-only: take the civil date from `now`, then apply the
+        // operand's own zone (military letter) before converting back to
+        // the output zone (probed: TZ=UTC `-d 1024t` = 17:24:00).
+        let (off_now, name_now) = zone.at(now_epoch);
+        let now_dt = DateTime::from_epoch(now_epoch, off_now, name_now);
+        let wall = days_from_civil(now_dt.year, now_dt.month, now_dt.day) * 86400
+            + hh * 3600
+            + mm * 60
+            + ss;
+        let parsed_off = p.zone_override.unwrap_or(off_now);
+        let epoch = wall - parsed_off;
+        let (off, name) = zone.at(epoch);
+        return apply_rels(DateTime::from_epoch(epoch, off, name), &p.rels, zone);
+    }
     if p.from_now {
         let (off, name) = zone.at(now_epoch);
         return apply_rels(DateTime::from_epoch(now_epoch, off, name), &p.rels, zone);
@@ -846,8 +1144,7 @@ fn apply_rels(dt: DateTime, rels: &[RelAmount], zone: &TimeZone) -> DateTime {
         } else {
             let days = r.count
                 * match r.calendar {
-                    CalUnit::Day => 1,
-                    CalUnit::Week => 7,
+                    CalUnit::Day | CalUnit::Week => r.unit_seconds / 86400,
                     _ => 0,
                 };
             if days != 0 {
@@ -879,6 +1176,11 @@ fn apply_rels(dt: DateTime, rels: &[RelAmount], zone: &TimeZone) -> DateTime {
                     dt.day = 28;
                 }
             }
+            // Keep dt.epoch in step: a following exact-unit group rebuilds
+            // `dt` from the epoch, which would otherwise drop this calendar
+            // step (probed: "+1 day +2 hours").
+            let wall = dt.days_since_epoch() * 86400 + dt.hour * 3600 + dt.minute * 60 + dt.second;
+            dt.epoch = wall - dt.utc_offset;
         }
     }
     // re-sync the epoch to the final civil fields
@@ -1420,6 +1722,101 @@ mod tests {
         assert_eq!(out, "2020-03-02\n");
         let (_, out, _) = tz("UTC", &["-d", "2020-03-01 - 1 day", "+%F"]);
         assert_eq!(out, "2020-02-29\n");
+    }
+
+    /// Resolve `s` against a pinned now (2020-01-02 03:04:05 UTC) so the
+    /// assertions are time-independent.
+    fn fmt_at(s: &str) -> Option<String> {
+        let p = parse_date_string(s)?;
+        Some(strftime(
+            &resolve_parsed(&p, &TimeZone::utc(), 1_577_934_245),
+            "%F_%T",
+        ))
+    }
+
+    #[test]
+    fn relative_anchored_forms() {
+        // GNU 9.4 probes 2026-11-17 (TZ=UTC), re-based on the pinned now.
+        let cases = [
+            ("now", "2020-01-02_03:04:05"),
+            ("today", "2020-01-02_03:04:05"),
+            ("tomorrow", "2020-01-03_03:04:05"),
+            ("yesterday", "2020-01-01_03:04:05"),
+            ("+1 day", "2020-01-03_03:04:05"),
+            ("-1 day", "2020-01-01_03:04:05"),
+            ("1 day", "2020-01-03_03:04:05"),
+            ("+1 week", "2020-01-09_03:04:05"),
+            ("+1 hour", "2020-01-02_04:04:05"),
+            ("+1 minute", "2020-01-02_03:05:05"),
+            ("+1 second", "2020-01-02_03:04:06"),
+            ("next day", "2020-01-03_03:04:05"),
+            ("next week", "2020-01-09_03:04:05"),
+            ("last month", "2019-12-02_03:04:05"),
+            ("this month", "2020-01-02_03:04:05"),
+            ("+1 fortnight", "2020-01-16_03:04:05"),
+            ("1 day ago", "2020-01-01_03:04:05"),
+            // "ago" negates only the last group (GNU grammar relunit tAGO)
+            ("1 day 2 hours ago", "2020-01-03_01:04:05"),
+            ("2 days 3 hours ago", "2020-01-04_00:04:05"),
+            // chained signed groups
+            ("+1 day +2 hours", "2020-01-03_05:04:05"),
+            ("+1 day -2 hours", "2020-01-03_01:04:05"),
+            ("1 day 2 hours", "2020-01-03_05:04:05"),
+            ("now + 1 day", "2020-01-03_03:04:05"),
+            ("now - 2 hours", "2020-01-02_01:04:05"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(fmt_at(input).as_deref(), Some(want), "{input}");
+        }
+        // explicit base with glued or spaced tail (GNU probe)
+        assert_eq!(
+            fmt_at("2020-01-02 03:04:05 UTC +1 day").as_deref(),
+            Some("2020-01-03_03:04:05")
+        );
+        assert_eq!(
+            fmt_at("2020-01-02 03:04:05 UTC + 1 day").as_deref(),
+            Some("2020-01-03_03:04:05")
+        );
+        assert_eq!(
+            fmt_at("2020-01-02 1 day").as_deref(),
+            Some("2020-01-03_00:00:00")
+        );
+        // documented unsupported subset: weekday names stay invalid
+        assert_eq!(fmt_at("next monday"), None);
+        assert_eq!(fmt_at("monday"), None);
+    }
+
+    #[test]
+    fn time_only_and_military_zone() {
+        // GNU 9.4 probes 2026-11-17 (TZ=UTC): `1024` = 10:24 today,
+        // `1024t` = 10:24 in military zone T (UTC-7) = 17:24 UTC.
+        let cases = [
+            ("1024", "2020-01-02_10:24:00"),
+            ("1024t", "2020-01-02_17:24:00"),
+            ("1024T", "2020-01-02_17:24:00"),
+            ("1024z", "2020-01-02_10:24:00"),
+            ("1024n", "2020-01-02_11:24:00"),
+            ("10", "2020-01-02_10:00:00"),
+            ("3", "2020-01-02_03:00:00"),
+            ("03:04", "2020-01-02_03:04:00"),
+            ("03:04:05", "2020-01-02_03:04:05"),
+            ("17:24:00", "2020-01-02_17:24:00"),
+            ("3:04pm", "2020-01-02_15:04:00"),
+            ("3:04:05pm", "2020-01-02_15:04:05"),
+            ("12:00am", "2020-01-02_00:00:00"),
+            ("12:00pm", "2020-01-02_12:00:00"),
+            ("2020-01-02T03:04:05", "2020-01-02_03:04:05"),
+            ("2020-01-02t03:04:05", "2020-01-02_03:04:05"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(fmt_at(input).as_deref(), Some(want), "{input}");
+        }
+        // six digits are a date-ish number, not a time (GNU: invalid date)
+        assert_eq!(fmt_at("102400"), None);
+        // world-readable form: the same shape through date_cmd under TZ=UTC
+        let (r, out, _) = tz("UTC", &["-u", "-d", "1024t", "+%H:%M:%S"]);
+        assert_eq!(r, 0);
+        assert_eq!(out, "17:24:00\n");
     }
 
     #[test]
