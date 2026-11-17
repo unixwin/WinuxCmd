@@ -39,3 +39,7 @@ fa34-version-extra	strict				--version	extra
 fa35-exponents-inline-value	exit				--exponents=8	12
 fa36-bogus-short	exit				-q	12
 fa37-bogus-long	exit				--bogus	12
+fa38-stdin-multi-space	strict			6 10 15
+fa39-stdin-mixed-junk	strict			6 x 10
+fa40-stdin-padded	strict			   6    10   
+fa41-stdin-beyond-u64	note			18446744073709551616

@@ -5,10 +5,14 @@
 //! poly 0x04C11DB7 (normal form), register starting at 0, the byte count appended
 //! little-endian — empty input answers 4294967295, "123456789" answers
 //! 930766865), bsd/sysv (sum -r/-s shapes; stdin prints no name), and the
-//! digest family whose cores already live in `digest.rs`: sha224/sha256/
-//! sha384/sha512/blake2b. md5/sha1/sm3 are NOT implemented here — their
-//! cores belong to the wave6 digest family (documented boundary; no gate
-//! rows exercise them).
+//! digest family whose cores already live in `digest.rs`: md5/sha1/sha224/
+//! sha256/sha384/sha512/blake2b. sm3 has no core in this port and is still
+//! rejected, though GNU's registration-order diagnostic lists it (documented
+//! boundary; no gate row exercises sm3).
+//!
+//! BSD check lines (`src/digest.c:bsd_split_3`): the tag is matched
+//! case-sensitively (`MD5`/`SHA1`/`SHA256`/... up to the `" ("`), so the
+//! `MD5 (name) = hex` form GNU writes verifies here too (probed 2026-11-17).
 //!
 //! Output forms (probed): tagged by default — digests as `TAG (name) =
 //! hex`, crc as `crc bytes name`, bsd/sysv as their sum shapes;
@@ -165,7 +169,7 @@ or equivalent standalone program.
 
 "#;
 
-/// The algorithms this port computes (wave6 owns md5/sha1/sm3 cores).
+/// The algorithms this port computes (sm3's core has not landed).
 const ALGORITHMS: &[&str] = &[
     "bsd", "sysv", "crc", "md5", "sha1", "sha224", "sha256", "sha384", "sha512", "blake2b", "sm3",
 ];
@@ -175,6 +179,8 @@ enum Algo {
     Crc,
     Bsd,
     Sysv,
+    Md5,
+    Sha1,
     Sha224,
     Sha256,
     Sha384,
@@ -187,6 +193,8 @@ fn parse_algorithm(name: &str) -> Option<Algo> {
         "crc" => Some(Algo::Crc),
         "bsd" => Some(Algo::Bsd),
         "sysv" => Some(Algo::Sysv),
+        "md5" => Some(Algo::Md5),
+        "sha1" => Some(Algo::Sha1),
         "sha224" => Some(Algo::Sha224),
         "sha256" => Some(Algo::Sha256),
         "sha384" => Some(Algo::Sha384),
@@ -198,6 +206,8 @@ fn parse_algorithm(name: &str) -> Option<Algo> {
 
 fn algo_tag(algo: Algo, bits: usize) -> String {
     match algo {
+        Algo::Md5 => "MD5".to_string(),
+        Algo::Sha1 => "SHA1".to_string(),
         Algo::Sha224 => "SHA224".to_string(),
         Algo::Sha256 => "SHA256".to_string(),
         Algo::Sha384 => "SHA384".to_string(),
@@ -217,6 +227,8 @@ fn algo_tag(algo: Algo, bits: usize) -> String {
 
 fn algo_digest(algo: Algo, data: &[u8], bits: usize) -> Vec<u8> {
     match algo {
+        Algo::Md5 => digest::md5(data).to_vec(),
+        Algo::Sha1 => digest::sha1(data).to_vec(),
         Algo::Sha224 => digest::sha224(data).to_vec(),
         Algo::Sha256 => digest::sha256(data).to_vec(),
         Algo::Sha384 => digest::sha384(data).to_vec(),
@@ -582,6 +594,8 @@ fn parse_check_line(line: &str) -> Option<CheckLine> {
         (Algo::Blake2b, b)
     } else {
         match tag {
+            "MD5" => (Algo::Md5, 128),
+            "SHA1" => (Algo::Sha1, 160),
             "SHA224" => (Algo::Sha224, 224),
             "SHA256" => (Algo::Sha256, 256),
             "SHA384" => (Algo::Sha384, 384),
@@ -878,15 +892,73 @@ mod tests {
     #[test]
     fn algorithm_validation() {
         // probed k28/k29: no abbreviation, case-sensitive; full list in the
-        // diagnostic; unimplemented cores (md5/sha1/sm3) are wave6's and
-        // excluded by the same parse table
-        for a in ["bogus", "CRC", "s", "md5", "sha1", "sm3"] {
+        // diagnostic; sm3 has no core yet, so it stays in the rejected set
+        for a in ["bogus", "CRC", "s", "sm3"] {
             let (r, out, err) = run3(&["-a", a], "123456789");
             assert_eq!(r, 1, "{a}");
             assert!(out.is_empty());
             assert!(err.contains(&format!("invalid argument '{a}' for '--algorithm'")));
             assert!(err.contains("- 'sha256'"));
         }
+    }
+
+    #[test]
+    fn md5_sha1_wired_forms() {
+        // probed 2026-11-17: cksum -a md5 / -a sha1 print the BSD tag form,
+        // --untagged the hex + two spaces form (digest.c, digest_check).
+        let (r, out, _) = run3(&["-a", "md5"], "abc");
+        assert_eq!(r, 0);
+        assert_eq!(out, "MD5 (-) = 900150983cd24fb0d6963f7d28e17f72\n");
+        let (r, out, _) = run3(&["-a", "sha1"], "abc");
+        assert_eq!(r, 0);
+        assert_eq!(out, "SHA1 (-) = a9993e364706816aba3e25717850c26c9cd0d89d\n");
+        let (_, out, _) = run3(&["-a", "md5", "--untagged"], "abc");
+        assert_eq!(out, "900150983cd24fb0d6963f7d28e17f72  -\n");
+        let (_, out, _) = run3(&["-a", "md5", "--base64"], "abc");
+        assert_eq!(out, "MD5 (-) = kAFQmDzST7DWlj99KOF/cg==\n");
+    }
+
+    #[test]
+    fn check_bsd_md5_sha1_tags() {
+        // probed 2026-11-17: `MD5 (name) = hex` and `SHA1 (name) = hex`
+        // verify (digest.c:bsd_split_3); the tag is case-sensitive and the
+        // hex is case-insensitive.
+        let sc = ScratchCtx::new("cksum-check-md5");
+        std::fs::write(sc.path("ck"), "abc").unwrap();
+        make_list(
+            &sc,
+            "md5.lst",
+            "MD5 (ck) = 900150983cd24fb0d6963f7d28e17f72\n",
+        );
+        let (r, out, _) = run_in(&sc, &["-c", "md5.lst"], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "ck: OK\n");
+        make_list(
+            &sc,
+            "sha1.lst",
+            "SHA1 (ck) = A9993E364706816ABA3E25717850C26C9CD0D89D\n",
+        );
+        let (r, out, _) = run_in(&sc, &["-c", "sha1.lst"], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "ck: OK\n");
+        make_list(
+            &sc,
+            "md5bad.lst",
+            "MD5 (ck) = 00000000000000000000000000000000\n",
+        );
+        let (r, out, err) = run_in(&sc, &["-c", "md5bad.lst"], "");
+        assert_eq!(r, 1);
+        assert_eq!(out, "ck: FAILED\n");
+        assert!(err.contains("WARNING: 1 computed checksum did NOT match"));
+        // case-sensitive tag: mixed case is not a checksum line at all
+        make_list(
+            &sc,
+            "md5low.lst",
+            "md5 (ck) = 900150983cd24fb0d6963f7d28e17f72\n",
+        );
+        let (r, _, err) = run_in(&sc, &["-c", "md5low.lst"], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("no properly formatted checksum lines found"));
     }
 
     #[test]

@@ -86,3 +86,4 @@ so81-help	win		LC_ALL=C		--help
 so82-version	win		LC_ALL=C		--version
 so83-unknown-opt	strict		LC_ALL=C		--bogus
 so84-stdin-ignored-flag	strict		LC_ALL=C	zz	--parallel=2
+so76-debug-annotation	note	printf 'b\na\n' > sdg	LC_ALL=C		--debug	sdg

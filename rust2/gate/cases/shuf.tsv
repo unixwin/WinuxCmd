@@ -42,3 +42,7 @@ su37-zero-term-echo	exit				-z	-e	a	b
 su38-dir-operand	strict	mkdir d1			d1
 su39-source-missing	strict				--random-source=nosuch.bin	-i	1-3
 su40-unknown-long	strict				--bogus	-i	1-2
+su41-rs-empty-source	strict	printf '' > empty.bin; printf '1\n2\n3\n' > f3.txt			--random-source=empty.bin	f3.txt
+su42-rs-one-byte-five	strict	printf 'x' > one.bin; printf '1\n2\n3\n4\n5\n' > f5.txt			--random-source=one.bin	f5.txt
+su43-rs-one-byte-six	strict	printf 'x' > one.bin; printf '1\n2\n3\n4\n5\n6\n' > f6.txt			--random-source=one.bin	f6.txt
+su44-rs-empty-head0	strict	printf '' > empty.bin; printf '1\n2\n3\n' > f3.txt			-n	0	--random-source=empty.bin	f3.txt
