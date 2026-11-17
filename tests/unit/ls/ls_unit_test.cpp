@@ -3073,8 +3073,8 @@ TEST(ls, ls_quoting_style_aliases) {
 }
 
 // #1646: -b (--quoting-style=escape) is a C string without the double
-// quotes, and ls additionally quotes the space (ls.c:2359-2360).  A C-locale
-// non-ASCII name is escaped one octal byte at a time.
+// quotes, and ls additionally quotes the space (ls.c:2359-2360). Under the
+// 2.0 C.UTF-8 oracle the non-ASCII name stays raw (see the body note).
 TEST(ls, ls_escape_style_escapes_spaces_and_non_ascii_bytes) {
   TempDir tmp;
   tmp.write("sp ace.txt", "x");
@@ -3092,7 +3092,13 @@ TEST(ls, ls_escape_style_escapes_spaces_and_non_ascii_bytes) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(r.stdout_text.find("sp\\ ace.txt\n"), std::string::npos);
-  EXPECT_NE(r.stdout_text.find("\\303\\251t.txt\n"), std::string::npos);
+  // [GNU 9.4] The 2.0 quoting oracle is C.UTF-8 (ls.rs quotearg note; the
+  // gate runs GNU with LC_ALL=C.UTF-8): a non-ASCII UTF-8 name is printable
+  // and stays raw there. The 1.x byte model escaped it one octal byte at a
+  // time under LC_ALL=C; Windows has no locale database to switch to
+  // (DOCS/2.0-MIGRATION.md §6 "Locale"), so pin the UTF-8 oracle.
+  EXPECT_NE(r.stdout_text.find("\xC3\xA9" "t.txt\n"), std::string::npos);
+  EXPECT_EQ(r.stdout_text.find("\\303\\251t.txt\n"), std::string::npos);
   EXPECT_EQ(r.stdout_text.find("sp ace.txt\n"), std::string::npos);
 }
 
