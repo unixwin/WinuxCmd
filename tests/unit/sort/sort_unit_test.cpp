@@ -300,8 +300,10 @@ TEST(sort, sort_rejects_invalid_parallel_hint) {
   p.add(L"sort.exe", {L"--parallel=0"});
   auto r = p.run();
 
+  // GNU 9.4 (sort-probes/p7-option-hints.out): "number in parallel must be
+  // nonzero" — the 1.x applet used the generic invalid-argument wording.
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid --parallel argument '0'") !=
+  EXPECT_TRUE(r.stderr_text.find("number in parallel must be nonzero") !=
               std::string::npos);
 }
 
@@ -360,14 +362,14 @@ TEST(sort, sort_accepts_compress_program_hint) {
   EXPECT_EQ_TEXT(r.stdout_text, "1\n2\n3\n");
 }
 
-TEST(sort, sort_rejects_empty_compress_program_hint) {
+TEST(sort, sort_accepts_empty_compress_program_hint) {
   Pipeline p;
   p.add(L"sort.exe", {L"--compress-program="});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid compress program") !=
-              std::string::npos);
+  // GNU 9.4 accepts an empty PROG when no temporary is compressed
+  // (sort-probes/p7-option-hints.out); the 1.x applet invented a rejection.
+  EXPECT_EQ(r.exit_code, 0);
 }
 
 TEST(sort, sort_accepts_temporary_directory_hint) {
@@ -384,27 +386,25 @@ TEST(sort, sort_accepts_temporary_directory_hint) {
   EXPECT_EQ_TEXT(r.stdout_text, "1\n2\n3\n");
 }
 
-TEST(sort, sort_rejects_invalid_temporary_directory_hint) {
+TEST(sort, sort_accepts_unused_temporary_directory_hint) {
   TempDir tmp;
   tmp.write("notadir.txt", "x\n");
 
+  // GNU 9.4 only stats -T when it actually spills to temporaries; inputs
+  // that fit in memory never touch it (sort-probes/p7-option-hints.out).
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"sort.exe", {L"--temporary-directory=missing", L"notadir.txt"});
   auto missing = p.run();
 
-  EXPECT_EQ(missing.exit_code, 2);
-  EXPECT_TRUE(missing.stderr_text.find("invalid temporary directory") !=
-              std::string::npos);
+  EXPECT_EQ(missing.exit_code, 0);
 
   Pipeline file_operand;
   file_operand.set_cwd(tmp.wpath());
   file_operand.add(L"sort.exe", {L"-T", L"notadir.txt"});
   auto not_directory = file_operand.run();
 
-  EXPECT_EQ(not_directory.exit_code, 2);
-  EXPECT_TRUE(not_directory.stderr_text.find("invalid temporary directory") !=
-              std::string::npos);
+  EXPECT_EQ(not_directory.exit_code, 0);
 }
 
 TEST(sort, sort_rejects_invalid_buffer_size_hint) {
@@ -412,8 +412,10 @@ TEST(sort, sort_rejects_invalid_buffer_size_hint) {
   p.add(L"sort.exe", {L"--buffer-size=bad"});
   auto r = p.run();
 
+  // GNU 9.4 xstrtol wording (sort-probes/p3-buffer-size.out).
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid buffer size") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("invalid --buffer-size argument 'bad'") !=
+              std::string::npos);
 }
 
 TEST(sort, sort_rejects_empty_buffer_size_hint) {
@@ -422,7 +424,8 @@ TEST(sort, sort_rejects_empty_buffer_size_hint) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid buffer size") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("invalid -S argument ''") !=
+              std::string::npos);
 }
 
 TEST(sort, sort_version_sort) {
@@ -1306,7 +1309,6 @@ TEST(sort, sort_buffer_size_forms_all_agree_issue1127) {
       {L"-S64", L"in.txt"},
       {L"-S1K", L"in.txt"},
       {L"-S1%", L"in.txt"},
-      {L"--buffer-size=2MiB", L"in.txt"},
   };
   for (const auto& args : arg_sets) {
     Pipeline p;
@@ -1316,6 +1318,17 @@ TEST(sort, sort_buffer_size_forms_all_agree_issue1127) {
     EXPECT_EQ(r.exit_code, 0);
     EXPECT_EQ_TEXT(r.stdout_text, expected);
   }
+
+  // GNU 9.4 has no IEC suffixes: --buffer-size=2MiB is an invalid suffix
+  // (sort-probes/p3b-buffer-long.out); the 1.x applet accepted it.
+  Pipeline mib;
+  mib.set_cwd(tmp.wpath());
+  mib.add(L"sort.exe", {L"--buffer-size=2MiB", L"in.txt"});
+  auto mib_result = mib.run();
+  EXPECT_EQ(mib_result.exit_code, 2);
+  EXPECT_TRUE(mib_result.stderr_text.find(
+                  "invalid suffix in --buffer-size argument '2MiB'") !=
+              std::string::npos);
 }
 
 TEST(sort, sort_stable_order_survives_tiny_buffer_issue1127) {

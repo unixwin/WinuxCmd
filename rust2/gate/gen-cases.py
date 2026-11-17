@@ -3366,6 +3366,14 @@ sort_rows = [
      "printf '0123456789abcdef' > s16.bin; printf '0123456789abcdeX' > s16b.bin; "
      "printf 'a\\nb\\n' > r.txt", "LC_ALL=C", "",
      ["-R", "--random-source=s16.bin", "--random-source=s16b.bin", "r.txt"]),
+    ("so99-batch-size-too-large", "strict", "", "LC_ALL=C", "", ["--batch-size=99999"]),
+    ("so100-buffer-size-iec", "strict", "printf 'b\\na\\n' > b.txt", "LC_ALL=C", "",
+     ["--buffer-size=2MiB", "b.txt"]),
+    ("so101-buffer-size-bad", "strict", "", "LC_ALL=C", "", ["--buffer-size=bad"]),
+    ("so102-compress-program-empty", "strict", "printf 'b\\na\\n' > b.txt", "LC_ALL=C", "",
+     ["--compress-program=", "b.txt"]),
+    ("so103-temporary-directory-unused", "strict", "printf 'b\\na\\n' > b.txt", "LC_ALL=C", "",
+     ["--temporary-directory=missing", "b.txt"]),
     # --debug annotation is still a tracked gap (no GNU shape yet); keep the
     # record-only row until the annotation port lands.
     ("so76-debug-annotation", "note", "printf 'b\\na\\n' > sdg", "LC_ALL=C", "", ["--debug", "sdg"]),

@@ -1357,40 +1357,28 @@ fn apply_check_word(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg, word: &str) -> Option
     }
 }
 
-/// xstrtol_fatal-shaped diagnostics for -S/--buffer-size (probed p5:
-/// "-S1X" -> "invalid suffix in -S argument '1X'").
-fn apply_buffer_size(ctx: &Ctx, io: &mut Io, optname: &str, value: &str) -> Option<u32> {
-    match parse_size_arg(value) {
-        Ok(()) => None,
-        Err("invalid") => Some(
-            opt_err(
-                ctx,
-                io,
-                &format!("invalid {optname} argument {}", sq(value)),
-            )
-            .unwrap(),
-        ),
-        Err("suffix") => Some(
-            opt_err(
-                ctx,
-                io,
-                &format!("invalid suffix in {optname} argument {}", sq(value)),
-            )
-            .unwrap(),
-        ),
-        Err(_) => Some(
-            opt_err(
-                ctx,
-                io,
-                &format!("{optname} argument {} too large", sq(value)),
-            )
-            .unwrap(),
-        ),
-    }
+/// xstrtol_fatal-shaped diagnostics for -S/--buffer-size (probed p3:
+/// "-S1X" -> "invalid suffix in -S argument '1X'"). GNU's xstrtol path
+/// prints no "Try ... --help" tail, so these use a bare diagnostic.
+fn apply_buffer_size(_ctx: &Ctx, io: &mut Io, optname: &str, value: &str) -> Option<u32> {
+    let msg = match parse_size_arg(value) {
+        Ok(()) => return None,
+        Err("invalid") => format!("invalid {optname} argument {}", sq(value)),
+        Err("suffix") => format!("invalid suffix in {optname} argument {}", sq(value)),
+        Err(_) => format!("{optname} argument {} too large", sq(value)),
+    };
+    let _ = writeln!(io.stderr, "sort: {msg}");
+    Some(2)
 }
 
-/// specify_nmerge: invalid, minimum-2, or too large (rc 2 each).
-fn apply_batch_size(ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
+/// GNU caps --batch-size at RLIMIT_NOFILE - 3 (sort.c specify_nmerge).
+/// Windows has no rlimit; the 1.x applet used the MSYS2/Cygwin OPEN_MAX
+/// analogue (3200), so the bound is 3197 (MIGRATION §6).
+const MAX_BATCH_SIZE_HINT: usize = 3200 - 3;
+
+/// specify_nmerge: invalid, minimum-2, or above the open-file budget.
+/// The rlimit path also omits the usage tail (probed p7).
+fn apply_batch_size(_ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
     let parsed = parse_field_count(value);
     match parsed {
         Some((n, rest)) if rest.is_empty() => {
@@ -1401,39 +1389,53 @@ fn apply_batch_size(ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
                     sq(value)
                 );
                 let _ = writeln!(io.stderr, "sort: minimum --batch-size argument is '2'");
-                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "sort"));
+                return Some(2);
+            }
+            if n > MAX_BATCH_SIZE_HINT {
+                let _ = writeln!(
+                    io.stderr,
+                    "sort: --batch-size argument {} too large",
+                    sq(value)
+                );
+                let _ = writeln!(
+                    io.stderr,
+                    "sort: maximum --batch-size argument with current rlimit is {}",
+                    MAX_BATCH_SIZE_HINT
+                );
                 return Some(2);
             }
             None
         }
-        _ => Some(
-            opt_err(
-                ctx,
-                io,
-                &format!("invalid --batch-size argument {}", sq(value)),
-            )
-            .unwrap(),
-        ),
+        _ => {
+            let _ = writeln!(
+                io.stderr,
+                "sort: invalid --batch-size argument {}",
+                sq(value)
+            );
+            Some(2)
+        }
     }
 }
 
-/// specify_nthreads: 0 is rejected with GNU's wording (probed p5).
-fn apply_parallel(ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
+/// specify_nthreads: 0 is rejected with GNU's wording (probed p7; no usage
+/// tail).
+fn apply_parallel(_ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
     match parse_field_count(value) {
         Some((n, rest)) if rest.is_empty() => {
             if n == 0 {
-                return Some(opt_err(ctx, io, "number in parallel must be nonzero").unwrap());
+                let _ = writeln!(io.stderr, "sort: number in parallel must be nonzero");
+                return Some(2);
             }
             None
         }
-        _ => Some(
-            opt_err(
-                ctx,
-                io,
-                &format!("invalid --parallel argument {}", sq(value)),
-            )
-            .unwrap(),
-        ),
+        _ => {
+            let _ = writeln!(
+                io.stderr,
+                "sort: invalid --parallel argument {}",
+                sq(value)
+            );
+            Some(2)
+        }
     }
 }
 
@@ -3555,6 +3557,8 @@ mod tests {
         let (r, _, err) = run(&["--parallel=0"], "x\n");
         assert_eq!(r, 2);
         assert!(err.contains("number in parallel must be nonzero"));
+        // GNU's rlimit paths print no usage tail (probed p7)
+        assert!(!err.contains("Try 'sort --help'"), "{err:?}");
         let (r, _, err) = run(&["--parallel=x"], "x\n");
         assert_eq!(r, 2);
         assert!(err.contains("invalid --parallel argument 'x'"));
@@ -3563,6 +3567,20 @@ mod tests {
         let (r, _, err) = run(&["--batch-size=0"], "x\n");
         assert_eq!(r, 2);
         assert!(err.contains("minimum --batch-size argument is '2'"));
+        assert!(!err.contains("Try 'sort --help'"), "{err:?}");
+        // above the Windows rlimit analogue (3200 - 3)
+        let (r, _, err) = run(&["--batch-size=99999"], "x\n");
+        assert_eq!(r, 2);
+        assert!(
+            err.contains("--batch-size argument '99999' too large"),
+            "{err:?}"
+        );
+        assert!(
+            err.contains("maximum --batch-size argument with current rlimit is 3197"),
+            "{err:?}"
+        );
+        // 3197 is accepted
+        expect(&["--batch-size=3197"], "b\na\n", "a\nb\n");
     }
 
     #[test]
