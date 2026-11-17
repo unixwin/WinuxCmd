@@ -3130,9 +3130,8 @@ factor_rows = [
     ("fa22-leading-zero", "strict", "", "", "", ["010"]),
     ("fa23-leading-tab", "strict", "", "", "", ["\t12"]),
     # beyond u64::MAX: GNU factors it via GMP (rc 0, big-int output); the
-    # rust2 subset rejects with rc 1 — the documented deviation, so this
-    # row is record-only (`note`), never gating.
-    ("fa24-beyond-u64", "note", "", "", "", ["18446744073709551616"]),
+    # rust2 BigUint path must match byte-for-byte, so this row gates.
+    ("fa24-beyond-u64", "strict", "", "", "", ["18446744073709551616"]),
     ("fa25-exponents", "strict", "", "", "", ["-h", "12"]),
     ("fa26-exponents-long", "strict", "", "", "", ["--exponents", "8"]),
     ("fa27-exponents-prime", "strict", "", "", "", ["-h", "7"]),
@@ -3147,6 +3146,21 @@ factor_rows = [
      ["--exponents=8", "12"]),
     ("fa36-bogus-short", "exit", "", "", "", ["-q", "12"]),
     ("fa37-bogus-long", "exit", "", "", "", ["--bogus", "12"]),
+    # A5: factor.c readtoken delim is "\n\t " (several tokens per line).
+    ("fa38-stdin-multi-space", "strict", "", "", "6 10 15", []),
+    ("fa39-stdin-mixed-junk", "strict", "", "", "6 x 10", []),
+    ("fa40-stdin-padded", "strict", "", "", "   6    10   ", []),
+    # A5 promoted to strict with the BigUint path (GNU/GMP shape).
+    ("fa41-stdin-beyond-u64", "strict", "", "", "18446744073709551616", []),
+    # Arbitrary-precision operands (GNU 9.4 probes, 2026-11-17).
+    ("fa42-beyond-u64-semiprime", "strict", "", "", "",
+     ["18446744073709551617"]),
+    ("fa43-beyond-u64-composite", "strict", "", "", "",
+     ["99999999999999999999999"]),
+    # GNU getopt_long abbreviation of --exponents.
+    ("fa44-exponents-abbrev", "strict", "", "", "", ["--expo", "8"]),
+    ("fa46-beyond-u64-exponents", "strict", "", "", "",
+     ["-h", "18446744073709551616"]),
 ]
 
 # `arch` — value rows are win (the machine name is platform-inherent);
