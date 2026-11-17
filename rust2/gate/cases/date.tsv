@@ -43,3 +43,16 @@ dt40-help	strict				--help
 dt41-version	strict				--version
 dt42-debug-flag-parse	strict		TZ=UTC		--debug	-d	2020-01-02 03:04:05 UTC	+%F
 dt43-permute-operand	strict		TZ=UTC		+%F_%T	-d	2020-01-02 03:04:05 UTC
+dt44-time-hhmm-military-t	strict		TZ=UTC		-u	-d	1024t	+%H:%M:%S
+dt45-time-hhmm	strict		TZ=UTC		-u	-d	1024	+%H:%M:%S
+dt46-time-colon	strict		TZ=UTC		-u	-d	17:24:00	+%H:%M:%S
+dt47-time-meridian	strict		TZ=UTC		-u	-d	3:04pm	+%H:%M:%S
+dt48-time-military-z	strict		TZ=UTC		-u	-d	1024z	+%H:%M:%S
+dt49-time-military-n	strict		TZ=UTC		-u	-d	1024n	+%H:%M:%S
+dt50-iso-t-separator	strict		TZ=UTC		-u	-d	2020-01-02T03:04:05	+%F_%T
+dt51-time-six-digits-invalid	strict		TZ=UTC		-u	-d	102400	+%F
+dt52-relative-plus-day-rc	exit		TZ=UTC		-u	-d	+1 day	+%s
+dt53-relative-tomorrow-rc	exit		TZ=UTC		-u	-d	tomorrow	+%F
+dt54-relative-next-week-rc	exit		TZ=UTC		-u	-d	next week	+%F
+dt55-relative-chain-rc	exit		TZ=UTC		-u	-d	+1 day +2 hours	+%s
+dt56-relative-month-rc	exit		TZ=UTC		-u	-d	+1 month	+%s

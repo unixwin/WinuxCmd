@@ -11,11 +11,13 @@
 //!   negative operand. An invalid operand reports
 //!   `factor: '<x>' is not a valid positive integer` on stderr, rc 1,
 //!   and processing CONTINUES with the remaining operands/stdin lines.
-//! * Stdin lines are trimmed of spaces and tabs on both ends before the
-//!   same parse; a line that trims empty is skipped without error, while
-//!   other junk fails that line and processing continues (probed:
-//!   `'\n5\n'` -> `5: 5` rc 0; `'6\r\n'` -> invalid '6\r' rc 1;
-//!   `'  5  \n'` -> 5). `\r` is NOT trimmed (probed invalid).
+//! * Stdin is tokenized like `src/factor.c:do_stdin` with `readtoken` and
+//!   `DELIM = "\n\t "`: every run of newlines/tabs/spaces separates one
+//!   NUMBER (probed: `'6 10 15\n'`, `'6\t10\t15\n'` and `'6 10\n15\n'`
+//!   all print three lines; `'6\r\n'` keeps the `\r` and reports
+//!   `'6\r'` invalid). A token that fails prints its diagnostic and
+//!   processing CONTINUES with the remaining tokens (probed `'6 x 10'`:
+//!   stdout for 6 and 10, rc 1).
 //! * Documented subset: GNU links GMP and factors arbitrary-precision
 //!   operands (`factor 18446744073709551616` prints 64 twos, rc 0;
 //!   `factor 99999999999999999999999` = 3 x 11111111111111111111111,
@@ -90,34 +92,19 @@ pub fn factor_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     if p.positionals.is_empty() {
         let mut data = Vec::new();
         if std::io::copy(&mut io.stdin, &mut data).is_err() {
-            let _ = writeln!(io.stderr, "factor: read error");
+            // factor.c:do_stdin -> error (EXIT_FAILURE, ..., "error reading input")
+            let _ = writeln!(io.stderr, "factor: error reading input");
             return Ok(1);
         }
         let err = &mut *io.stderr;
-        for line in data.split(|&b| b == b'\n') {
-            // trim spaces and tabs on both ends; empty lines are skipped
-            let trimmed: &[u8] = {
-                let mut s = line;
-                while let Some((&first, rest)) = s.split_first() {
-                    if first == b' ' || first == b'\t' {
-                        s = rest;
-                    } else {
-                        break;
-                    }
-                }
-                while let Some((&last, rest)) = s.split_last() {
-                    if last == b' ' || last == b'\t' {
-                        s = rest;
-                    } else {
-                        break;
-                    }
-                }
-                s
-            };
-            if trimmed.is_empty() {
+        // factor.c:102 `static char const DELIM[] = "\n\t ";` — readtoken
+        // skips runs of those three bytes, so any mixture of spaces, tabs
+        // and newlines is one flat token stream.
+        for token in data.split(|&b| b == b'\n' || b == b'\t' || b == b' ') {
+            if token.is_empty() {
                 continue;
             }
-            let text = String::from_utf8_lossy(trimmed).into_owned();
+            let text = String::from_utf8_lossy(token).into_owned();
             if !print_factors(out, err, &text, exponents) {
                 failed = true;
             }
@@ -473,6 +460,28 @@ mod tests {
         let (r, out, _) = run(&[], "8\n9\n");
         assert_eq!(r, 0);
         assert_eq!(out, "8: 2 2 2\n9: 3 3\n");
+        // factor.c readtoken(DELIM="\n\t "): several numbers on one line,
+        // spaces and tabs both split (probed 2026-11-17)
+        let (r, out, _) = run(&[], "6 10 15\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, "6: 2 3\n10: 2 5\n15: 3 5\n");
+        let (r, out, _) = run(&[], "6\t10\t15\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, "6: 2 3\n10: 2 5\n15: 3 5\n");
+        let (r, out, _) = run(&[], "6 10\n15\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, "6: 2 3\n10: 2 5\n15: 3 5\n");
+        let (r, out, _) = run(&[], "   6    10   \n");
+        assert_eq!(r, 0);
+        assert_eq!(out, "6: 2 3\n10: 2 5\n");
+        let (r, out, _) = run(&[], "+6 +10\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, "6: 2 3\n10: 2 5\n");
+        // a bad token fails alone; the rest of the stream continues
+        let (r, out, err) = run(&[], "6 x 10\n");
+        assert_eq!(r, 1);
+        assert_eq!(out, "6: 2 3\n10: 2 5\n");
+        assert!(err.contains("'x' is not a valid positive integer"));
         // blank lines skipped; surrounding spaces trimmed (probed)
         let (r, out, _) = run(&[], "  5  \n\n  \n7\n");
         assert_eq!(r, 0);
