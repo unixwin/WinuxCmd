@@ -3348,6 +3348,24 @@ sort_rows = [
      "printf 'c\\na\\n' > a.txt; printf 'b\\nd\\n' > b.txt; "
      "printf 'a.txt\\0' > l1.bin; printf 'b.txt\\0' > l2.bin", "LC_ALL=C", "",
      ["--files0-from", "l1.bin", "--files0-from", "l2.bin"]),
+    ("so94-random-source-order", "strict",
+     "printf 'fixed random source\\n' > seed.bin; "
+     "printf 'alpha 1\\nbravo 1\\nalpha 2\\ncharlie 1\\nbravo 2\\n' > r.txt",
+     "LC_ALL=C", "", ["-R", "--random-source=seed.bin", "-k1,1", "r.txt"]),
+    ("so95-random-source-reverse", "strict",
+     "printf 'fixed random source\\n' > seed.bin; "
+     "printf 'alpha\\nbravo\\ncharlie\\ndelta\\necho\\nfoxtrot\\n' > r2.txt",
+     "LC_ALL=C", "", ["--random-sort", "--random-source", "seed.bin", "-r", "r2.txt"]),
+    ("so96-random-source-short", "strict",
+     "printf '0123456789abcde' > s15.bin; printf 'a\\nb\\n' > r.txt", "LC_ALL=C", "",
+     ["-R", "--random-source=s15.bin", "r.txt"]),
+    ("so97-random-source-dir", "strict",
+     "mkdir sd; printf 'a\\nb\\n' > r.txt", "LC_ALL=C", "",
+     ["-R", "--random-source=sd", "r.txt"]),
+    ("so98-random-source-duplicate", "strict",
+     "printf '0123456789abcdef' > s16.bin; printf '0123456789abcdeX' > s16b.bin; "
+     "printf 'a\\nb\\n' > r.txt", "LC_ALL=C", "",
+     ["-R", "--random-source=s16.bin", "--random-source=s16b.bin", "r.txt"]),
     # --debug annotation is still a tracked gap (no GNU shape yet); keep the
     # record-only row until the annotation port lands.
     ("so76-debug-annotation", "note", "printf 'b\\na\\n' > sdg", "LC_ALL=C", "", ["--debug", "sdg"]),

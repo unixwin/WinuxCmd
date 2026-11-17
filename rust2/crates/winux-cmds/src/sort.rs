@@ -50,10 +50,12 @@
 //!   sorts before "1K"; suffix order dominates the byte value).
 //!   -M matches the 3-letter English month names case-insensitively as
 //!   a prefix (JANX -> JAN); unknown keys are all 0 and then fall to the
-//!   last-resort comparison. -R hashes the (filtered) key with FNV-1a-64
-//!   and compares hashes byte-wise; GNU shuffles per run with an MD5 of
-//!   a random seed, so the OUTPUT ORDER differs from GNU by design while
-//!   identical keys stay grouped — documented deviation (gate win rows).
+//!   last-resort comparison. -R is sort.c compare_random: MD5(seed16 ||
+//!   filtered key) byte order with the original key as the collision
+//!   tiebreak. --random-source=F seeds it with F's first 16 bytes, so a
+//!   fixed source reproduces GNU's order exactly (probed p2/p2b); without
+//!   a source the seed is zeros, keeping -R reproducible (GNU draws from
+//!   getrandom — documented deviation).
 //!   -V is the filevercmp.c filenvercmp port (Debian verrevcmp, dot-file
 //!   specials, suffix cut + second pass).
 //! * compare(): keys first; if equal (or no keys) the whole lines
@@ -80,13 +82,14 @@
 //! * Accepted-and-ignored (documented, no observable effect of the
 //!   in-memory pipeline): -S/--buffer-size (grammar validated), -T
 //!   --temporary-directory, --parallel (0 rejected like GNU),
-//!   --batch-size, --compress-program, --random-source (opened when a
-//!   random key is in effect, like GNU, but the seed bytes do not
-//!   influence our fixed FNV hash), -y (Solaris quirk), --debug
-//!   (incompatible with -c/-o like GNU; no key annotation output).
+//!   --batch-size, --compress-program, --random-source (the source is
+//!   read only when a random key is in effect, exactly like
+//!   random_md5_state_init; the seed does prefix the -R hash), -y
+//!   (Solaris quirk), --debug (incompatible with -c/-o like GNU; no key
+//!   annotation output).
 //!   POSIX2_VERSION / POSIXLY_CORRECT parsing variants are not
 //!   implemented.
-//!   -g f64 vs long double precision and the -R hash scheme are the
+//!   -g f64 vs long double precision and the no-source -R seed are the
 //!   only ordering-visible deviations.
 
 use std::ffi::OsString;
@@ -224,6 +227,11 @@ struct Cfg {
     eol: u8,
     outfile: Option<String>,
     random_source: Option<String>,
+    /// 16-byte seed hashed in front of every -R key (sort.c
+    /// random_md5_state_init); zeros when no --random-source is given, so
+    /// -R stays reproducible in the FNV-free GNU-MD5 domain only with a
+    /// source (documented deviation for the no-source case).
+    random_seed: [u8; 16],
     compress_program: Option<String>,
     /// --files0-from: NUL-separated input names replace the operands
     /// (sort.c main, FILES0_FROM_OPTION block).
@@ -245,6 +253,7 @@ impl Cfg {
             eol: b'\n',
             outfile: None,
             random_source: None,
+            random_seed: [0u8; 16],
             compress_program: None,
             files0_from: None,
             files: Vec::new(),
@@ -763,6 +772,55 @@ fn resolve_files0_from(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg) -> Option<u32> {
     None
 }
 
+/// random_md5_state_init (sort.c 2261): fill the 16-byte prefix from the
+/// named source. Without a source GNU seeds from getrandom/ISAAC; the
+/// library keeps the zero seed so -R without --random-source stays
+/// reproducible (documented deviation, MIGRATION §5).
+fn init_random_seed(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg) -> Option<u32> {
+    if !cfg.keys.iter().any(|k| k.random) {
+        return None;
+    }
+    let Some(src) = cfg.random_source.clone() else {
+        return None;
+    };
+    let native = fsutil::resolve(ctx, &src);
+    if std::fs::metadata(&native)
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+    {
+        // fopen succeeds on a directory; the 16-byte read is what fails.
+        let _ = writeln!(io.stderr, "sort: {}: read error: Is a directory", sq(&src));
+        return Some(2);
+    }
+    let mut f = match crate::fsutil::open_read_operand(ctx, &src) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = writeln!(
+                io.stderr,
+                "sort: open failed: {}: {}",
+                fsutil::quotef(&src),
+                read_reason(ctx, &src, &e)
+            );
+            return Some(2);
+        }
+    };
+    let mut seed = [0u8; 16];
+    match f.read_exact(&mut seed) {
+        Ok(()) => {
+            cfg.random_seed = seed;
+            None
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            let _ = writeln!(io.stderr, "sort: {}: end of file", sq(&src));
+            Some(2)
+        }
+        Err(_) => {
+            let _ = writeln!(io.stderr, "sort: {}: read error", sq(&src));
+            Some(2)
+        }
+    }
+}
+
 pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let (mut cfg, gkey) = match parse_args(args, ctx, io) {
         Ok(Some(pair)) => pair,
@@ -816,22 +874,12 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         ));
     }
 
-    // Random keys validate the random source eagerly (sort.c:
-    // random_md5_state_init before any input is read; probed p4:
-    // "open failed: nope-rs: ...", rc 2).
-    if cfg.keys.iter().any(|k| k.random) {
-        if let Some(src) = cfg.random_source.clone() {
-            if let Err(e) = std::fs::File::open(fsutil::resolve(ctx, &src)) {
-                let reason = read_reason(ctx, &src, &e);
-                let _ = writeln!(
-                    io.stderr,
-                    "sort: open failed: {}: {}",
-                    fsutil::quotef(&src),
-                    reason
-                );
-                return Ok(2);
-            }
-        }
+    // sort.c random_md5_state_init: only a random key consults the source,
+    // and the read happens before any input. The 16-byte seed prefixes
+    // every -R key hash (probed p2/p2b: a 15-byte source is "end of file",
+    // 16 is enough; a directory is a read error).
+    if let Some(status) = init_random_seed(ctx, io, &mut cfg) {
+        return Ok(status);
     }
 
     // checkonly branch (sort.c main): the extra-operand and -o conflicts
@@ -1572,6 +1620,7 @@ struct Cmp<'a> {
     unique: bool,
     stable: bool,
     reverse: bool,
+    random_seed: &'a [u8; 16],
 }
 
 impl<'a> Cmp<'a> {
@@ -1708,7 +1757,7 @@ impl<'a> Cmp<'a> {
                 return (getmonth(xa) - getmonth(xb)).signum();
             }
             if key.random {
-                return compare_random(xa, xb);
+                return compare_random(xa, xb, self.random_seed);
             }
             return filenvercmp(xa, xb);
         }
@@ -2296,22 +2345,138 @@ fn getmonth(s: &[u8]) -> i32 {
 }
 
 // ---------------------------------------------------------------------
-// -R: deterministic FNV-1a-64 hash (documented deviation from GNU's
-// per-run MD5-seeded shuffle)
+// -R: MD5(seed16 || key), sort.c compare_random
 // ---------------------------------------------------------------------
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
+/// Minimal MD5 (RFC 1321). sort.c seeds a struct md5_ctx with the 16
+/// random bytes and then hashes each key; copying the ctx is equivalent
+/// to hashing `seed || key` (the seed is exactly one 16-byte block-buffer
+/// prefix and no compression block has run yet).
+struct Md5 {
+    state: [u32; 4],
+    len: u64,
+    buf: [u8; 64],
+    fill: usize,
 }
 
-fn compare_random(a: &[u8], b: &[u8]) -> i32 {
-    let ha = fnv1a64(a);
-    let hb = fnv1a64(b);
+impl Md5 {
+    fn new() -> Self {
+        Md5 {
+            state: [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476],
+            len: 0,
+            buf: [0u8; 64],
+            fill: 0,
+        }
+    }
+
+    fn update(&mut self, mut data: &[u8]) {
+        self.len = self.len.wrapping_add(data.len() as u64);
+        while !data.is_empty() {
+            let take = (64 - self.fill).min(data.len());
+            self.buf[self.fill..self.fill + take].copy_from_slice(&data[..take]);
+            self.fill += take;
+            data = &data[take..];
+            if self.fill == 64 {
+                let block = self.buf;
+                self.compress(&block);
+                self.fill = 0;
+            }
+        }
+    }
+
+    fn finalize(mut self) -> [u8; 16] {
+        let bit_len = self.len.wrapping_mul(8);
+        let mut pad = Vec::with_capacity(72);
+        pad.push(0x80u8);
+        while (self.fill + pad.len()) % 64 != 56 {
+            pad.push(0);
+        }
+        pad.extend_from_slice(&bit_len.to_le_bytes());
+        // update() would re-add to len; compress directly instead.
+        let mut data = &pad[..];
+        while !data.is_empty() {
+            let take = (64 - self.fill).min(data.len());
+            self.buf[self.fill..self.fill + take].copy_from_slice(&data[..take]);
+            self.fill += take;
+            data = &data[take..];
+            if self.fill == 64 {
+                let block = self.buf;
+                self.compress(&block);
+                self.fill = 0;
+            }
+        }
+        let mut out = [0u8; 16];
+        for (i, w) in self.state.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        out
+    }
+
+    fn compress(&mut self, block: &[u8; 64]) {
+        const S: [u32; 64] = [
+            7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14,
+            20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11,
+            16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+        ];
+        const K: [u32; 64] = [
+            0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+            0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+            0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+            0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+            0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+            0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+            0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+            0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+            0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+            0xeb86d391,
+        ];
+        let mut m = [0u32; 16];
+        for (i, w) in m.iter_mut().enumerate() {
+            *w = u32::from_le_bytes([
+                block[i * 4],
+                block[i * 4 + 1],
+                block[i * 4 + 2],
+                block[i * 4 + 3],
+            ]);
+        }
+        let [mut a, mut b, mut c, mut d] = self.state;
+        for i in 0..64 {
+            let (f, g) = match i {
+                0..=15 => ((b & c) | (!b & d), i),
+                16..=31 => ((d & b) | (!d & c), (5 * i + 1) % 16),
+                32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
+                _ => (c ^ (b | !d), (7 * i) % 16),
+            };
+            let tmp = d;
+            d = c;
+            c = b;
+            b = b.wrapping_add(
+                a.wrapping_add(f)
+                    .wrapping_add(K[i])
+                    .wrapping_add(m[g])
+                    .rotate_left(S[i]),
+            );
+            a = tmp;
+        }
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+    }
+}
+
+fn md5_seeded(seed: &[u8; 16], key: &[u8]) -> [u8; 16] {
+    let mut h = Md5::new();
+    h.update(seed);
+    h.update(key);
+    h.finalize()
+}
+
+/// sort.c compare_random: MD5(seed || key) byte order, then the original
+/// key bytes as the checksum-collision tiebreak.
+fn compare_random(a: &[u8], b: &[u8], seed: &[u8; 16]) -> i32 {
+    let ha = md5_seeded(seed, a);
+    let hb = md5_seeded(seed, b);
     if ha != hb {
         return if ha < hb { -1 } else { 1 };
     }
@@ -2711,6 +2876,7 @@ fn run_sort(cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> CmdResult {
         unique: cfg.unique,
         stable: cfg.stable,
         reverse: cfg.reverse,
+        random_seed: &cfg.random_seed,
     };
 
     let result: Result<Vec<usize>, u32> = (|| {
@@ -2879,6 +3045,7 @@ fn run_check(cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> CmdResult {
         unique: cfg.unique,
         stable: cfg.stable,
         reverse: cfg.reverse,
+        random_seed: &cfg.random_seed,
     };
     let mut ordered = true;
     for i in 1..lines.len() {
@@ -3424,6 +3591,75 @@ mod tests {
         assert!(err.contains("open failed: nope-rs: No such file or directory"));
         // no random key: the source is never touched
         expect(&["--random-source=nope-rs"], "b\na\n", "a\nb\n");
+    }
+
+    #[test]
+    fn md5_vectors() {
+        use super::{md5_seeded, Md5};
+        let hex = |d: [u8; 16]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let mut h = Md5::new();
+        h.update(b"");
+        assert_eq!(hex(h.finalize()), "d41d8cd98f00b204e9800998ecf8427e");
+        let mut h = Md5::new();
+        h.update(b"abc");
+        assert_eq!(hex(h.finalize()), "900150983cd24fb0d6963f7d28e17f72");
+        // the seed is hashed first, exactly like sort.c's live ctx copy
+        let seed = *b"0123456789abcdef";
+        assert_eq!(hex(md5_seeded(&seed, b"")), "4032af8d61035123906e58e067140cc5");
+    }
+
+    #[test]
+    fn random_source_seeds_gnu_md5_order() {
+        // GNU 9.4, seed = first 16 bytes of "fixed random source\n"
+        // (sort-probes/p2-random-source.out)
+        let (r, out, err) = run_files(
+            &["-R", "--random-source=seed.bin", "-k1,1", "r.txt"],
+            &[
+                ("seed.bin", "fixed random source\n"),
+                (
+                    "r.txt",
+                    "alpha 1\nbravo 1\nalpha 2\ncharlie 1\nbravo 2\n",
+                ),
+            ],
+            "",
+        );
+        assert_eq!(r, 0, "{err:?}");
+        assert_eq!(
+            out,
+            "bravo 1\nbravo 2\nalpha 1\nalpha 2\ncharlie 1\n"
+        );
+        // the reverse comparison uses the same hash order
+        let (r, out, err) = run_files(
+            &["--random-sort", "--random-source", "seed.bin", "-r", "r2.txt"],
+            &[
+                ("seed.bin", "fixed random source\n"),
+                ("r2.txt", "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\n"),
+            ],
+            "",
+        );
+        assert_eq!(r, 0, "{err:?}");
+        assert_eq!(
+            out,
+            "delta\ncharlie\necho\nalpha\nfoxtrot\nbravo\n"
+        );
+    }
+
+    #[test]
+    fn random_source_short_file_is_eof() {
+        // probed p2b: 15 bytes -> end of file, 16 bytes is enough
+        let (r, _, err) = run_files(
+            &["-R", "--random-source=seed.bin"],
+            &[("seed.bin", "0123456789abcde")],
+            "a\nb\n",
+        );
+        assert_eq!(r, 2);
+        assert!(err.contains("sort: 'seed.bin': end of file"), "{err:?}");
+        let (r, _, err) = run_files(
+            &["-R", "--random-source=seed.bin"],
+            &[("seed.bin", "0123456789abcdef")],
+            "a\nb\n",
+        );
+        assert_eq!(r, 0, "{err:?}");
     }
 
     #[test]

@@ -692,8 +692,10 @@ TEST(sort, sort_random_sort_uses_source_and_groups_equal_keys) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
+  // GNU 9.4 order for this seed (sort-probes/p2-random-source.out):
+  // MD5(seed16 || key) byte order, identical keys stay grouped.
   EXPECT_EQ_TEXT(r.stdout_text,
-                 "charlie 1\nbravo 1\nbravo 2\nalpha 1\nalpha 2\n");
+                 "bravo 1\nbravo 2\nalpha 1\nalpha 2\ncharlie 1\n");
 }
 
 TEST(sort, sort_random_sort_reverse_writes_output_file) {
@@ -709,8 +711,32 @@ TEST(sort, sort_random_sort_reverse_writes_output_file) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "");
+  // GNU 9.4 order, reversed (sort-probes/p2-random-source.out).
   EXPECT_EQ_TEXT(tmp.read("out.txt"),
-                 "echo\ndelta\nfoxtrot\nalpha\nbravo\ncharlie\n");
+                 "delta\ncharlie\necho\nalpha\nfoxtrot\nbravo\n");
+}
+
+TEST(sort, sort_random_source_requires_sixteen_bytes) {
+  TempDir tmp;
+  tmp.write("s15.bin", "0123456789abcde");  // 15 bytes
+  tmp.write("s16.bin", "0123456789abcdef");  // exactly 16
+  tmp.write("r.txt", "a\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sort.exe", {L"-R", L"--random-source", L"s15.bin", L"r.txt"});
+  auto short_source = p.run();
+
+  // GNU 9.4: sort: 's15.bin': end of file (probed p2b)
+  EXPECT_EQ(short_source.exit_code, 2);
+  EXPECT_TRUE(short_source.stderr_text.find("sort: 's15.bin': end of file") !=
+              std::string::npos);
+
+  Pipeline exact;
+  exact.set_cwd(tmp.wpath());
+  exact.add(L"sort.exe", {L"-R", L"--random-source", L"s16.bin", L"r.txt"});
+  auto exact_source = exact.run();
+  EXPECT_EQ(exact_source.exit_code, 0);
 }
 
 TEST(sort, sort_merge_sorted_inputs) {
