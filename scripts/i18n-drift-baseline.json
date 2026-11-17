@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "recorded_at": "2026-11-17T02:49:59.881492+00:00",
+  "recorded_at": "2026-11-17T07:55:15.754925+00:00",
   "note": "Pre-existing drift between master source extraction and the published locale catalogs, recorded when the drift gate landed (issue #1127 P3). May only shrink as translation sync batches land; growth in a PR must be deliberate and visible here.",
   "locales": {
     "zh-CN": {
@@ -32,7 +32,9 @@
         "command.who.error.unsupported_option",
         "legacy.17e5fbc96c349de6",
         "legacy.2cf0ef73a2b4fbb6",
+        "legacy.759c78daf388ebe9",
         "legacy.83bd259766316c87",
+        "legacy.93ae844755f04183",
         "legacy.bd285103ff1f77a2",
         "legacy.efd6313399c13c5d",
         "legacy.f68e64aebbf9716b"
