@@ -3598,24 +3598,62 @@ fn should_deref(deref: Deref, fd: &Fd, command_line: bool) -> bool {
     }
 }
 
+/// Resolve a stored link target to a probe spelling: absolute targets stay
+/// as spelled (slashes normalized), relative ones join the link's parent.
+fn link_target_path(path: &str, target: &str) -> String {
+    if std::path::Path::new(target).is_absolute() {
+        normalize_slashes(target)
+    } else {
+        let parent = std::path::Path::new(path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        normalize_slashes(&join_path(&parent, target))
+    }
+}
+
+/// Drop a \\?\ / \\?\UNC\ prefix so the spelling can go back through the
+/// operand layer (`api_path` re-adds the extended form).
+fn native_spelling(p: &str) -> String {
+    for pre in [r"\\?\UNC\", r"\??\UNC\"] {
+        if let Some(rest) = p.strip_prefix(pre) {
+            return format!(r"\\{rest}");
+        }
+    }
+    for pre in [r"\\?\", r"\??\"] {
+        if let Some(rest) = p.strip_prefix(pre) {
+            return rest.to_string();
+        }
+    }
+    p.to_string()
+}
+
 /// Canonicalize through the filesystem (the deref probe): returns the
-/// resolved Fd for the TARGET, or None when the link dangles.
+/// resolved Fd for the TARGET plus the target's probe spelling, or None
+/// when the link dangles.
 fn dereferenced_fd(ctx: &Ctx, path: &str, orig: &Fd) -> Option<(Fd, String)> {
+    // WSL's LX reparse point (0xA000001D) is invisible to Win32's link
+    // traversal: canonicalize() fails even though the stored target
+    // exists, so -L/-H/-R and the default command-line symlink-to-dir
+    // deref could not answer (#1640/#1642). Read the payload and probe
+    // the target directly.
+    #[cfg(windows)]
+    {
+        if orig.tag == TAG_LX_SYMLINK {
+            let target = plat::read_reparse_target(&api_path(ctx, path))?;
+            let resolved = link_target_path(path, &target);
+            let ext = api_path(ctx, &resolved);
+            let fd = plat::attributes_ex(&ext).or_else(|| plat::find_first(&ext))?;
+            return Some((fd, resolved));
+        }
+    }
     let resolved = std::fs::canonicalize(api_path(ctx, path))
         .ok()
-        .map(|p| p.to_string_lossy().into_owned())?;
-    let ext = if resolved.starts_with(r"\\?\") {
-        resolved.clone()
-    } else {
-        api_path(ctx, &resolved)
-    };
+        .map(|p| native_spelling(&p.to_string_lossy()))?;
+    let ext = api_path(ctx, &resolved);
     let fd = plat::attributes_ex(&ext).or_else(|| plat::find_first(&ext))?;
-    let name = std::path::Path::new(&resolved)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
     let _ = orig;
-    Some((fd, name))
+    Some((fd, resolved))
 }
 
 /// Effective display metadata: the lstat'd find_data unless the deref
