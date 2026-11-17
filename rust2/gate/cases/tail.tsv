@@ -105,3 +105,4 @@ tl102-use-polling-retired	strict	printf '1\n2\n3\n4\n5\n' > f			--use-polling	-n
 tl103-F-then-follow-descriptor	strict	printf '1\n2\n3\n4\n5\n' > f			-F	--follow=descriptor	--pid=2147483647	f
 tl104-follow-descriptor-then-F	strict	printf '1\n2\n3\n4\n5\n' > f			--follow=descriptor	-F	--pid=2147483647	f
 tl105-f-retry-missing-only	strict				-f	--retry	--pid=2147483647	missing
+tl106-wildcard-literal	strict	printf 'l1\nl2\nl3\n' > file1.txt; printf 'l4\nl5\nl6\n' > file2.txt	LC_ALL=C		-n	1	*.txt

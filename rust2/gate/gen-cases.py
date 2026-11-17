@@ -2338,6 +2338,11 @@ tail_rows = [
     # initial-open failure as the run status (tail.c main's `ok`).
     ("tl105-f-retry-missing-only", "strict", "", "", "",
      ["-f", "--retry", "--pid=2147483647", "missing"]),
+    # GNU tail never globs: '*.txt' stays a literal operand and fails
+    # with cannot-open (probed WSL 9.4, p-tail-glob.sh).
+    ("tl106-wildcard-literal", "strict",
+     "printf 'l1\nl2\nl3\n' > file1.txt; printf 'l4\nl5\nl6\n' > file2.txt",
+     "LC_ALL=C", "", ["-n", "1", "*.txt"]),
 ]
 
 cut_rows = [

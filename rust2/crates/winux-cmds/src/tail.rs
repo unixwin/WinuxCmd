@@ -1038,10 +1038,26 @@ pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMe
     let files: Vec<String> = if p.positionals.is_empty() {
         vec!["-".to_string()]
     } else {
-        p.positionals
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
+        // 1.x expanded operands via utils/wildcard.cppm; GNU tail never
+        // globs — the surrounding shell does — so expansion happens only
+        // under the direct-invocation contract WINUX_SHELL_GLOB=native
+        // (the mv/ls/sort shape); unmatched patterns and literal existing
+        // paths stay literal through crate::glob.
+        let native_glob = winux_core::win32_env_get(ctx.env, "WINUX_SHELL_GLOB")
+            .map(|v| v.to_string_lossy() == "native")
+            .unwrap_or(false);
+        let mut files = Vec::new();
+        for a in &p.positionals {
+            let arg = a.to_string_lossy().into_owned();
+            if native_glob && crate::glob::contains_wildcard(&arg) {
+                if let Some(matches) = crate::glob::glob_expand_in(ctx, &arg) {
+                    files.extend(matches);
+                    continue;
+                }
+            }
+            files.push(arg);
+        }
+        files
     };
     let found_hyphen = files.iter().any(|f| f == "-");
     // when following by name there must be a name
