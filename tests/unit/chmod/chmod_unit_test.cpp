@@ -232,7 +232,17 @@ TEST(chmod, chmod_wildcard_multiple_files) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("chmod wildcard output", r.stdout_text);
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] chmod receives shell-expanded operands; the program itself treats
+  // them literally (the §3 cp precedent). Probe WSL 9.4:
+  //   chmod 644 '*.txt' -> chmod: cannot access '*.txt': No such file or
+  //   directory                                             (rc 1)
+  // The 1.x applet glob-expanded inside the command; retired in 2.0.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("chmod: cannot access '*.txt': No such file or "
+                               "directory"),
+            std::string::npos);
+  EXPECT_FALSE(is_readonly(tmp.path / "a.txt"));
+  EXPECT_FALSE(is_readonly(tmp.path / "b.txt"));
 }
 
 TEST(chmod, chmod_preserve_root_recursive_root_failsafe) {
