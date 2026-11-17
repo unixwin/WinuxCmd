@@ -894,8 +894,12 @@ TEST(sort, sort_files0_from_reads_nul_terminated_names) {
   EXPECT_EQ_TEXT(r.stdout_text, "a\nb\nc\nd\n");
 }
 
-TEST(sort, sort_uniq_pipeline_accepts_utf16le_stdin_with_bom) {
-  // Simulate PowerShell native pipeline output with UTF-16LE and per-line BOM.
+TEST(sort, sort_uniq_pipeline_utf16le_stdin_sorted_as_raw_bytes) {
+  // GNU 9.4 does not transcode: UTF-16LE stdin is sorted as raw bytes
+  // (sort-probes/p6-utf16.out, p10-utf16-pipe.sh). The 1.x applet decoded
+  // via read_text_stream; that decode retires with the rust2 wire (same
+  // byte-faithful contract as the wired grep). The expected bytes below
+  // are the GNU `sort | uniq -c` capture verbatim (p10b-utf16-pipe2.sh).
   std::u16string u16 = u"\ufeffdog\r\n\ufeffdog\r\n\ufeffcat\r\n";
   std::string bytes;
   bytes.reserve(u16.size() * 2);
@@ -911,8 +915,13 @@ TEST(sort, sort_uniq_pipeline_accepts_utf16le_stdin_with_bom) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("1 cat") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("2 dog") != std::string::npos);
+  const std::string gnu_pipe(
+      "      1 \0\n"
+      "      1 \0\377\376c\0a\0t\0\r\0\n"
+      "      1 \0\377\376d\0o\0g\0\r\0\n"
+      "      1 \377\376d\0o\0g\0\r\0\n",
+      69);
+  EXPECT_EQ(r.stdout_text, gnu_pipe);
 }
 
 TEST(sort, sort_preserves_nul_dense_input_without_encoding_bom) {
