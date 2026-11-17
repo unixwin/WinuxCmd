@@ -324,9 +324,12 @@ TEST(shuf, shuf_missing_input_reports_no_such_file) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // GNU shuf.c:530 reopens the operand and reports `quotef(name)` + errno:
+  // "shuf: missing.txt: No such file or directory" (WSL coreutils 9.4 probe,
+  // 2026-11-17). The 1.x applet wrapped it in "cannot open ... for reading".
   EXPECT_TRUE(r.stderr_text.find(
-                  "shuf: cannot open 'missing.txt' for reading: No such file "
-                  "or directory") != std::string::npos);
+                  "shuf: missing.txt: No such file or directory") !=
+              std::string::npos);
 }
 
 TEST(shuf, shuf_directory_input_reports_is_a_directory) {
@@ -340,8 +343,11 @@ TEST(shuf, shuf_directory_input_reports_is_a_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "shuf: cannot open 'indir' for reading: Is a directory") !=
+  // On POSIX the directory opens and the failure comes from the first read,
+  // so GNU reports the bare "read error: Is a directory" (shuf.c:280; WSL
+  // coreutils 9.4 probe, 2026-11-17), not the 1.x "cannot open 'indir' for
+  // reading: Is a directory".
+  EXPECT_TRUE(r.stderr_text.find("shuf: read error: Is a directory") !=
               std::string::npos);
 }
 
