@@ -46,3 +46,11 @@ ck43-version	strict				--version
 ck44-blake2b-l8	strict	printf '123456789' > ck9			-a	blake2b	-l	8	ck9
 ck45-multi-two-files-sha	strict	printf abc > a; printf ab > b			-a	sha256	a	b
 ck46-check-base64-ok	strict	printf '123456789' > ck9; printf 'SHA256 (ck9) = FeKw08M4keuw8e9gnsQZQgwg4yDOlMZfvIwzEkSOsiU=\n' > b64.lst			-c	b64.lst
+ck47-md5-tagged	strict	printf 'abc' > f			-a	md5	f
+ck48-sha1-tagged	strict	printf 'abc' > f			-a	sha1	f
+ck49-md5-untagged	strict	printf 'abc' > f			-a	md5	--untagged	f
+ck50-check-md5-ok	strict	printf 'abc' > f; printf 'MD5 (f) = 900150983cd24fb0d6963f7d28e17f72\n' > m.lst			-c	m.lst
+ck51-check-sha1-ok	strict	printf 'abc' > f; printf 'SHA1 (f) = a9993e364706816aba3e25717850c26c9cd0d89d\n' > s.lst			-c	s.lst
+ck52-check-md5-failed	strict	printf 'abc' > f; printf 'MD5 (f) = 00000000000000000000000000000000\n' > b.lst			-c	b.lst
+ck53-check-md5-lower-tag	strict	printf 'abc' > f; printf 'md5 (f) = 900150983cd24fb0d6963f7d28e17f72\n' > l.lst			-c	l.lst
+ck54-md5-base64	strict	printf 'abc' > f			-a	md5	--base64	f
