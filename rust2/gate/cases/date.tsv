@@ -39,7 +39,9 @@ dt36-long-date-form	strict		TZ=UTC		--date=2020-01-02 03:04:05	+%F
 dt37-tz-est-winter-zone-suffix	strict		TZ=EST5EDT		-d	2020-01-02 03:04:05 UTC	+%F_%T_%z
 dt38-set-refused	note				-s	2020-01-02 03:04:05
 dt39-ref-file	strict	touch -d @1577836800 ref	TZ=UTC		-r	ref	+%F_%T
-dt40-help	strict				--help
-dt41-version	strict				--version
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+dt40-help	win				--help
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+dt41-version	win				--version
 dt42-debug-flag-parse	strict		TZ=UTC		--debug	-d	2020-01-02 03:04:05 UTC	+%F
 dt43-permute-operand	strict		TZ=UTC		+%F_%T	-d	2020-01-02 03:04:05 UTC
