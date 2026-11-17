@@ -54,3 +54,9 @@ ck51-check-sha1-ok	strict	printf 'abc' > f; printf 'SHA1 (f) = a9993e364706816ab
 ck52-check-md5-failed	strict	printf 'abc' > f; printf 'MD5 (f) = 00000000000000000000000000000000\n' > b.lst			-c	b.lst
 ck53-check-md5-lower-tag	strict	printf 'abc' > f; printf 'md5 (f) = 900150983cd24fb0d6963f7d28e17f72\n' > l.lst			-c	l.lst
 ck54-md5-base64	strict	printf 'abc' > f			-a	md5	--base64	f
+ck55-check-malformed-default	strict	printf 'hello' > good.txt; printf 'bad-line\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n' > mixed.lst			-c	mixed.lst
+ck56-check-malformed-warn	strict	printf 'hello' > good.txt; printf 'bad-line\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n' > mixed.lst			--warn	-c	mixed.lst
+ck57-check-malformed-strict	strict	printf 'hello' > good.txt; printf 'bad-line\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n' > mixed.lst			--strict	-c	mixed.lst
+ck58-check-malformed-status	strict	printf 'hello' > good.txt; printf 'bad-line\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n' > mixed.lst			--status	-c	mixed.lst
+ck59-check-malformed-plural	strict	printf 'hello' > good.txt; printf 'bad-line\nbad-two\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n' > mixed2.lst			--strict	-c	mixed2.lst
+ck60-check-comments-empty	strict	printf 'hello' > good.txt; printf '# note\n\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n' > comments.lst			-c	comments.lst
