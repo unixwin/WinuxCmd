@@ -95,8 +95,10 @@ xa92-ambiguous-max	strict				--max
 xa93-abbrev-max-args	strict			a b	--max-a=1
 xa94-null-with-arg	strict				--null=x
 xa95-slot-var-equals	strict			a	--process-slot-var=A=B
-xa96-help	strict				--help
-xa97-version	strict				--version
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+xa96-help	win				--help
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+xa97-version	win				--version
 xa98-help-then-bogus	strict				--help	--bogus
 xa99-dashdash	strict			a	--	echo	x
 xa100-options-stop-at-command	strict			a	echo	-n
