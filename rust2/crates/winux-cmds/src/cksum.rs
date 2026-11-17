@@ -304,6 +304,7 @@ fn emit_record(
     bytes: &[u8],
     name: Option<&str>,
     untagged: bool,
+    binary: bool,
     raw: bool,
     base64: bool,
     end: LineEnd,
@@ -353,8 +354,9 @@ fn emit_record(
                 let enc = b64core::encode(&codec, &digest, 0);
                 let enc = String::from_utf8_lossy(&enc).into_owned();
                 if untagged {
+                    let marker = if binary { '*' } else { ' ' };
                     match name {
-                        Some(n) => format!("{enc}  {n}"),
+                        Some(n) => format!("{enc} {marker}{n}"),
                         None => enc,
                     }
                 } else {
@@ -366,8 +368,9 @@ fn emit_record(
             } else {
                 let hexd = digest::hex(&digest);
                 if untagged {
+                    let marker = if binary { '*' } else { ' ' };
                     match name {
-                        Some(n) => format!("{hexd}  {n}"),
+                        Some(n) => format!("{hexd} {marker}{n}"),
                         None => hexd,
                     }
                 } else {
@@ -397,6 +400,27 @@ fn invalid_algorithm_message(name: &str) -> String {
         m.push_str(&format!("\n  - '{a}'"));
     }
     m
+}
+
+/// Resolve GNU's sequential output-mode state: `-b`/`-t` are a last-wins
+/// pair, `--tag`/`--untagged` likewise, and `--tag` also forces binary mode
+/// (digest.c:main case TAG_OPTION `{ prefix_tag = true; binary = 1; }`).
+fn output_mode(p: &argopt::Parsed) -> (bool, Option<bool>) {
+    let mut prefix_tag = true; // cksum defaults to tagged output
+    let mut binary: Option<bool> = None; // GNU's `int binary = -1`
+    for key in &p.order {
+        match key.as_str() {
+            "binary" => binary = Some(true),
+            "text" => binary = Some(false),
+            "tag" => {
+                prefix_tag = true;
+                binary = Some(true);
+            }
+            "untagged" => prefix_tag = false,
+            _ => {}
+        }
+    }
+    (prefix_tag, binary)
 }
 
 pub fn cksum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
@@ -430,6 +454,7 @@ pub fn cksum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         });
     }
 
+    let explicit_algo = p.has("algorithm");
     let mut algo = Algo::Crc;
     if let Some(name) = p.value_of("algorithm") {
         match parse_algorithm(name) {
@@ -440,6 +465,8 @@ pub fn cksum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
         }
     }
+
+    let mut bits = algorithm_bits(algo);
     if p.has("length") {
         // probed: -l is blake2b-only; the error precedes any file work
         if algo != Algo::Blake2b {
@@ -450,7 +477,7 @@ pub fn cksum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             return Ok(1);
         }
         match parse_bits(p.value_of("length").unwrap_or("")) {
-            Ok(bits) => return Ok(run_files(&p, io, ctx, algo, bits)),
+            Ok(parsed) => bits = if parsed == 0 { 512 } else { parsed },
             Err(msgs) => {
                 for m in msgs {
                     let _ = writeln!(io.stderr, "cksum: {m}");
@@ -459,7 +486,77 @@ pub fn cksum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
         }
     }
-    Ok(run_files(&p, io, ctx, algo, algorithm_bits(algo)))
+
+    let (prefix_tag, binary) = output_mode(&p);
+    let fail = |io: &mut Io, msg: &str| -> u32 {
+        let _ = winux_core::usage_error(ctx, io, "cksum", msg);
+        1
+    };
+
+    // digest.c:main validation order: check/algorithm combinations, then the
+    // base64/raw pair, then the text/tagged conflict, then verification-only
+    // switches.
+    let do_check = p.has("check");
+    if do_check && explicit_algo && matches!(algo, Algo::Crc | Algo::Bsd | Algo::Sysv) {
+        return Ok(fail(
+            io,
+            "--check is not supported with --algorithm={bsd,sysv,crc}",
+        ));
+    }
+    if p.has("base64") && p.has("raw") {
+        return Ok(fail(io, "--base64 and --raw are mutually exclusive"));
+    }
+    if prefix_tag && binary == Some(false) {
+        return Ok(fail(io, "--text mode is only supported with --untagged"));
+    }
+    if do_check {
+        if p.has("zero") {
+            return Ok(fail(
+                io,
+                "the --zero option is not supported when verifying checksums",
+            ));
+        }
+        if binary.is_some() {
+            return Ok(fail(
+                io,
+                "the --binary and --text options are meaningless when verifying checksums",
+            ));
+        }
+    } else {
+        if p.has("ignore-missing") {
+            return Ok(fail(
+                io,
+                "the --ignore-missing option is meaningful only when verifying checksums",
+            ));
+        }
+        if p.has("status") {
+            return Ok(fail(
+                io,
+                "the --status option is meaningful only when verifying checksums",
+            ));
+        }
+        if p.has("warn") {
+            return Ok(fail(
+                io,
+                "the --warn option is meaningful only when verifying checksums",
+            ));
+        }
+        if p.has("quiet") {
+            return Ok(fail(
+                io,
+                "the --quiet option is meaningful only when verifying checksums",
+            ));
+        }
+        if p.has("strict") {
+            return Ok(fail(
+                io,
+                "the --strict option is meaningful only when verifying checksums",
+            ));
+        }
+    }
+
+    let binary_mode = binary.unwrap_or(false);
+    Ok(run_files(&p, io, ctx, algo, bits, prefix_tag, binary_mode))
 }
 
 /// -l parse: non-numeric/non-multiple-of-8/over-512 diagnostics, probed
@@ -490,8 +587,16 @@ fn parse_bits(raw: &str) -> Result<usize, Vec<String>> {
     }
 }
 
-fn run_files(p: &argopt::Parsed, io: &mut Io, ctx: &Ctx, algo: Algo, bits: usize) -> u32 {
-    let untagged = p.has("untagged");
+fn run_files(
+    p: &argopt::Parsed,
+    io: &mut Io,
+    ctx: &Ctx,
+    algo: Algo,
+    bits: usize,
+    prefix_tag: bool,
+    binary: bool,
+) -> u32 {
+    let untagged = !prefix_tag;
     let zero = p.has("zero");
     let raw = p.has("raw");
     let base64 = p.has("base64");
@@ -526,7 +631,9 @@ fn run_files(p: &argopt::Parsed, io: &mut Io, ctx: &Ctx, algo: Algo, bits: usize
         } else {
             None
         };
-        emit_record(io, algo, bits, &bytes, name, untagged, raw, base64, end);
+        emit_record(
+            io, algo, bits, &bytes, name, untagged, binary, raw, base64, end,
+        );
     }
     if failed {
         1
@@ -1511,6 +1618,50 @@ mod tests {
         assert!(err.contains("WARNING: 1 computed checksum did NOT match"));
     }
 
+    #[test]
+    fn output_mode_last_wins_issue1362() {
+        // -b/-t are last-wins; --tag also forces binary mode; -t with the
+        // default tagged output is refused (digest.c:1416-1450,1520-1531).
+        let tag = "6137cde4893c59f76f005a8123d8e8e6";
+        let (r, out, _) = run3(&["-a", "md5", "-t", "-b"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, format!("MD5 (-) = {tag}\n"));
+
+        let (r, out, _) = run3(&["-a", "md5", "--untagged", "-t", "-b"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, format!("{tag} *-\n"));
+
+        let (r, out, _) = run3(&["-a", "md5", "--untagged", "-b", "-t"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, format!("{tag}  -\n"));
+
+        let (r, out, err) = run3(&["-a", "md5", "-b", "-t"], "data\n");
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert_eq!(
+            err,
+            "cksum: --text mode is only supported with --untagged\n\
+             Try 'cksum --help' for more information.\n"
+        );
+
+        // --tag leaves binary=1 behind, so a later --untagged prints '*'
+        // (probed `cksum -a md5 --tag --untagged f`).
+        let (r, out, _) = run3(&["-a", "md5", "--tag", "--untagged"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, format!("{tag} *-\n"));
+
+        let (r, out, _) = run3(&["-a", "md5", "--untagged", "--tag"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, format!("MD5 (-) = {tag}\n"));
+
+        // CRC ignores the marker, but -t still conflicts with tagged mode.
+        let (r, out, _) = run3(&["--untagged", "-t"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, "2797087131 5\n");
+        let (r, _, err) = run3(&["-t"], "data\n");
+        assert_eq!(r, 1);
+        assert!(err.contains("--text mode is only supported with --untagged"));
+    }
 
     #[test]
     fn check_switch_order_matches_gnu() {
@@ -1533,4 +1684,57 @@ mod tests {
         assert!(err.is_empty());
     }
 
+    #[test]
+    fn verification_only_options_require_check() {
+        // digest.c:main rejects these switches without -c, with the same
+        // "Try ... --help" trailer argopt emits for option errors.
+        for (args, needle) in [
+            (
+                &["--warn"][..],
+                "the --warn option is meaningful only when verifying checksums",
+            ),
+            (
+                &["--quiet"][..],
+                "the --quiet option is meaningful only when verifying checksums",
+            ),
+            (
+                &["--status"][..],
+                "the --status option is meaningful only when verifying checksums",
+            ),
+            (
+                &["--strict"][..],
+                "the --strict option is meaningful only when verifying checksums",
+            ),
+            (
+                &["--ignore-missing"][..],
+                "the --ignore-missing option is meaningful only when verifying checksums",
+            ),
+        ] {
+            let (r, out, err) = run3(args, "");
+            assert_eq!(r, 1, "{args:?}");
+            assert!(out.is_empty());
+            assert!(err.contains(needle), "{err}");
+            assert!(err.contains("Try 'cksum --help' for more information."));
+        }
+
+        let sc = ScratchCtx::new("cksum-verify-errors");
+        std::fs::write(sc.path("f"), "data\n").unwrap();
+        make_list(&sc, "l.lst", "MD5 (f) = 6137cde4893c59f76f005a8123d8e8e6\n");
+        let (r, _, err) = run_in(&sc, &["-c", "-b", "l.lst"], "");
+        assert_eq!(r, 1);
+        assert!(err
+            .contains("the --binary and --text options are meaningless when verifying checksums"));
+        let (r, _, err) = run_in(&sc, &["-c", "-t", "l.lst"], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("--text mode is only supported with --untagged"));
+        let (r, _, err) = run_in(&sc, &["-c", "-z", "l.lst"], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("the --zero option is not supported when verifying checksums"));
+        let (r, _, err) = run_in(&sc, &["-a", "crc", "-c", "l.lst"], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("--check is not supported with --algorithm={bsd,sysv,crc}"));
+        let (r, _, err) = run3(&["--base64", "--raw", "f"], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("--base64 and --raw are mutually exclusive"));
+    }
 }
