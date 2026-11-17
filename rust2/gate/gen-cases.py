@@ -4163,6 +4163,12 @@ cksum_rows = [
     ("ck60-check-comments-empty", "strict",
      "printf 'hello' > good.txt; printf '# note\\n\\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\\n' > comments.lst", "", "",
      ["-c", "comments.lst"]),
+    ("ck61-check-base64-bad-padding", "strict",
+     "printf 'hello' > good.txt; printf 'SHA256 (good.txt) = LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQX\\n' > pad.lst", "", "",
+     ["-c", "pad.lst"]),
+    ("ck62-check-base64-tamper", "strict",
+     "printf 'hello' > good.txt; printf 'SHA256 (good.txt) = XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX=\\n' > tamper.lst", "", "",
+     ["-c", "tamper.lst"]),
 ]
 
 chgrp_rows = [

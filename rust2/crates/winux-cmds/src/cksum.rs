@@ -613,19 +613,32 @@ fn is_base64_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'+' || b == b'/'
 }
 
-/// Pre-parity valid_digest shape: any even-length hex run or any other
-/// non-empty text is accepted.  Commit 2 makes the length/padding check as
-/// strict as GNU's valid_digits (#1752).
+/// digest.c:valid_digits — the digest text must be exactly the hex spelling
+/// (bits/4 characters) or exactly the padded base64 spelling
+/// (BASE64_LENGTH(bits/8), with bits%3 trailing '=').  A wrong length or
+/// padding makes the LINE malformed, not a mismatched digest: GNU 9.4
+/// rejects the 43-character base64 body wholesale (#1752 clear-text probe).
 fn valid_digest(text: &str, bits: usize) -> Option<DigestKind> {
-    let _ = bits;
-    if !text.is_empty() && text.len() % 2 == 0 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
-        Some(DigestKind::Hex)
-    } else if !text.is_empty() {
-        Some(DigestKind::Base64)
-    } else {
-        None
+    if bits == 0 || bits % 8 != 0 {
+        return None;
     }
+    let bytes = text.as_bytes();
+    let b64_len = (bits / 8).div_ceil(3) * 4;
+    if bytes.len() == b64_len {
+        let pad = bits % 3;
+        let body = b64_len - pad;
+        if bytes[..body].iter().copied().all(is_base64_byte)
+            && bytes[body..].iter().all(|&b| b == b'=')
+        {
+            return Some(DigestKind::Base64);
+        }
+    }
+    if bytes.len() == bits / 4 && bytes.iter().all(u8::is_ascii_hexdigit) {
+        return Some(DigestKind::Hex);
+    }
+    None
 }
+
 /// digest.c:bsd_split_3 — `(name) = digest`; the LAST ')' ends the name
 /// (GNU allows ')' inside a file name), and blanks around '=' are skipped.
 fn split_bsd(rest: &str, algo: Algo, bits: usize) -> Option<CheckLine> {
@@ -1457,6 +1470,46 @@ mod tests {
     }
 
 
+    #[test]
+    fn check_base64_digest_validation_issue1752() {
+        // valid_digits: base64 must have exactly BASE64_LENGTH bytes with
+        // bits%3 trailing '='.  Wrong padding is malformed (#1752); a
+        // well-formed but wrong digest is a FAILED record.
+        let sc = ScratchCtx::new("cksum-b64-validate");
+        std::fs::write(sc.path("ck"), "hello").unwrap();
+        make_list(
+            &sc,
+            "ok.lst",
+            "SHA256 (ck) = LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=\n",
+        );
+        let (r, out, err) = run_in(&sc, &["-c", "ok.lst"], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "ck: OK\n");
+        assert!(err.is_empty());
+
+        make_list(
+            &sc,
+            "pad.lst",
+            "SHA256 (ck) = LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQX\n",
+        );
+        let (r, out, err) = run_in(&sc, &["-c", "pad.lst"], "");
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert_eq!(
+            err,
+            "cksum: pad.lst: no properly formatted checksum lines found\n"
+        );
+
+        make_list(
+            &sc,
+            "tamper.lst",
+            "SHA256 (ck) = XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX=\n",
+        );
+        let (r, out, err) = run_in(&sc, &["-c", "tamper.lst"], "");
+        assert_eq!(r, 1);
+        assert_eq!(out, "ck: FAILED\n");
+        assert!(err.contains("WARNING: 1 computed checksum did NOT match"));
+    }
 
 
     #[test]
