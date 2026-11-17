@@ -910,6 +910,24 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     run_sort(&cfg, io, ctx)
 }
 
+/// 1.x operand expansion (utils/wildcard.cppm glob_expand called from the
+/// positional loop): GNU sort never globs — the surrounding shell does —
+/// so expansion happens only under the direct-invocation contract
+/// WINUX_SHELL_GLOB=native; unmatched patterns and literal existing paths
+/// stay literal (crate::glob carries the shared rules).
+fn push_file_operand(ctx: &Ctx, cfg: &mut Cfg, arg: String) {
+    let native_glob = winux_core::win32_env_get(ctx.env, "WINUX_SHELL_GLOB")
+        .map(|v| v.to_string_lossy() == "native")
+        .unwrap_or(false);
+    if native_glob && crate::glob::contains_wildcard(&arg) {
+        if let Some(matches) = crate::glob::glob_expand_in(ctx, &arg) {
+            cfg.files.extend(matches);
+            return;
+        }
+    }
+    cfg.files.push(arg);
+}
+
 /// GNU getopt_long replica for sort's tables, with sort.c's in-order
 /// option side effects (duplicate -o/-t/-c conflicts fire at the second
 /// occurrence). Ok(None) = --help/--version printed, exit 0. Err(status)
@@ -950,7 +968,7 @@ fn parse_args(args: &[OsString], ctx: &Ctx, io: &mut Io) -> Result<Option<(Cfg, 
                     continue;
                 }
             }
-            cfg.files.push(arg);
+            push_file_operand(ctx, &mut cfg, arg);
             i += 1;
             continue;
         }

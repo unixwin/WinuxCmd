@@ -104,3 +104,4 @@ so101-buffer-size-bad	strict		LC_ALL=C		--buffer-size=bad
 so102-compress-program-empty	strict	printf 'b\na\n' > b.txt	LC_ALL=C		--compress-program=	b.txt
 so103-temporary-directory-unused	strict	printf 'b\na\n' > b.txt	LC_ALL=C		--temporary-directory=missing	b.txt
 so76-debug-annotation	note	printf 'b\na\n' > sdg	LC_ALL=C		--debug	sdg
+so107-wildcard-literal	strict	printf 'cherry\napple\n' > file1.txt; printf 'banana\ndate\n' > file2.txt	LC_ALL=C		*.txt
