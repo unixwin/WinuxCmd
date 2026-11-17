@@ -158,6 +158,9 @@ auto abi_version_ok(const char* name) -> bool {
 auto write_error_status(const char* name) -> int {
   const std::string_view view(name);
   if (view == "grep" || view == "egrep" || view == "fgrep") return 2;
+  // GNU tty documents exit 3 for a write error (tty.c:20, and main sets
+  // initialize_exit_failure(TTY_WRITE_ERROR) at tty.c:92).
+  if (view == "tty") return 3;
   return 1;
 }
 
@@ -194,6 +197,27 @@ auto drain_result(const char* name, int status, winuxcmd_cbuf& out,
   if (out.ptr != nullptr && out.len > 0) {
     safePrintRaw(
         std::string_view(reinterpret_cast<const char*>(out.ptr), out.len));
+  }
+  // tty owns a specific write-error contract: GNU's close_stdout reports
+  // "tty: write error: <errno>" and exits 3 for both EPIPE (SIGPIPE is
+  // ignored by the probe harness, tty.c:92 initialize_exit_failure) and
+  // EBADF. The buffered ABI can only observe it here at the drain:
+  // a closed read end of the stdout pipe sets the broken-pipe flag, a
+  // handle that vanished after startup sets the write-error code.
+  if (std::string_view(name) == "tty" && out.ptr != nullptr && out.len > 0) {
+    if (is_stdout_pipe_closed()) {
+      safeErrorPrintLn("tty: write error: Broken pipe");
+      winuxcmd_free_buf(&out);
+      winuxcmd_free_buf(&err);
+      return write_error_status(name);
+    }
+    if (is_stdout_write_failed()) {
+      safeErrorPrintLn(std::string("tty: write error: ") +
+                       std::string(stdout_write_error_text()));
+      winuxcmd_free_buf(&out);
+      winuxcmd_free_buf(&err);
+      return write_error_status(name);
+    }
   }
   if (err.ptr != nullptr && err.len > 0) {
     safeErrorPrintRaw(
