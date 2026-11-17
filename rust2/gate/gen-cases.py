@@ -3159,6 +3159,8 @@ factor_rows = [
      ["99999999999999999999999"]),
     # GNU getopt_long abbreviation of --exponents.
     ("fa44-exponents-abbrev", "strict", "", "", "", ["--expo", "8"]),
+    # 1.x documented -e alias (GNU has no -e; the shipped help keeps it).
+    ("fa45-e-alias", "win", "", "", "", ["-e", "8"]),
     ("fa46-beyond-u64-exponents", "strict", "", "", "",
      ["-h", "18446744073709551616"]),
 ]

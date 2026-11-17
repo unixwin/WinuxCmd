@@ -36,11 +36,20 @@ use crate::argopt::{self, OptSpec};
 use crate::gnuhelp;
 use winux_core::{CmdResult, Ctx, Io};
 
-const OPTS: &[OptSpec] = &[OptSpec {
-    short: Some('h'),
-    long: "exponents",
-    takes_value: false,
-}];
+const OPTS: &[OptSpec] = &[
+    OptSpec {
+        short: Some('h'),
+        long: "exponents",
+        takes_value: false,
+    },
+    // Short-only 1.x alias: no long name, so `--e...` still resolves only
+    // against the GNU --exponents spelling (and its abbreviations).
+    OptSpec {
+        short: Some('e'),
+        long: "",
+        takes_value: false,
+    },
+];
 
 // `--help` body verbatim from `env factor --help` under WSL coreutils 9.4,
 // minus the shared gnuhelp::footer tail.
@@ -87,7 +96,7 @@ pub fn factor_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
         });
     }
-    let exponents = p.has("exponents");
+    let exponents = p.has("exponents") || p.has("e");
 
     let mut failed = false;
     let out = &mut *io.stdout;
@@ -612,9 +621,8 @@ mod big {
                 let mut carry = 0u128;
                 for j in 0..other.limbs.len() {
                     let index = i + j;
-                    let cur = out[index] as u128
-                        + self.limbs[i] as u128 * other.limbs[j] as u128
-                        + carry;
+                    let cur =
+                        out[index] as u128 + self.limbs[i] as u128 * other.limbs[j] as u128 + carry;
                     out[index] = cur as u64;
                     carry = cur >> 64;
                 }
@@ -973,6 +981,14 @@ mod tests {
         assert_eq!(out, "12: 2^2 3\n");
         let (_, out, _) = run(&["--exponents", "8"], "");
         assert_eq!(out, "8: 2^3\n");
+        // GNU getopt_long abbreviation of --exponents (probed `factor
+        // --expo 8`)
+        let (_, out, _) = run(&["--expo", "8"], "");
+        assert_eq!(out, "8: 2^3\n");
+        // 1.x documented alias: -e (GNU rejects it; the shipped help keeps it)
+        let (r, out, err) = run(&["-e", "8"], "");
+        assert_eq!((r, err.as_str()), (0, ""));
+        assert_eq!(out, "8: 2^3\n");
         let (_, out, _) = run(&["-h", "7"], "");
         assert_eq!(out, "7: 7\n");
         let (_, out, _) = run(&["-h", "4", "9"], "");
@@ -990,7 +1006,10 @@ mod tests {
         assert_eq!(out, "18446744073709551617: 274177 67280421310721\n");
         let (r, out, _) = run(&["99999999999999999999999"], "");
         assert_eq!(r, 0);
-        assert_eq!(out, "99999999999999999999999: 3 3 11111111111111111111111\n");
+        assert_eq!(
+            out,
+            "99999999999999999999999: 3 3 11111111111111111111111\n"
+        );
         // -h groups the repeated factors of 2^64
         let (r, out, _) = run(&["-h", "18446744073709551616"], "");
         assert_eq!(r, 0);
