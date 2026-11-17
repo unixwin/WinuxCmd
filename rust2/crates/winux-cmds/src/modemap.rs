@@ -177,7 +177,19 @@ fn parse_clause(clause: &str) -> Result<Clause, ()> {
                 'X' => perms.push(Perm::BigX),
                 's' => perms.push(Perm::S),
                 't' => perms.push(Perm::T),
-                'u' | 'g' | 'o' => perms.push(Perm::Copy(who_class(chars[i]).unwrap())),
+                // A copy letter is a complete perm list: gnulib's
+                // mode_compile consumes exactly one of u/g/o and then
+                // requires an operator or the end of the clause. Any
+                // adjacent perm char (`u+ug`, `g+ur`, `u+rwx`) makes the
+                // whole mode invalid (probed WSL coreutils 9.4).
+                'u' | 'g' | 'o' => {
+                    if !perms.is_empty()
+                        || (i + 1 < chars.len() && !matches!(chars[i + 1], '+' | '-' | '='))
+                    {
+                        return Err(());
+                    }
+                    perms.push(Perm::Copy(who_class(chars[i]).unwrap()));
+                }
                 _ => break,
             }
             i += 1;
@@ -497,6 +509,19 @@ mod tests {
         assert!(parse_mode_spec("z+r").is_err());
         // empty perm lists are valid no-ops (GNU verified)
         assert!(parse_mode_spec("u+").is_ok());
+        // A copy letter is the whole perm list: one u/g/o is valid, any
+        // adjacent perm character (rwx/s/t/X or a second copy letter) is
+        // invalid. GNU 9.4 probe: u+g / u+u rc 0; u+ug / g+ur / u+gr /
+        // u+go / u=ug rc 1 "invalid mode".
+        assert!(parse_mode_spec("u+g").is_ok());
+        assert!(parse_mode_spec("u+u").is_ok());
+        assert!(parse_mode_spec("g=o").is_ok());
+        assert!(parse_mode_spec("u+ug").is_err());
+        assert!(parse_mode_spec("g+ur").is_err());
+        assert!(parse_mode_spec("u+gr").is_err());
+        assert!(parse_mode_spec("u+go").is_err());
+        assert!(parse_mode_spec("u=ug").is_err());
+        assert!(parse_mode_spec("u+r,g").is_err());
         assert!(parse_mode_spec("+").is_ok());
         assert!(parse_mode_spec("=").is_ok());
         assert!(parse_mode_spec("u=").is_ok());
