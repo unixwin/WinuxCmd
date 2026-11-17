@@ -67,8 +67,11 @@ auto constexpr SORT_OPTIONS = std::array{
     OPTION("-u", "--unique", "output only the first of equal runs"),
     // [GNU] -z, --zero-terminated
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline"),
-    // [GNU] --files0-from: read input from the file specified
-    OPTION("", "--files0-from", "read input from the file specified",
+    // [GNU] --files0-from: read input from the files specified by
+    // NUL-terminated names in FILE
+    OPTION("", "--files0-from",
+           "read input from the files specified by NUL-terminated names in "
+           "FILE",
            STRING_TYPE),
     // [GNU] -c takes no argument (a glued "-cquiet" is an invalid option);
     // --check accepts the optional =diagnose-first|quiet|silent argument.
@@ -85,11 +88,6 @@ auto constexpr SORT_OPTIONS = std::array{
     // [GNU] -o, --output
     OPTION("-o", "--output", "write result to FILE instead of standard output",
            STRING_TYPE),
-    // [GNU] option
-    OPTION(
-        "", "--files0-from",
-        "read input from the files specified by NUL-terminated names in FILE",
-        STRING_TYPE),
     // [GNU] --batch-size
     OPTION("", "--batch-size",
            "merge at most NMERGE inputs at once; accepted as a merge hint",

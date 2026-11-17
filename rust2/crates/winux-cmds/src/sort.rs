@@ -12,6 +12,9 @@
 //!   whose last line lacks the eol gets one supplied at its EOF, exactly
 //!   like sort.c fillbuf — output therefore always ends with the eol
 //!   (probed p5: "x" -> "x\n"; two files concatenate with the fixup).
+//!   --files0-from=F replaces the operands with the NUL-separated names in
+//!   F ("-" = stdin); command-line operands, "-", an empty list and a
+//!   zero-length name are fatal with GNU's wording (probed p1).
 //! * One key list per run. Keys come from -k F[.C][OPTS][,F[.C][OPTS]]
 //!   (parse_keyspec port) or the obsolescent +POS1 [-POS2] operands
 //!   (traditional usage is the default, sort.c main case 1). Global
@@ -81,9 +84,8 @@
 //!   random key is in effect, like GNU, but the seed bytes do not
 //!   influence our fixed FNV hash), -y (Solaris quirk), --debug
 //!   (incompatible with -c/-o like GNU; no key annotation output).
-//!   Not implemented: --files0-from (the long option is intentionally
-//!   absent from the table, like the 1.x applet's --files0-from gap
-//!   class), POSIX2_VERSION / POSIXLY_CORRECT parsing variants.
+//!   POSIX2_VERSION / POSIXLY_CORRECT parsing variants are not
+//!   implemented.
 //!   -g f64 vs long double precision and the -R hash scheme are the
 //!   only ordering-visible deviations.
 
@@ -223,6 +225,9 @@ struct Cfg {
     outfile: Option<String>,
     random_source: Option<String>,
     compress_program: Option<String>,
+    /// --files0-from: NUL-separated input names replace the operands
+    /// (sort.c main, FILES0_FROM_OPTION block).
+    files0_from: Option<String>,
     files: Vec<String>,
 }
 
@@ -241,6 +246,7 @@ impl Cfg {
             outfile: None,
             random_source: None,
             compress_program: None,
+            files0_from: None,
             files: Vec::new(),
         }
     }
@@ -253,8 +259,6 @@ impl Cfg {
 /// Long options in registration order (the ambiguity-list order); values
 /// mark required-argument options. --check is optional-argument and
 /// handled specially (bare --check never consumes the next argv element).
-/// --files0-from is intentionally absent: not implemented here, so it
-/// reports GNU's unrecognized-option usage error rather than pretending.
 const LONG_OPTS: &[(&str, bool)] = &[
     ("ignore-leading-blanks", false),
     ("check", false),
@@ -262,6 +266,7 @@ const LONG_OPTS: &[(&str, bool)] = &[
     ("debug", false),
     ("dictionary-order", false),
     ("ignore-case", false),
+    ("files0-from", true),
     ("general-numeric-sort", false),
     ("ignore-nonprinting", false),
     ("key", true),
@@ -303,6 +308,13 @@ const SORT_VALID: &str = "  - 'general-numeric'\n  - 'human-numeric'\n  - 'month
 
 /// GNU single-quote form for diagnostics (C locale quote style).
 fn sq(s: &str) -> String {
+    format!("'{s}'")
+}
+
+/// GNU `quoteaf` (shell-escape-always): the name is always single-quoted.
+/// Used by the --files0-from diagnostics (sort.c uses quoteaf there, unlike
+/// the quotef forms elsewhere).
+fn qa(s: &str) -> String {
     format!("'{s}'")
 }
 
@@ -656,12 +668,112 @@ native byte values.
 
 "#;
 
+/// --files0-from=F: the option's names replace the operands entirely
+/// (sort.c main, FILES0_FROM_OPTION block). The list is NUL-separated;
+/// names are literal (never glob-expanded, never "-"); an empty list and a
+/// zero-length name are fatal before any input is read.
+fn resolve_files0_from(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg) -> Option<u32> {
+    let list = cfg.files0_from.clone()?;
+
+    // "you may not specify any files on the command-line"
+    if !cfg.files.is_empty() {
+        let _ = writeln!(io.stderr, "sort: extra operand {}", qa(&cfg.files[0]));
+        let _ = writeln!(
+            io.stderr,
+            "file operands cannot be combined with --files0-from"
+        );
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "sort"));
+        return Some(2);
+    }
+
+    let mut data: Vec<u8> = Vec::new();
+    if list == "-" {
+        if io.stdin.read_to_end(&mut data).is_err() {
+            let _ = writeln!(
+                io.stderr,
+                "sort: cannot read file names from {}",
+                qa(&list)
+            );
+            return Some(2);
+        }
+    } else {
+        match crate::fsutil::open_read_operand(ctx, &list) {
+            Ok(mut f) => {
+                if f.read_to_end(&mut data).is_err() {
+                    let _ = writeln!(
+                        io.stderr,
+                        "sort: cannot read file names from {}",
+                        qa(&list)
+                    );
+                    return Some(2);
+                }
+            }
+            Err(e) => {
+                let _ = writeln!(
+                    io.stderr,
+                    "sort: open failed: {}: {}",
+                    fsutil::quotef(&list),
+                    read_reason(ctx, &list, &e)
+                );
+                return Some(2);
+            }
+        }
+    }
+
+    // readtokens0: NUL terminates a token; a trailing NUL does not add an
+    // empty token, but a leading/consecutive NUL does (probed p1).
+    let mut names: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    for i in 0..data.len() {
+        if data[i] == 0 {
+            names.push(String::from_utf8_lossy(&data[start..i]).into_owned());
+            start = i + 1;
+        }
+    }
+    if start < data.len() {
+        names.push(String::from_utf8_lossy(&data[start..]).into_owned());
+    }
+
+    if names.is_empty() {
+        let _ = writeln!(io.stderr, "sort: no input from {}", qa(&list));
+        return Some(2);
+    }
+    for (i, name) in names.iter().enumerate() {
+        if name == "-" {
+            // GNU prints the "standard input" wording even when the list
+            // itself came from a file (probed p1: dash.bin).
+            let _ = writeln!(
+                io.stderr,
+                "sort: when reading file names from standard input, no file name of {} allowed",
+                qa(name)
+            );
+            return Some(2);
+        }
+        if name.is_empty() {
+            let _ = writeln!(
+                io.stderr,
+                "sort: {}:{}: invalid zero-length file name",
+                fsutil::quotef(&list),
+                i + 1
+            );
+            return Some(2);
+        }
+    }
+    cfg.files = names;
+    None
+}
+
 pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let (mut cfg, gkey) = match parse_args(args, ctx, io) {
         Ok(Some(pair)) => pair,
         Ok(None) => return Ok(0), // --help/--version already printed
         Err(status) => return Ok(status),
     };
+
+    // sort.c main resolves --files0-from before key inheritance.
+    if let Some(status) = resolve_files0_from(ctx, io, &mut cfg) {
+        return Ok(status);
+    }
 
     // --- inheritance (sort.c main, after option parsing) ---
     let mut keys = std::mem::take(&mut cfg.keys);
@@ -975,6 +1087,12 @@ fn apply_long_value(
         "output" => set_output(ctx, io, cfg, value),
         "field-separator" => set_tab(ctx, io, cfg, value),
         "random-source" => set_random_source(ctx, io, cfg, value),
+        "files0-from" => {
+            // sort.c: getopt just records the last --files0-from operand;
+            // the conflict/read checks happen after parsing.
+            cfg.files0_from = Some(value.to_string());
+            None
+        }
         "compress-program" => set_compress_program(ctx, io, cfg, value),
         "sort" => apply_sort_word(ctx, io, gkey, value),
         "check" => apply_check_word(ctx, io, cfg, value),
@@ -3384,5 +3502,62 @@ mod tests {
         expect(&["-k1.1"], "b\na\n", "a\nb\n");
         // -k2.1 starts at field 2's first byte (leading blank included)
         expect(&["-k2.1"], "a b\na c\n", "a b\na c\n");
+    }
+
+    // ---------- --files0-from (probed p1, GNU 9.4) ----------
+
+    #[test]
+    fn files0_from_names_replace_operands() {
+        let sc = ScratchCtx::new("sortf0");
+        std::fs::write(sc.path("a.txt"), "c\na\n").unwrap();
+        std::fs::write(sc.path("b.txt"), "b\nd\n").unwrap();
+        std::fs::write(sc.path("list.bin"), b"a.txt\0b.txt\0").unwrap();
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let args: Vec<OsString> = ["--files0-from", "list.bin"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        let r = super::sort_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0, "stderr {:?}", io.err());
+        assert_eq!(io.out(), "a\nb\nc\nd\n");
+    }
+
+    #[test]
+    fn files0_from_errors_match_gnu() {
+        let sc = ScratchCtx::new("sortf0e");
+        let ctx = sc.ctx();
+        let mut run0 = |list: &[u8]| {
+            std::fs::write(sc.path("l.bin"), list).unwrap();
+            let mut io = MemIo::new("");
+            let args: Vec<OsString> = ["--files0-from", "l.bin"].iter().map(Into::into).collect();
+            let r = super::sort_cmd(&args, &mut io.split(), &ctx).unwrap();
+            (r, io.err())
+        };
+        let (r, err) = run0(b"");
+        assert_eq!(r, 2);
+        assert!(err.contains("sort: no input from 'l.bin'"), "{err:?}");
+        let (r, err) = run0(b"\0");
+        assert_eq!(r, 2);
+        assert!(
+            err.contains("sort: l.bin:1: invalid zero-length file name"),
+            "{err:?}"
+        );
+        let (r, err) = run0(b"a\0\0b\0");
+        assert_eq!(r, 2);
+        assert!(
+            err.contains("sort: l.bin:2: invalid zero-length file name"),
+            "{err:?}"
+        );
+        let (r, err) = run0(b"-\0");
+        assert_eq!(r, 2);
+        assert!(
+            err.contains("no file name of '-' allowed"),
+            "{err:?}"
+        );
+        // a trailing name without the final NUL is still a name
+        std::fs::write(sc.path("a.txt"), "b\na\n").unwrap();
+        let (r, err) = run0(b"a.txt");
+        assert_eq!(r, 0, "{err:?}");
     }
 }

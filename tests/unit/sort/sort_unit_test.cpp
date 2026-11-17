@@ -925,7 +925,27 @@ TEST(sort, sort_files0_from_rejects_empty_file_list) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("no input from list.bin") !=
+  // GNU quotes the list name with quoteaf (probed WSL coreutils 9.4:
+  // "sort: no input from 'list.bin'"); the 1.x applet printed it bare.
+  EXPECT_TRUE(r.stderr_text.find("no input from 'list.bin'") !=
+              std::string::npos);
+}
+
+TEST(sort, sort_files0_from_rejects_file_operand_combination) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+  tmp.write_bytes("list.bin", {'a', '.', 't', 'x', 't', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sort.exe", {L"--files0-from", L"list.bin", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("extra operand 'a.txt'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "file operands cannot be combined with --files0-from") !=
               std::string::npos);
 }
 
