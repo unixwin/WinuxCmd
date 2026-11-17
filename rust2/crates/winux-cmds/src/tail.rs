@@ -32,7 +32,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use crate::argopt::{self, OptSpec};
 use crate::fsutil::{gnu_open_reason, quotef, resolve};
 use crate::gnuhelp;
-use crate::head::{parse_count, Count};
+use crate::head::{xnum, xdectoumax_count, CountVal, HeaderMode};
 use winux_core::{CmdError, CmdResult, Ctx, Io};
 
 mod follow;
@@ -109,27 +109,123 @@ const OPTS: &[OptSpec] = &[
     },
 ];
 
-/// tail's count grammar on top of head's `[+-]K[suffix]` parse: `-K`
-/// folds to `K` (tail strips the minus, probed), `+K` starts at record K
-/// with K == 0 meaning everything.
+/// tail.c's count grammar on top of the shared xstrtol parse: `+K`
+/// starts at record K (from_start is STICKY once any count option sets
+/// it), `-K` folds to `K`, bare K is the last K records.
 #[derive(Debug, PartialEq)]
 enum TailCount {
     Last(u128),
     FromStart(u128),
 }
 
-fn parse_tail_count(text: &str) -> Option<TailCount> {
-    if let Some(rest) = text.strip_prefix('+') {
-        return match parse_count(rest)? {
-            Count::First(k) => Some(TailCount::FromStart(k)),
-            Count::Elide(_) => None,
-        };
+/// `argv[i][0] == '-' && argv[i][1] != '\0'` — GNU's "looks like an
+/// option" test in parse_obsolete_option's argc==3 clause.
+fn option_like(a: &OsString) -> bool {
+    let b = a.to_string_lossy();
+    let bytes = b.as_bytes();
+    bytes.first() == Some(&b'-') && bytes.get(1).is_some()
+}
+
+/// The state tail.c's parse_obsolete_option (9.4, src/tail.c:2052)
+/// installs when the obsolete `[-+][0-9]*[bcl]?[f]` form matches.
+struct Obsolete {
+    from_start: bool,
+    count_lines: bool,
+    forever: bool,
+    n_units: u128,
+}
+
+/// Port of tail.c parse_obsolete_option. Eligibility is the exact argc
+/// layout GNU checks (bare option; option + one non-option operand;
+/// option + `--` [+ one operand]); on a match exactly argv[1] is
+/// consumed. A malformed digit run writes `invalid number: 'ARG'` —
+/// xstrtoumax with suffixes "b" and LONGINT_INVALID_SUFFIX_CHAR masked,
+/// so errno (ERANGE) is appended only when the digits themselves
+/// overflowed.
+fn parse_obsolete_option(args: &[OsString], io: &mut Io) -> Result<Option<Obsolete>, u32> {
+    let argc = args.len() + 1; // C argc includes argv[0]
+    let eligible = argc == 2
+        || (argc == 3 && !option_like(&args[1]))
+        || (3 <= argc && argc <= 4 && args[1].to_string_lossy() == "--");
+    if !eligible {
+        return Ok(None);
     }
-    match parse_count(text)? {
-        Count::First(k) => Some(TailCount::Last(k)),
-        // tail.c strips the leading '-': `-K` == `K`
-        Count::Elide(k) => Some(TailCount::Last(k)),
+    let s = args[0].to_string_lossy();
+    let b = s.as_bytes();
+    let mut i = 0usize;
+    let mut from_start = false;
+    let mut count_lines = true;
+    let mut forever = false;
+    match b.first() {
+        // traditional_usage holds on Linux (POSIX2_VERSION 200809)
+        Some(b'+') => {
+            from_start = true;
+            i = 1;
+        }
+        Some(b'-') => {
+            // !obsolete_usage && !p[p[0]=='c']: for "-c..." the check
+            // looks at the byte AFTER 'c' — "-c" alone and "-c" followed
+            // by nothing bail to getopt, "-c5" proceeds and fails the
+            // digit scan below.
+            let idx = if b.get(1) == Some(&b'c') { 2 } else { 1 };
+            if b.get(idx).is_none() {
+                return Ok(None);
+            }
+            i = 1;
+        }
+        _ => return Ok(None),
     }
+    let n_start = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    let n_end = i;
+    let mut default_count: u128 = 10; // DEFAULT_N_LINES
+    if i < b.len() {
+        match b[i] {
+            b'b' => {
+                default_count *= 512;
+                count_lines = false;
+                i += 1;
+            }
+            b'c' => {
+                count_lines = false;
+                i += 1;
+            }
+            b'l' => i += 1,
+            _ => {}
+        }
+    }
+    if i < b.len() && b[i] == b'f' {
+        forever = true;
+        i += 1;
+    }
+    if i < b.len() {
+        return Ok(None);
+    }
+    let n_units = if n_start == n_end {
+        default_count
+    } else {
+        // n_string runs to the end of argv[1], suffix bytes included:
+        // "5c"/"5l"/"5f" leave an INVALID_SUFFIX_CHAR the caller masks.
+        let x = xnum(&s[n_start..], "b");
+        if x.invalid || x.mantissa_range || x.scale_overflow {
+            let errno = if x.mantissa_range {
+                ": Numerical result out of range"
+            } else {
+                ""
+            };
+            let _ = writeln!(io.stderr, "tail: invalid number: ‘{s}’{errno}");
+            return Err(1);
+        }
+        x.value
+    };
+    Ok(Some(Obsolete {
+        from_start,
+        count_lines,
+        forever,
+        n_units,
+    }))
 }
 
 /// Offset where the last `k` records of `data` start (tail.c file_lines
@@ -659,54 +755,220 @@ pub fn tail_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 /// gate driver call this to pin the stdin class GNU would read from
 /// `fstat(0)`; the library itself never asks the process.
 pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMeta) -> CmdResult {
-    // obsolescent -NUM folds into --lines (tail -5 == tail -n 5), but an
-    // argument consumed as an option value passes through untouched
-    let mut norm: Vec<OsString> = Vec::with_capacity(args.len());
-    let mut skip_next_value = false;
-    for a in args {
-        let s = a.to_string_lossy().into_owned();
-        if skip_next_value {
-            norm.push(a.clone());
-            skip_next_value = false;
-            continue;
-        }
-        let digits = |r: &str| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit());
-        if s.len() > 1 && s.starts_with('-') && !s.starts_with("--") && digits(&s[1..]) {
-            norm.push(OsString::from(format!("--lines={}", &s[1..])));
-            continue;
-        }
-        // (-f/--follow take no detached value: `-f -s -1` keeps -1 as
-        // the -s value, not an obsolescent count)
-        if matches!(
-            s.as_str(),
-            "-c" | "-n"
-                | "-s"
-                | "--bytes"
-                | "--lines"
-                | "--pid"
-                | "--sleep-interval"
-                | "--max-unchanged-stats"
-        ) {
-            skip_next_value = true;
-        } else if s.len() > 1 && s.starts_with('-') && !s.starts_with("--") {
-            let last = s.chars().last();
-            if matches!(last, Some('c') | Some('n') | Some('s')) {
-                skip_next_value = true;
-            }
-        }
-        norm.push(a.clone());
-    }
-    let (scan, norm) = match scan_follow(&norm) {
+    // tail.c main order: parse_obsolete_option FIRST (it can consume
+    // argv[1] and install count_lines/from_start/forever/n_units), then
+    // getopt_long's parse_options assigns each -c/-n occurrence's
+    // count_lines, from_start (sticky '+') and n_units in argv order —
+    // the last count option decides unit AND value.
+    let (rest, mut n_units, mut count_lines, mut from_start, obs_forever) =
+        match parse_obsolete_option(args, io) {
+            Ok(Some(o)) => (
+                &args[1..],
+                o.n_units,
+                o.count_lines,
+                o.from_start,
+                o.forever,
+            ),
+            Ok(None) => (&args[..], 10u128, true, false, false),
+            Err(rc) => return Ok(rc),
+        };
+    let (scan, norm) = match scan_follow(rest) {
         Ok(v) => v,
         Err(msg) => {
             let _ = writeln!(io.stderr, "{msg}");
             return Ok(1);
         }
     };
-    let p = match argopt::parse("tail", &norm, OPTS, io, ctx, 1) {
+    // getopt's optstring carries '0'..'9': a bare digit option dies with
+    // "option used in invalid context -- N" (error(), no usage tail).
+    let digit_hook = |c: char, io: &mut Io, _ctx: &Ctx, prog: &str| -> Option<u32> {
+        if c.is_ascii_digit() {
+            let _ = writeln!(io.stderr, "{prog}: option used in invalid context -- {c}");
+            Some(1)
+        } else {
+            None
+        }
+    };
+    // parse_options validates each optarg as getopt returns it — the
+    // ValueHook is that point, so an invalid value exits BEFORE any
+    // later token's parse-level diagnostic (unknown option, digit,
+    // --help). The events pass below assigns state in the same order.
+    let value_hook = |key: &str, v: &str, io: &mut Io, _ctx: &Ctx, _prog: &str| -> Option<u32> {
+        let q = |s: &str| format!("‘{s}’");
+        let errno_tail = |overflow: bool| {
+            if overflow {
+                ": Value too large for defined data type"
+            } else {
+                ""
+            }
+        };
+        match key {
+            "bytes" | "lines" => {
+                let post = if v.starts_with('+') {
+                    v
+                } else if let Some(p) = v.strip_prefix('-') {
+                    p
+                } else {
+                    v
+                };
+                match xdectoumax_count(post) {
+                    Ok(_) => None,
+                    Err(e) => {
+                        let word = if key == "lines" { "lines" } else { "bytes" };
+                        let errno = match e {
+                            CountVal::Overflow => ": Value too large for defined data type",
+                            CountVal::Invalid => "",
+                        };
+                        let _ = writeln!(
+                            io.stderr,
+                            "tail: invalid number of {word}: {}{errno}",
+                            q(post)
+                        );
+                        Some(1)
+                    }
+                }
+            }
+            "pid" => match parse_dec_max(v, i32::MAX as u128) {
+                Ok(_) => None,
+                Err(overflow) => {
+                    let _ = writeln!(
+                        io.stderr,
+                        "tail: invalid PID: {}{}",
+                        q(v),
+                        errno_tail(overflow)
+                    );
+                    Some(1)
+                }
+            },
+            "max-unchanged-stats" => match parse_dec_max(v, u64::MAX as u128) {
+                Ok(_) => None,
+                Err(overflow) => {
+                    let _ = writeln!(
+                        io.stderr,
+                        "tail: invalid maximum number of unchanged stats between opens: {}{}",
+                        q(v),
+                        errno_tail(overflow)
+                    );
+                    Some(1)
+                }
+            },
+            "sleep-interval" => match parse_seconds(v) {
+                Some(s) if s >= 0.0 => None,
+                _ => {
+                    let _ = writeln!(io.stderr, "tail: invalid number of seconds: {}", q(v));
+                    Some(1)
+                }
+            },
+            _ => None,
+        }
+    };
+    let p = match argopt::parse_ex(
+        "tail",
+        &norm,
+        OPTS,
+        io,
+        ctx,
+        1,
+        Some(&digit_hook),
+        Some(&value_hook),
+    ) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
+    // parse_options validates each value option as getopt returns it —
+    // the FIRST bad one exits before later options (incl. --help) are
+    // seen — and every -c/-n occurrence ASSIGNS count_lines, from_start
+    // ('+' is sticky once set) and n_units, so the last count option
+    // decides both unit and value. q/v assign header_mode likewise.
+    let mut pid: u128 = 0;
+    let mut sleep_secs = 1.0f64;
+    let mut max_unchanged: u128 = 5;
+    let mut header_mode = HeaderMode::Multiple;
+    let q = |v: &str| format!("\u{2018}{v}\u{2019}");
+    for ev in &p.events {
+        match ev.key.as_str() {
+            argopt::HELP | argopt::VERSION => break,
+            "bytes" | "lines" => {
+                count_lines = ev.key == "lines";
+                let v = ev.value.as_deref().unwrap_or("");
+                // '+' keeps from_start (sticky) and stays in the parsed
+                // string; '-' is stripped before xdectoumax — the
+                // diagnostic quotes the post-strip text.
+                let post = if v.starts_with('+') {
+                    from_start = true;
+                    v
+                } else if let Some(p) = v.strip_prefix('-') {
+                    p
+                } else {
+                    v
+                };
+                match xdectoumax_count(post) {
+                    Ok(n) => n_units = n,
+                    Err(e) => {
+                        let word = if count_lines { "lines" } else { "bytes" };
+                        let errno = match e {
+                            CountVal::Overflow => ": Value too large for defined data type",
+                            CountVal::Invalid => "",
+                        };
+                        let _ = writeln!(
+                            io.stderr,
+                            "tail: invalid number of {word}: {}{errno}",
+                            q(post)
+                        );
+                        return Ok(1);
+                    }
+                }
+            }
+            "pid" => match parse_dec_max(ev.value.as_deref().unwrap_or(""), i32::MAX as u128) {
+                Ok(n) => pid = n,
+                Err(overflow) => {
+                    let tail = if overflow {
+                        ": Value too large for defined data type"
+                    } else {
+                        ""
+                    };
+                    let _ = writeln!(
+                        io.stderr,
+                        "tail: invalid PID: {}{tail}",
+                        q(ev.value.as_deref().unwrap_or(""))
+                    );
+                    return Ok(1);
+                }
+            },
+            "max-unchanged-stats" => {
+                match parse_dec_max(ev.value.as_deref().unwrap_or(""), u64::MAX as u128) {
+                    Ok(n) => max_unchanged = n,
+                    Err(overflow) => {
+                        let tail = if overflow {
+                            ": Value too large for defined data type"
+                        } else {
+                            ""
+                        };
+                        let _ = writeln!(
+                            io.stderr,
+                            "tail: invalid maximum number of unchanged stats between opens: {}{tail}",
+                            q(ev.value.as_deref().unwrap_or(""))
+                        );
+                        return Ok(1);
+                    }
+                }
+            }
+            "sleep-interval" => match parse_seconds(ev.value.as_deref().unwrap_or("")) {
+                Some(s) if s >= 0.0 => sleep_secs = s,
+                _ => {
+                    let _ = writeln!(
+                        io.stderr,
+                        "tail: invalid number of seconds: {}",
+                        q(ev.value.as_deref().unwrap_or(""))
+                    );
+                    return Ok(1);
+                }
+            },
+            "quiet" | "silent" => header_mode = HeaderMode::Never,
+            "verbose" => header_mode = HeaderMode::Always,
+            _ => {}
+        }
+    }
     if let Some(which) = p
         .flags
         .iter()
@@ -736,71 +998,13 @@ pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMe
         });
     }
 
-    let bytes_mode = p.has("bytes");
-    let mut count = TailCount::Last(10);
-    if let Some(v) = p.value_of("bytes").or_else(|| p.value_of("lines")) {
-        match parse_tail_count(v) {
-            Some(c) => count = c,
-            None => {
-                let word = if bytes_mode { "bytes" } else { "lines" };
-                let _ = writeln!(
-                    io.stderr,
-                    "tail: invalid number of {}: \u{2018}{}\u{2019}",
-                    word, v
-                );
-                return Ok(1);
-            }
-        }
-    }
-    // the follow-tuning values, validated in argv order like
-    // parse_options (the first bad one dies); the last occurrence wins
-    let mut pid: u128 = 0;
-    let mut sleep_secs = 1.0f64;
-    let mut max_unchanged: u128 = 5;
-    for (k, v) in &p.values {
-        let q = |v: &str| format!("\u{2018}{v}\u{2019}");
-        match k.as_str() {
-            "pid" => match parse_dec_max(v, i32::MAX as u128) {
-                Ok(n) => pid = n,
-                Err(overflow) => {
-                    let tail = if overflow {
-                        ": Value too large for defined data type"
-                    } else {
-                        ""
-                    };
-                    let _ = writeln!(io.stderr, "tail: invalid PID: {}{tail}", q(v));
-                    return Ok(1);
-                }
-            },
-            "max-unchanged-stats" => match parse_dec_max(v, u64::MAX as u128) {
-                Ok(n) => max_unchanged = n,
-                Err(overflow) => {
-                    let tail = if overflow {
-                        ": Value too large for defined data type"
-                    } else {
-                        ""
-                    };
-                    let _ = writeln!(
-                        io.stderr,
-                        "tail: invalid maximum number of unchanged stats between opens: {}{tail}",
-                        q(v)
-                    );
-                    return Ok(1);
-                }
-            },
-            "sleep-interval" => match parse_seconds(v) {
-                Some(s) if s >= 0.0 => sleep_secs = s,
-                _ => {
-                    let _ = writeln!(io.stderr, "tail: invalid number of seconds: {}", q(v));
-                    return Ok(1);
-                }
-            },
-            _ => {}
-        }
-    }
-    let quiet = p.has("quiet") || p.has("silent");
-    let verbose = p.has("verbose");
-    let forever = scan.forever;
+    let bytes_mode = !count_lines;
+    let count = if from_start {
+        TailCount::FromStart(n_units)
+    } else {
+        TailCount::Last(n_units)
+    };
+    let forever = scan.forever || obs_forever;
     let mode = if scan.by_name {
         FollowMode::Name
     } else {
@@ -866,7 +1070,11 @@ pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMe
     if count == TailCount::Last(0) && !forever {
         return Ok(0);
     }
-    let print_headers = (files.len() > 1 || verbose) && !quiet;
+    let print_headers = match header_mode {
+        HeaderMode::Always => true,
+        HeaderMode::Never => false,
+        HeaderMode::Multiple => files.len() > 1,
+    };
     let mut headers = Headers::new(print_headers, files.len());
 
     let mut ok = true;
@@ -1099,16 +1307,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_tail_count_shapes() {
-        assert_eq!(parse_tail_count("3"), Some(TailCount::Last(3)));
-        // tail strips the leading '-' (unlike head): -3 == 3, probed
-        assert_eq!(parse_tail_count("-3"), Some(TailCount::Last(3)));
-        assert_eq!(parse_tail_count("-0"), Some(TailCount::Last(0)));
-        assert_eq!(parse_tail_count("+3"), Some(TailCount::FromStart(3)));
-        assert_eq!(parse_tail_count("+0"), Some(TailCount::FromStart(0)));
-        assert_eq!(parse_tail_count("1b"), Some(TailCount::Last(512)));
-        assert_eq!(parse_tail_count("x"), None);
-        assert_eq!(parse_tail_count("-"), None);
+    fn count_option_last_wins() {
+        // GNU 9.4 (WSL probes): the LAST -c/-n occurrence assigns
+        // count_lines and n_units together — unit AND value.
+        let five = "h1\nh2\nh3\nh4\nh5\n";
+        // -n 2 -c 3: bytes win -> last 3 bytes "h5\n"
+        assert_eq!(run(&["-n", "2", "-c", "3"], five).1, "h5\n");
+        // -c 3 -n 2: lines win -> last 2 lines
+        assert_eq!(run(&["-c", "3", "-n", "2"], five).1, "h4\nh5\n");
+        // +N from_start is sticky: -n +3 -c 2 still starts at byte 2
+        assert_eq!(run(&["-n", "+3", "-c", "2"], "abcdefg").1, "bcdefg");
+        // -c +3 -n 2: lines from start at line 2
+        assert_eq!(run(&["-c", "+3", "-n", "2"], five).1, "h2\nh3\nh4\nh5\n");
+        // a later bare count does NOT clear sticky from_start:
+        // -n +2 -n 1 -> FromStart(1) prints everything (probed GNU 9.4)
+        assert_eq!(run(&["-n", "+2", "-n", "1"], five).1, five);
+        assert_eq!(run(&["-n", "1", "-n", "+2"], five).1, "h2\nh3\nh4\nh5\n");
     }
 
     #[test]

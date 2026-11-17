@@ -300,6 +300,28 @@ fn to_str_lossy(s: &OsString) -> String {
     s.to_string_lossy().into_owned()
 }
 
+/// Hook consulted when a short-option char matches no spec, BEFORE the
+/// default "invalid option -- 'c'" diagnostic. GNU getopt returns the
+/// char to main() and some commands give it a bespoke diagnostic in
+/// argv order (tail.c's optstring carries '0'..'9' and dies with
+/// "option used in invalid context -- N"; head.c's default case spells
+/// digits "invalid trailing option -- N" + usage). Returning `Some(rc)`
+/// means the hook already wrote the diagnostic and parsing stops with
+/// `Err(rc)` at that argv position — preserving the sequential contract
+/// against later unknown options and against help/version.
+pub type UnknownShort<'a> = &'a dyn Fn(char, &mut Io, &Ctx, &str) -> Option<u32>;
+
+/// Hook consulted the moment a value-taking option records its value —
+/// the command's getopt-loop validation point. GNU main() validates
+/// each optarg as getopt returns it, so an invalid value at argv
+/// position k exits BEFORE any parse-level diagnostic at k+1 (unknown
+/// option, digit option, --help). `key` is the canonical long name,
+/// `value` the raw optarg. The hook writes its own diagnostic and
+/// returns `Some(rc)` to abort the scan at that position; `None` lets
+/// parsing continue (the command re-validates/assigns post-parse from
+/// `events`, which preserves argv order).
+pub type ValueHook<'a> = &'a dyn Fn(&str, &str, &mut Io, &Ctx, &str) -> Option<u32>;
+
 /// Parse `args` (already stripped of argv[0]) against `opts`.
 ///
 /// On unknown options, writes the GNU usage diagnostic to stderr and returns
@@ -312,6 +334,21 @@ pub fn parse(
     io: &mut Io,
     ctx: &Ctx,
     usage_status: u32,
+) -> Result<Parsed, u32> {
+    parse_ex(prog, args, opts, io, ctx, usage_status, None, None)
+}
+
+/// [`parse`] with [`UnknownShort`] / [`ValueHook`] hooks for
+/// command-specific diagnostics and getopt-order value validation.
+pub fn parse_ex(
+    prog: &str,
+    args: &[OsString],
+    opts: &[OptSpec],
+    io: &mut Io,
+    ctx: &Ctx,
+    usage_status: u32,
+    on_unknown_short: Option<UnknownShort>,
+    on_value: Option<ValueHook>,
 ) -> Result<Parsed, u32> {
     let mut out = Parsed::default();
     let mut i = 0usize;
@@ -402,6 +439,11 @@ pub fn parse(
                     value: Some(val.clone()),
                 });
                 out.order.push(record_key.clone());
+                if let Some(h) = on_value {
+                    if let Some(rc) = h(&record_key, &val, io, ctx, prog) {
+                        return Err(rc);
+                    }
+                }
                 out.values.push((record_key, val));
             } else {
                 // getopt_long rejects an inline argument on a flag
@@ -476,6 +518,11 @@ pub fn parse(
                             value: Some(val.clone()),
                         });
                         out.order.push(spec.long.to_string());
+                        if let Some(h) = on_value {
+                            if let Some(rc) = h(spec.long, &val, io, ctx, prog) {
+                                return Err(rc);
+                            }
+                        }
                         out.values.push((spec.long.to_string(), val));
                         ci = chars.len();
                     }
@@ -497,6 +544,11 @@ pub fn parse(
                         ci += 1;
                     }
                     None => {
+                        if let Some(f) = on_unknown_short {
+                            if let Some(rc) = f(c, io, ctx, prog) {
+                                return Err(rc);
+                            }
+                        }
                         let msg = invalid_option(ctx, &c.to_string());
                         let _ = usage_error(ctx, io, prog, &msg);
                         return Err(usage_status);

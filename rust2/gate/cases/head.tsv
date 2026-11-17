@@ -29,3 +29,23 @@ hd26-bogus-long	strict				--bogus
 hd27-mixed-stdin-last	strict	printf 'f1a\nf1b\n' > f1		s	-q	f1	-
 hd28-help	strict				--help
 hd29-version	strict				--version
+hd30-cn-lines-win	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-c	5	-n	2	f
+hd31-nc-bytes-win	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	2	-c	5	f
+hd32-elide-sign-last	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	-2	-c	3	f
+hd33-elide-sign-last2	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-c	3	-n	-2	f
+hd34-invalid-before-digit	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	x	-2	f
+hd35-invalid-before-bogus	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	x	--bogus	f
+hd36-invalid-before-help	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	x	--help
+hd37-help-before-invalid	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			--help	-n	x
+hd38-obsolete-c	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-2c	f
+hd39-obsolete-bl	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-2bl	f
+hd40-obsolete-bc	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-2bc	f
+hd41-obsolete-then-c	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-2	-c	3	f
+hd42-obsolete-bad-letter	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-2x	f
+hd43-obsolete-overflow	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-99999999999999999999	f
+hd44-digit-not-argv1	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			f	-2
+hd45-qv-last-wins	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-q	-v	f	f
+hd46-vq-last-wins	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-v	-q	f	f
+hd47-count-overflow	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	18446744073709551616	f
+hd48-suffix-K	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	K	f
+hd49-trailing-space	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	3 	f
