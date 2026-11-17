@@ -5,11 +5,14 @@ ar01-plain	win
 ar02-help	win				--help
 # [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
 ar03-version	win				--version
-ar04-abbrev	strict				--ver
-ar05-abbrev-hel	strict				--hel
+# [win] help/version token reached the dispatcher (prefix/extra-arg form): it prints the WinuxCmd brand text, and old C++ == new was measured, so this row is a product-design comparison, not GNU (echo.tsv ec29/ec30 precedent).
+ar04-abbrev	win				--ver
+# [win] help/version token reached the dispatcher (prefix/extra-arg form): it prints the WinuxCmd brand text, and old C++ == new was measured, so this row is a product-design comparison, not GNU (echo.tsv ec29/ec30 precedent).
+ar05-abbrev-hel	win				--hel
 ar06-extra-operand	exit				foo
 ar07-two-operands	exit				a	b
-ar08-operand-then-help	strict				foo	--help
+# [win] help/version token reached the dispatcher (prefix/extra-arg form): it prints the WinuxCmd brand text, and old C++ == new was measured, so this row is a product-design comparison, not GNU (echo.tsv ec29/ec30 precedent).
+ar08-operand-then-help	win				foo	--help
 ar09-bogus-short	exit				-x
 ar10-h-invalid	note				-h
 ar11-V-invalid	note				-V
@@ -20,7 +23,11 @@ ar15-dashdash-operand	exit				--	foo
 ar16-dash-operand	exit				-
 ar17-empty-operand	exit				@EMPTY@
 ar18-bogus-eq	exit				--bogus=1
-ar19-version-extra	strict				--version	extra
-ar20-help-extra	strict				--help	extra
-ar21-help-version	strict				--help	--version
-ar22-version-help	strict				--version	--help
+# [win] help/version token reached the dispatcher (prefix/extra-arg form): it prints the WinuxCmd brand text, and old C++ == new was measured, so this row is a product-design comparison, not GNU (echo.tsv ec29/ec30 precedent).
+ar19-version-extra	win				--version	extra
+# [win] help/version token reached the dispatcher (prefix/extra-arg form): it prints the WinuxCmd brand text, and old C++ == new was measured, so this row is a product-design comparison, not GNU (echo.tsv ec29/ec30 precedent).
+ar20-help-extra	win				--help	extra
+# [win] help/version token reached the dispatcher (prefix/extra-arg form): it prints the WinuxCmd brand text, and old C++ == new was measured, so this row is a product-design comparison, not GNU (echo.tsv ec29/ec30 precedent).
+ar21-help-version	win				--help	--version
+# [win] help/version token reached the dispatcher (prefix/extra-arg form): it prints the WinuxCmd brand text, and old C++ == new was measured, so this row is a product-design comparison, not GNU (echo.tsv ec29/ec30 precedent).
+ar22-version-help	win				--version	--help
