@@ -128,14 +128,26 @@ TEST(rm, rm_file_with_trailing_separator_reports_not_directory) {
   TempDir tmp;
   tmp.write("file.txt", "content");
 
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"rm.exe", {L"-r", L"-f", L"file.txt/"});
+  // [GNU 9.4] -f suppresses the trailing-separator ENOTDIR diagnostic:
+  // `rm -r -f file.txt/` is a silent success (rc 0) and leaves the file.
+  // The unforced spelling is the one that reports "Not a directory" rc 1.
+  Pipeline forced;
+  forced.set_cwd(tmp.wpath());
+  forced.add(L"rm.exe", {L"-r", L"-f", L"file.txt/"});
+  auto forced_result = forced.run();
 
-  auto r = p.run();
+  EXPECT_EQ(forced_result.exit_code, 0);
+  EXPECT_EQ_TEXT(forced_result.stderr_text, "");
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "file.txt"));
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("Not a directory") != std::string::npos);
+  Pipeline unforced;
+  unforced.set_cwd(tmp.wpath());
+  unforced.add(L"rm.exe", {L"file.txt/"});
+  auto unforced_result = unforced.run();
+
+  EXPECT_EQ(unforced_result.exit_code, 1);
+  EXPECT_TRUE(unforced_result.stderr_text.find("Not a directory") !=
+              std::string::npos);
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "file.txt"));
 }
 
@@ -351,14 +363,20 @@ TEST(rm, rm_wildcard) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("rm output", r.stdout_text);
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU 9.4] The shell expands wildcards; rm treats every operand
+  // literally (DOCS/2.0-MIGRATION.md §3, the cp row states the family
+  // rule). `rm '*.txt'` therefore reports the literal operand, removes
+  // nothing, and exits 1. The 1.x applet glob-expanded internally.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stderr_text.find("rm: cannot remove '*.txt'") !=
+              std::string::npos);
 
-  // Verify .txt files were removed but .log file remains
+  // Both wildcard operands and the non-matching file survive.
   bool txt1_exists = std::filesystem::exists(tmp.path / "file1.txt");
   bool txt2_exists = std::filesystem::exists(tmp.path / "file2.txt");
   bool log_exists = std::filesystem::exists(tmp.path / "keep.log");
-  EXPECT_TRUE(!txt1_exists);
-  EXPECT_TRUE(!txt2_exists);
+  EXPECT_TRUE(txt1_exists);
+  EXPECT_TRUE(txt2_exists);
   EXPECT_TRUE(log_exists);
 }
 
