@@ -44,10 +44,10 @@
 //!   GNU does NOT dedup (`df . .` -> two identical rows, probed). The
 //!   `file` column is the operand text as typed, `target` is the mount
 //!   point (`get_point` df.c:1373-1447, `FILE_FIELD` cell df.c:1227,
-//!   `TARGET_FIELD` cell df.c:1231-1242). Operands the WSL oracle cannot
-//!   stat — drive-letter forms (`C:\`, `C:\Windows`) are not POSIX
-//!   paths — take the GNU missing-path branch: quotef'd
-//!   `No such file or directory`, empty stdout, rc 1 (probed).
+//!   `TARGET_FIELD` cell df.c:1231-1242). Native absolute operands
+//!   (`C:\`, `C:\Windows`, `D:/x`) resolve like any other path — the
+//!   Windows build stats exactly what it is handed; the WSL oracle's own
+//!   spelling rules do not narrow the product surface.
 //! * --output fields (decode_output_arg df.c:431-498):
 //!   source,fstype,itotal,iused,iavail,ipcent,size,used,avail,pcent,file,
 //!   target — bare `--output` = all 12 (df.c:555-556, probed). Unknown /
@@ -401,13 +401,6 @@ fn local_volumes() -> Vec<Volume> {
         i += 1;
     }
     out
-}
-
-/// True for `X:` / `X:\` / `X:\...` drive-letter forms (the operand
-/// class the WSL oracle cannot stat as a POSIX path).
-fn is_drive_letter_form(name: &str) -> bool {
-    let b = name.as_bytes();
-    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
 /// Mount root for an absolute path: GetVolumePathNameW first (handles
@@ -1314,24 +1307,12 @@ pub fn df_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         .into_owned();
         for operand in &p.positionals {
             let name = operand.to_string_lossy().into_owned();
-            // Windows drive-letter forms (`C:\`, `C:\Windows`) are the
-            // operands the WSL oracle cannot stat — not POSIX paths — so
-            // they take the GNU missing-path branch (probed; the 1.x C++
-            // applet keeps its drive model, r=c divergence recorded).
-            if is_drive_letter_form(&name) {
-                let _ = writeln!(
-                    io.stderr,
-                    "df: {}",
-                    tr!(
-                        ctx,
-                        "command.df.error.no_such_file",
-                        "{path}: No such file or directory",
-                        path = quotef(name.as_bytes())
-                    )
-                );
-                failed = true;
-                continue;
-            }
+            // Native absolute operands (`D:\`, `D:\Windows`, `D:/x`) are
+            // ordinary paths here: GNU stats whatever spelling it is handed
+            // (df.c:1774 automount_stat_err), and the Windows build must do
+            // the same. The old drive-letter rejection made `D:\...` answer
+            // ENOENT while the /d dialect and "." worked (#1276 carried the
+            // same bug for csplit -f).
             // the shell-namespace boundary (#1488): a POSIX spelling
             // (/tmp/x, /mnt/d/x, ...) names its native path; the file
             // column keeps the operand text like GNU's get_point.
@@ -1566,25 +1547,19 @@ mod tests {
             e.contains("df: 'Z:\\definitely-missing-path': No such file or directory"),
             "got {e}"
         );
-        // Windows drive-letter operands are the oracle's missing-path
-        // class: rc 1, empty stdout, quotef'd stderr
-        for name in ["C:\\", "C:\\Windows"] {
-            let (r, out, e) = run(&[name], &sc);
-            assert_eq!(r, 1, "{name}");
-            assert_eq!(out, "", "{name} prints nothing");
-            assert!(
-                e.contains(&format!("df: '{}': No such file or directory", name)),
-                "{name}: {e}"
-            );
-        }
-        // --output=source C:\ is rc 1 + empty
-        let (r, out, e) = run(&["--output=source", "C:\\"], &sc);
-        assert_eq!(r, 1);
-        assert_eq!(out, "");
-        assert!(
-            e.contains("df: 'C:\\': No such file or directory"),
-            "got {e}"
-        );
+        // A native absolute operand is a normal path: GNU stats whatever
+        // spelling it is handed (df.c:1774). The scratch dir's own native
+        // spelling (e.g. `C:\Users\...\Temp\...`) must resolve to its
+        // volume instead of the old drive-letter ENOENT branch.
+        let native = sc.dir.to_string_lossy().into_owned();
+        let (r, out, e) = run(&[native.as_str()], &sc);
+        assert_eq!(r, 0, "native operand {native}: {e}");
+        assert!(out.contains("Filesystem"), "{out}");
+        assert!(out.lines().count() >= 2, "{out}");
+        // ... including through --output.
+        let (r, out, e) = run(&["--output=source", native.as_str()], &sc);
+        assert_eq!(r, 0, "{e}");
+        assert!(!out.trim().is_empty(), "{out}");
         // unknown option still usage-error via argopt
         let (r, _, _) = run(&["--bogus"], &sc);
         assert_eq!(r, 1);
