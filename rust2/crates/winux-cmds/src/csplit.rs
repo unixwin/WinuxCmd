@@ -41,7 +41,9 @@
 //!   locale).
 //! * FILE and the derived output names resolve against the explicit
 //!   ctx.cwd (the driver's scratch dir in the gate), never the process
-//!   cwd.
+//!   cwd. The -f prefix goes through the same shell-namespace mapper as
+//!   the input: a `/d/...` drive-dialect spelling writes to drive D even
+//!   when the cwd is elsewhere (#1276; §6 keeps this Windows subset).
 
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
@@ -656,7 +658,20 @@ pub fn csplit_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let elide_empty = p.has("elide-empty-files");
     let keep_files = p.has("keep-files");
     let suppress_matched = p.has("suppress-matched");
-    let prefix = p.value_of("prefix").unwrap_or("xx").to_string();
+    let raw_prefix = p.value_of("prefix").unwrap_or("xx").to_string();
+    // The -f prefix is an output path, so it crosses the same shell-namespace
+    // boundary as the input operand: a `/d/...` drive-dialect spelling names
+    // its native directory even when ctx.cwd sits on another drive (#1276).
+    // GNU has no dialect, but §6 keeps this Windows subset working in 2.0;
+    // without the fold, Path::join treated `/d/...` as cwd-relative.
+    let prefix = {
+        let mapped = winux_core::path::normalize_operand(ctx.env, &ctx.cwd, &raw_prefix);
+        if mapped != raw_prefix && std::path::Path::new(&mapped).is_absolute() {
+            mapped
+        } else {
+            raw_prefix
+        }
+    };
     let suffix_format = p
         .value_of("suffix-format")
         .map(|s| s.to_string())
