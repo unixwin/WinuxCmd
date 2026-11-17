@@ -21,8 +21,10 @@ cg18-from-unrecognized	strict	printf x > f			--from=bad	root	f
 cg19-named-group-verbose	win	printf x > f			-v	Everyone	f
 cg20-named-group-silent	win	printf x > f			Everyone	f
 cg21-numeric-verbose	note	printf x > f			-v	1	f
-cg22-help	strict				--help
-cg23-version	strict				--version
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+cg22-help	win				--help
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+cg23-version	win				--version
 cg24-numeric-two-files	strict	printf x > a; printf x > b			0	a	b
 cg26-deref-with-H	exit	printf x > f			-R	--dereference	-H	0	f
 cg28-preserve-flag	exit	mkdir d			-R	--preserve-root	0	d

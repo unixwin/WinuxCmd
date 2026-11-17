@@ -231,10 +231,13 @@ TEST(chgrp, chgrp_nonexistent_group) {
   p.add(L"chgrp.exe", {L"nonexistent_group_xyz", L"test.txt"});
   auto r = p.run();
 
+  // [GNU] coreutils 9.4 chgrp.c reports a bad group through
+  // error(EXIT_FAILURE) and exits before usage(): no "Try ..." line.
+  // Probe (WSL 9.4, LC_ALL=C): `chgrp nonexistent_group_xyz f.txt` ->
+  //   chgrp: invalid group: 'nonexistent_group_xyz'            (rc 1)
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "chgrp: invalid group: 'nonexistent_group_xyz'\n"
-                 "Try 'chgrp --help' for more information.\n");
+                 "chgrp: invalid group: 'nonexistent_group_xyz'\n");
 }
 
 TEST(chgrp, chgrp_reference_form_accepts_files_without_group_operand) {
@@ -262,12 +265,16 @@ TEST(chgrp, chgrp_missing_reference_file_reports_gnu_style_error) {
 
   auto r = p.run();
 
+  // [GNU] chown-core.c's reference probe fails with the single diagnostic;
+  // no usage hint follows (probe WSL 9.4:
+  //   chgrp --reference=missing.txt f.txt
+  //   -> chgrp: failed to get attributes of 'missing.txt': No such file or
+  //      directory                                              (rc 1)).
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(
       r.stderr_text,
       "chgrp: failed to get attributes of 'missing.txt': No such file or "
-      "directory\n"
-      "Try 'chgrp --help' for more information.\n");
+      "directory\n");
 }
 
 TEST(chgrp, chgrp_reference_verbose_reports_retained_group) {
@@ -281,29 +288,26 @@ TEST(chgrp, chgrp_reference_verbose_reports_retained_group) {
 
   auto r = p.run();
 
+  // [GNU] chown-core.c describe_change writes the retained line to STDOUT
+  // without a program-name prefix (probe WSL 9.4:
+  //   chgrp -v --reference=ref.txt f.txt
+  //   -> group of 'f.txt' retained as root                      (rc 0)).
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_NE(r.stderr_text.find("chgrp: group of 'target.txt' retained as "),
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_NE(r.stdout_text.find("group of 'target.txt' retained as "),
             std::string::npos);
 }
 
-TEST(chgrp, chgrp_invalid_from_group_fails) {
-  TempDir tmp;
-  tmp.write("test.txt", "hello");
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"chgrp.exe", {L"--from=nonexistent_group_xyz", L"Users", L"test.txt"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_EQ_TEXT(r.stderr_text,
-                 "chgrp: invalid user: 'nonexistent_group_xyz'\n"
-                 "Try 'chgrp --help' for more information.\n");
-}
-
-TEST(chgrp, chgrp_from_option_is_accepted) {
+// [GNU] coreutils 9.4 chgrp has NO --from option: chgrp.c's long_options
+// table is recursive/changes/dereference/no-dereference/no-preserve-root/
+// preserve-root/quiet/silent/reference/verbose only. Probed WSL 9.4:
+//   chgrp --from=root root f.txt
+//   -> chgrp: unrecognized option '--from=root'
+//      Try 'chgrp --help' for more information.               (rc 1)
+// The 1.x applet accepted --from (a chown-only GNU option); it is retired
+// in 2.0 (DOCS/2.0-MIGRATION.md §3: GNU rejects the spelling, so the
+// dispatcher must not keep the 1.x extension alive).
+TEST(chgrp, chgrp_from_option_is_rejected_like_gnu) {
   TempDir tmp;
   tmp.write("test.txt", "hello");
 
@@ -313,114 +317,10 @@ TEST(chgrp, chgrp_from_option_is_accepted) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.empty());
-}
-
-TEST(chgrp, chgrp_from_matching_group_allows_reference_processing) {
-  TempDir tmp;
-  tmp.write("reference.txt", "ref");
-  tmp.write("target.txt", "target");
-
-  const std::string current_group =
-      get_group_name_for_path(tmp.path / "target.txt");
-  EXPECT_FALSE(current_group.empty());
-  if (current_group.empty()) {
-    return;
-  }
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"chgrp.exe", {utf8_to_wstring("--from=" + current_group), L"-v",
-                       L"--reference=reference.txt", L"target.txt"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_NE(r.stderr_text.find("chgrp: group of 'target.txt' retained as "),
-            std::string::npos);
-}
-
-TEST(chgrp, chgrp_from_mismatching_group_skips_reference_processing) {
-  TempDir tmp;
-  tmp.write("reference.txt", "ref");
-  tmp.write("target.txt", "target");
-
-  const std::string current_group =
-      get_group_name_for_path(tmp.path / "target.txt");
-  EXPECT_FALSE(current_group.empty());
-  if (current_group.empty()) {
-    return;
-  }
-
-  const std::string mismatch_group =
-      choose_mismatching_valid_group(current_group);
-  EXPECT_FALSE(mismatch_group.empty());
-  if (mismatch_group.empty()) {
-    return;
-  }
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"chgrp.exe", {utf8_to_wstring("--from=" + mismatch_group), L"-v",
-                       L"--reference=reference.txt", L"target.txt"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.empty());
-}
-
-TEST(chgrp, chgrp_from_numeric_group_allows_reference_processing) {
-  TempDir tmp;
-  tmp.write("reference.txt", "ref");
-  tmp.write("target.txt", "target");
-
-  const std::string current_group_id =
-      get_group_id_for_path(tmp.path / "target.txt");
-  EXPECT_FALSE(current_group_id.empty());
-  if (current_group_id.empty()) {
-    return;
-  }
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"chgrp.exe", {utf8_to_wstring("--from=" + current_group_id), L"-v",
-                       L"--reference=reference.txt", L"target.txt"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_NE(r.stderr_text.find("chgrp: group of 'target.txt' retained as "),
-            std::string::npos);
-}
-
-TEST(chgrp, chgrp_from_colon_numeric_group_allows_reference_processing) {
-  TempDir tmp;
-  tmp.write("reference.txt", "ref");
-  tmp.write("target.txt", "target");
-
-  const std::string current_group_id =
-      get_group_id_for_path(tmp.path / "target.txt");
-  EXPECT_FALSE(current_group_id.empty());
-  if (current_group_id.empty()) {
-    return;
-  }
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"chgrp.exe", {utf8_to_wstring("--from=:" + current_group_id), L"-v",
-                       L"--reference=reference.txt", L"target.txt"});
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_NE(r.stderr_text.find("chgrp: group of 'target.txt' retained as "),
-            std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "chgrp: unrecognized option '--from=Users'\n"
+                 "Try 'chgrp --help' for more information.\n");
 }
 
 TEST(chgrp, chgrp_recursive_dereference_requires_H_or_L) {
@@ -531,11 +431,12 @@ TEST(chgrp, chgrp_reference_drive_dialect_resolves_operand_file) {
   TEST_LOG("chgrp stderr", r.stderr_text);
 
   // Parse-layer verdict: the reference and the target resolve, so the
-  // no-op --reference form reports "retained" and succeeds (no security
-  // state is modified).
+  // no-op --reference form reports "retained" on stdout and succeeds (no
+  // security state is modified). [GNU] describe_change is a stdout
+  // writer (probed WSL 9.4); the 1.x test looked for it on stderr.
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_NE(
-      r.stderr_text.find("group of '" + chgrp_dialect_detail::utf8(operand) +
+      r.stdout_text.find("group of '" + chgrp_dialect_detail::utf8(operand) +
                          "' retained as"),
       std::string::npos);
 }
@@ -562,9 +463,10 @@ TEST(chgrp, chgrp_reference_drive_dialect_cwd_on_other_drive_resolves_operand) {
   TEST_LOG_EXIT_CODE(r);
 
   // The audit's exact misparse: from another drive the raw spelling probed
-  // "<cwd>:\e\..." and reported the existing file as missing.
+  // "<cwd>:\e\..." and reported the existing file as missing. The retained
+  // line rides stdout (GNU describe_change), not stderr.
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_NE(r.stderr_text.find("retained as"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("retained as"), std::string::npos);
   EXPECT_EQ(r.stderr_text.find("failed to get attributes"), std::string::npos);
 }
 
@@ -614,7 +516,7 @@ TEST(chgrp, chgrp_recursive_reference_drive_dialect_walks_operand_drive) {
   TEST_LOG("chgrp stderr", r.stderr_text);
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_NE(r.stderr_text.find("retained as"), std::string::npos);
+  EXPECT_NE(r.stdout_text.find("retained as"), std::string::npos);
   // Shadow negative: nothing was touched on the cwd drive.
   EXPECT_FALSE(std::filesystem::exists(
       std::filesystem::path(std::wstring(1, tmp_drive) + L":\\e")));
@@ -654,10 +556,14 @@ TEST(chgrp, chgrp_preserve_root_all_separator_spellings_are_rejected) {
     TEST_LOG_EXIT_CODE(r);
     TEST_LOG("chgrp stderr", r.stderr_text);
 
+    // [GNU] chgrp -R --preserve-root root // -> "'//' (same as '/')";
+    // chgrp -R --preserve-root root /// -> the argv layer has already
+    // collapsed "///" to "/", so GNU names plain '/'. Probed WSL 9.4.
+    const std::wstring shown = operand == L"///" ? L"/" : operand;
     EXPECT_EQ(r.exit_code, 1);
     EXPECT_NE(
         r.stderr_text.find("it is dangerous to operate recursively on '" +
-                           chgrp_root_spelling_detail::narrow(operand) + "'"),
+                           chgrp_root_spelling_detail::narrow(shown) + "'"),
         std::string::npos);
     EXPECT_NE(r.stderr_text.find("use --no-preserve-root"), std::string::npos);
   }
@@ -833,9 +739,12 @@ TEST(chgrp, chgrp_recursive_descendant_failure_reaches_exit_code) {
   allow_self_full_access(link);
   allow_self_full_access(inner);
 
+  // [GNU] the walk composes child names with '/'; Windows path display is
+  // normalized to the same separator (DOCS/2.0-MIGRATION.md §6, path
+  // display subset), so the 1.x backslash spelling is no longer pinned.
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("changing group of 'tree\\link'"),
+  EXPECT_NE(r.stderr_text.find("changing group of 'tree/link'"),
             std::string::npos);
-  EXPECT_NE(r.stderr_text.find("changing group of 'tree\\sub\\inner.txt'"),
+  EXPECT_NE(r.stderr_text.find("changing group of 'tree/sub/inner.txt'"),
             std::string::npos);
 }

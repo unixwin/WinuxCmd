@@ -161,9 +161,14 @@ TEST(tty, tty_returns_three_when_stdout_pipe_is_closed) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("tty stderr", r.stderr_text);
 
+  // [GNU] tty.c exits 3 on a stdout write failure and reports it:
+  //   tty > closed pipe -> rc 3, stderr "tty: write error: Broken pipe"
+  // (probe: gnu-tty-writeerr.sh). The 1.x assertion expected a silent
+  // stderr; GNU is not silent. §6 broken-pipe row: Windows has no SIGPIPE,
+  // so the errno text is platform-specific — pin the GNU frame only.
   EXPECT_EQ(r.exit_code, 3);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_NE(r.stderr_text.find("tty: write error: "), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
@@ -178,5 +183,8 @@ TEST(tty, issue1368_closed_stdout_write_error_returns_three) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("tty stderr", r.stderr_text);
 
+  // [GNU] a closed stdout is EBADF, not EPIPE: tty exits 3 and prints
+  // "tty: write error: Bad file descriptor" (probe: gnu-tty-writeerr.sh).
   EXPECT_EQ(r.exit_code, 3);
+  EXPECT_NE(r.stderr_text.find("tty: write error: "), std::string::npos);
 }

@@ -171,11 +171,13 @@ TEST(chown, chown_missing_reference_file_reports_gnu_style_error) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] chown-core.c exits on the reference probe failure before usage():
+  // no "Try ..." line (probe WSL 9.4:
+  //   chown --reference=missing.txt f.txt -> one line, rc 1).
   EXPECT_EQ_TEXT(
       r.stderr_text,
       "chown: failed to get attributes of 'missing.txt': No such file or "
-      "directory\n"
-      "Try 'chown --help' for more information.\n");
+      "directory\n");
 }
 
 TEST(chown, chown_reference_verbose_reports_retained_ownership) {
@@ -195,12 +197,16 @@ TEST(chown, chown_reference_verbose_reports_retained_ownership) {
   // GNU describe_change reports on stdout (src/chown-core.c:204), without
   // a program-name prefix; --reference sets both fields so the retained
   // line shows "owner:group" (probe: ownership of 'g' retained as
-  // root:root).
+  // root:root). [§6 ownership] a Windows SID lookup renders
+  // "DOMAIN\name", which GNU has no analogue for: pin the name/group
+  // suffix, allow the domain qualifier.
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.empty());
-  EXPECT_NE(r.stdout_text.find("ownership of 'target.txt' retained as " +
-                               owner + ":" + group),
-            std::string::npos);
+  const auto retained =
+      r.stdout_text.find("ownership of 'target.txt' retained as ");
+  ASSERT_NE(retained, std::string::npos);
+  EXPECT_NE(r.stdout_text.find(owner, retained), std::string::npos);
+  EXPECT_NE(r.stdout_text.find(group, retained), std::string::npos);
 }
 
 TEST(chown, chown_invalid_user_fails) {
@@ -213,9 +219,11 @@ TEST(chown, chown_invalid_user_fails) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] invalid user is reported by error(EXIT_FAILURE) with no usage
+  // hint (probe WSL 9.4: `chown nonexistent_user_xyz f.txt` -> one line,
+  // rc 1; same shape for --from=<bad user>).
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "chown: invalid user: 'nonexistent_user_xyz'\n"
-                 "Try 'chown --help' for more information.\n");
+                 "chown: invalid user: 'nonexistent_user_xyz'\n");
 }
 
 TEST(chown, chown_invalid_group_fails) {
@@ -228,9 +236,11 @@ TEST(chown, chown_invalid_group_fails) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] invalid group carries no usage hint (probe WSL 9.4:
+  // `chown :nonexistent_group_xyz f.txt` -> one line, rc 1; same for
+  // --from=:<bad group>).
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "chown: invalid group: ':nonexistent_group_xyz'\n"
-                 "Try 'chown --help' for more information.\n");
+                 "chown: invalid group: ':nonexistent_group_xyz'\n");
 }
 
 TEST(chown, chown_double_separator_forms_fail_with_invalid_group) {
@@ -243,9 +253,12 @@ TEST(chown, chown_double_separator_forms_fail_with_invalid_group) {
   auto colon_result = colon.run();
 
   EXPECT_EQ(colon_result.exit_code, 1);
+  // [GNU] `chown ::` -> invalid group '::' with no usage hint (probe WSL
+  // 9.4), and `chown ..` -> invalid user '..' (the dot warning fires only
+  // when the dot splits a resolvable owner from a group, never for this
+  // whole token).
   EXPECT_EQ_TEXT(colon_result.stderr_text,
-                 "chown: invalid group: '::'\n"
-                 "Try 'chown --help' for more information.\n");
+                 "chown: invalid group: '::'\n");
 
   Pipeline dot;
   dot.set_cwd(tmp.wpath());
@@ -254,9 +267,7 @@ TEST(chown, chown_double_separator_forms_fail_with_invalid_group) {
 
   EXPECT_EQ(dot_result.exit_code, 1);
   EXPECT_EQ_TEXT(dot_result.stderr_text,
-                 "chown: warning: '.' should be ':'\n"
-                 "chown: invalid group: '..'\n"
-                 "Try 'chown --help' for more information.\n");
+                 "chown: invalid user: '..'\n");
 }
 
 TEST(chown, chown_numeric_owner_with_empty_group_fails_with_invalid_spec) {
@@ -269,9 +280,10 @@ TEST(chown, chown_numeric_owner_with_empty_group_fails_with_invalid_spec) {
   auto colon_result = colon.run();
 
   EXPECT_EQ(colon_result.exit_code, 1);
+  // [GNU] `chown 1001:` -> invalid spec (no usage hint); `chown 1001.` is
+  // parsed as a user name and answers invalid user (probe WSL 9.4).
   EXPECT_EQ_TEXT(colon_result.stderr_text,
-                 "chown: invalid spec: '1001:'\n"
-                 "Try 'chown --help' for more information.\n");
+                 "chown: invalid spec: '1001:'\n");
 
   Pipeline dot;
   dot.set_cwd(tmp.wpath());
@@ -280,9 +292,7 @@ TEST(chown, chown_numeric_owner_with_empty_group_fails_with_invalid_spec) {
 
   EXPECT_EQ(dot_result.exit_code, 1);
   EXPECT_EQ_TEXT(dot_result.stderr_text,
-                 "chown: warning: '.' should be ':'\n"
-                 "chown: invalid spec: '1001.'\n"
-                 "Try 'chown --help' for more information.\n");
+                 "chown: invalid user: '1001.'\n");
 }
 
 TEST(chown, chown_dot_separator_owner_form_warns) {
@@ -294,7 +304,9 @@ TEST(chown, chown_dot_separator_owner_form_warns) {
   p.add(L"chown.exe", {L"Users.", L"file.txt"});
   auto r = p.run();
 
-  EXPECT_NE(r.stderr_text.find("chown: warning: '.' should be ':'\n"),
+  // [GNU] the dot warning quotes the whole spec after the colon:
+  //   chown: warning: '.' should be ':': 'Users.'           (probe WSL 9.4)
+  EXPECT_NE(r.stderr_text.find("chown: warning: '.' should be ':': 'Users.'\n"),
             std::string::npos);
   if (r.exit_code == 0) {
     EXPECT_EQ(get_owner_name_for_path(tmp.path / "file.txt"), "Users");
@@ -312,8 +324,11 @@ TEST(chown, chown_dot_separator_owner_group_form_warns) {
   p.add(L"chown.exe", {L"Users.Users", L"file.txt"});
   auto r = p.run();
 
-  EXPECT_NE(r.stderr_text.find("chown: warning: '.' should be ':'\n"),
-            std::string::npos);
+  // [GNU] the dot warning quotes the whole spec after the colon:
+  //   chown: warning: '.' should be ':': 'Users.Users'      (probe WSL 9.4)
+  EXPECT_NE(
+      r.stderr_text.find("chown: warning: '.' should be ':': 'Users.Users'\n"),
+      std::string::npos);
   if (r.exit_code == 0) {
     EXPECT_EQ(get_owner_name_for_path(tmp.path / "file.txt"), "Users");
     EXPECT_EQ(get_group_name_for_path(tmp.path / "file.txt"), "Users");
@@ -332,9 +347,11 @@ TEST(chown, chown_invalid_from_user_fails) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] invalid user is reported by error(EXIT_FAILURE) with no usage
+  // hint (probe WSL 9.4: `chown nonexistent_user_xyz f.txt` -> one line,
+  // rc 1; same shape for --from=<bad user>).
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "chown: invalid user: 'nonexistent_user_xyz'\n"
-                 "Try 'chown --help' for more information.\n");
+                 "chown: invalid user: 'nonexistent_user_xyz'\n");
 }
 
 TEST(chown, chown_invalid_from_group_fails) {
@@ -348,9 +365,11 @@ TEST(chown, chown_invalid_from_group_fails) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
+  // [GNU] invalid group carries no usage hint (probe WSL 9.4:
+  // `chown :nonexistent_group_xyz f.txt` -> one line, rc 1; same for
+  // --from=:<bad group>).
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "chown: invalid group: ':nonexistent_group_xyz'\n"
-                 "Try 'chown --help' for more information.\n");
+                 "chown: invalid group: ':nonexistent_group_xyz'\n");
 }
 
 TEST(chown, chown_from_mismatching_group_skips_reference_processing) {
@@ -554,10 +573,12 @@ TEST(chown, chown_noop_verbose_reports_retained_on_stdout) {
   auto r = p.run();
 
   // GNU: "ownership of 'f' retained as root" on stdout, no chown: prefix
-  // (src/chown-core.c:196 + :204).
+  // (src/chown-core.c:196 + :204). [§6 ownership] the SID renders as
+  // "DOMAIN\name", so only the GNU frame plus the account name is pinned.
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ(r.stdout_text,
-            "ownership of 'file.txt' retained as " + owner + "\n");
+  EXPECT_EQ(r.stdout_text.rfind("ownership of 'file.txt' retained as ", 0), 0u);
+  EXPECT_NE(r.stdout_text.find(owner), std::string::npos);
+  EXPECT_EQ(r.stdout_text.size() - 1, r.stdout_text.find_last_of('\n'));
   EXPECT_TRUE(r.stderr_text.empty());
 }
 
@@ -726,13 +747,16 @@ TEST(chown, chown_verbose_failed_change_reports_failed_line_on_stdout) {
               std::string::npos);
   } else {
     // GNU prints "failed to change ownership of 'f' from <owner> to
-    // <spec>" on stdout next to the stderr diagnosis.
+    // <spec>" on stdout next to the stderr diagnosis (describe_change with
+    // ok=false). [§6 ownership] the SID renders as "DOMAIN\name"; pin the
+    // GNU frame and the account name, allow the domain qualifier.
     EXPECT_NE(r.stderr_text.find("changing ownership of 'file.txt'"),
               std::string::npos);
-    EXPECT_NE(
-        r.stdout_text.find("failed to change ownership of 'file.txt' from " +
-                           owner + " to Users"),
-        std::string::npos);
+    const auto failed = r.stdout_text.find(
+        "failed to change ownership of 'file.txt' from ");
+    ASSERT_NE(failed, std::string::npos);
+    EXPECT_NE(r.stdout_text.find(owner, failed), std::string::npos);
+    EXPECT_NE(r.stdout_text.find(" to Users\n", failed), std::string::npos);
   }
 }
 
@@ -1074,10 +1098,14 @@ TEST(chown, chown_preserve_root_all_separator_spellings_are_rejected) {
     TEST_LOG_EXIT_CODE(r);
     TEST_LOG("chown stderr", r.stderr_text);
 
+    // [GNU] chown -R --preserve-root root // -> "'//' (same as '/')";
+    // "///" has already collapsed to "/" in GNU's argv layer (probe WSL
+    // 9.4).
+    const std::wstring shown = operand == L"///" ? L"/" : operand;
     EXPECT_EQ(r.exit_code, 1);
     EXPECT_NE(
         r.stderr_text.find("it is dangerous to operate recursively on '" +
-                           chown_root_spelling_detail::narrow(operand) + "'"),
+                           chown_root_spelling_detail::narrow(shown) + "'"),
         std::string::npos);
     EXPECT_NE(r.stderr_text.find("use --no-preserve-root"), std::string::npos);
   }
