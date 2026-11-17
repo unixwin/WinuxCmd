@@ -137,7 +137,7 @@ TEST(sort, sort_repeated_long_key_options_compare_in_order) {
   EXPECT_EQ_TEXT(r.stdout_text, "alpha 1\nalpha 2\nbeta 2\nbeta 10\n");
 }
 
-TEST(sort, sort_debug_reports_key_without_changing_stdout) {
+TEST(sort, sort_debug_annotates_keys_on_stdout) {
   TempDir tmp;
   tmp.write("k.txt", "beta 10\nalpha 2\nalpha 1\nbeta 2\n");
 
@@ -147,10 +147,21 @@ TEST(sort, sort_debug_reports_key_without_changing_stdout) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "alpha 1\nalpha 2\nbeta 2\nbeta 10\n");
-  EXPECT_TRUE(r.stderr_text.find("sort: debug") != std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("key 1") != std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("numeric") != std::string::npos);
+  // GNU 9.4 annotates stdout: the sorted line, then one underline per key
+  // plus the last-resort whole-line underline (sort-probes/p4d-debug-unit.out).
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "alpha 1\n      _\n_______\n"
+                 "alpha 2\n      _\n_______\n"
+                 "beta 2\n     _\n______\n"
+                 "beta 10\n     __\n_______\n");
+  EXPECT_TRUE(r.stderr_text.find(
+                  "sort: text ordering performed using simple byte comparison") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "sort: note numbers use '.' as a decimal point in this locale") !=
+              std::string::npos);
+  // the 1.x applet printed this invented tag instead of GNU's annotation
+  EXPECT_TRUE(r.stderr_text.find("sort: debug") == std::string::npos);
 }
 
 TEST(sort, sort_key_range_limits_end_field) {

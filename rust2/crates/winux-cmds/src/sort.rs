@@ -134,6 +134,8 @@ struct KeyField {
     ignore: Ignore,
     translate: bool,
     reverse: bool,
+    /// sort.c traditional_used: the key came from obsolescent +POS/-POS
+    traditional_used: bool,
 }
 
 impl KeyField {
@@ -155,6 +157,7 @@ impl KeyField {
             ignore: Ignore::None,
             translate: false,
             reverse: false,
+            traditional_used: false,
         }
     }
 
@@ -171,6 +174,49 @@ impl KeyField {
             && !self.month
             && !self.version
             && !self.random
+    }
+
+    fn key_numeric(&self) -> bool {
+        self.numeric || self.general_numeric || self.human_numeric
+    }
+
+    /// sort.c key_to_opts, in the same letter order.
+    fn to_opts(&self) -> String {
+        let mut s = String::new();
+        if self.skipsblanks || self.skipeblanks {
+            s.push('b');
+        }
+        if self.ignore == Ignore::Nondictionary {
+            s.push('d');
+        }
+        if self.translate {
+            s.push('f');
+        }
+        if self.general_numeric {
+            s.push('g');
+        }
+        if self.human_numeric {
+            s.push('h');
+        }
+        if self.ignore == Ignore::Nonprinting {
+            s.push('i');
+        }
+        if self.month {
+            s.push('M');
+        }
+        if self.numeric {
+            s.push('n');
+        }
+        if self.random {
+            s.push('R');
+        }
+        if self.reverse {
+            s.push('r');
+        }
+        if self.version {
+            s.push('V');
+        }
+        s
     }
 }
 
@@ -215,6 +261,10 @@ struct Cfg {
     keys: Vec<KeyField>,
     /// gkey.reverse: reverses only the last-resort comparison
     reverse: bool,
+    /// the post-parse global key (sort.c gkey) for --debug key_warnings
+    gkey: KeyField,
+    /// no -k key: gkey became the only key (sort.c gkey_only)
+    gkey_only: bool,
     unique: bool,
     stable: bool,
     mergeonly: bool,
@@ -244,6 +294,8 @@ impl Cfg {
         Cfg {
             keys: Vec::new(),
             reverse: false,
+            gkey: KeyField::new(),
+            gkey_only: false,
             unique: false,
             stable: false,
             mergeonly: false,
@@ -851,13 +903,16 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             key.reverse = gkey.reverse;
         }
     }
-    if keys.is_empty() && !gkey.default_compare() {
+    let gkey_only = keys.is_empty() && !gkey.default_compare();
+    if gkey_only {
         keys.push(gkey.clone());
     }
     if let Some(status) = check_ordering_compatibility(ctx, io, &keys) {
         return Ok(status);
     }
     cfg.keys = keys;
+    cfg.gkey = gkey.clone();
+    cfg.gkey_only = gkey_only;
     cfg.reverse = gkey.reverse;
 
     // --debug is incompatible with -c/-o (sort.c debug block).
@@ -872,6 +927,14 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             io,
             &format!("options '-{} --debug' are incompatible", x),
         ));
+    }
+
+    // sort.c debug block: header + data-independent key warnings land
+    // before any input is read; the per-line annotation happens in
+    // write_line (debug_write_line below).
+    if cfg.debug {
+        let _ = writeln!(io.stderr, "{DEBUG_HEADER}");
+        debug_warnings(io, &cfg);
     }
 
     // sort.c random_md5_state_init: only a random key consults the source,
@@ -963,6 +1026,7 @@ fn parse_args(args: &[OsString], ctx: &Ctx, io: &mut Io) -> Result<Option<(Cfg, 
                             return Err(s);
                         }
                     }
+                    key.traditional_used = true;
                     cfg.keys.push(key);
                     i += 1;
                     continue;
@@ -1500,6 +1564,360 @@ fn check_ordering_compatibility(ctx: &Ctx, io: &mut Io, keys: &[KeyField]) -> Op
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------
+// --debug: sort.c debug_line / debug_key / mark_key / key_warnings
+// ---------------------------------------------------------------------
+
+const DEBUG_HEADER: &str = "sort: text ordering performed using simple byte comparison";
+
+/// Longest strtold-valid prefix (debug_key's general-numeric underline).
+fn general_prefix_len(s: &[u8]) -> usize {
+    let mut i = 0usize;
+    while i < s.len() && c_isspace(s[i]) {
+        i += 1;
+    }
+    let start = i;
+    if matches!(s.get(i), Some(b'-') | Some(b'+')) {
+        i += 1;
+    }
+    if starts_ci(s, i, b"infinity") {
+        return i + 8;
+    }
+    if starts_ci(s, i, b"inf") {
+        return i + 3;
+    }
+    if starts_ci(s, i, b"nan") {
+        let mut j = i + 3;
+        if s.get(j) == Some(&b'(') {
+            if let Some(rel) = s[j + 1..].iter().position(|&c| c == b')') {
+                j = j + 1 + rel + 1;
+            }
+        }
+        return j;
+    }
+    // hex float
+    if s.get(i) == Some(&b'0') && matches!(s.get(i + 1).map(|c| c | 0x20), Some(b'x')) {
+        let mut j = i + 2;
+        let mut digits = 0usize;
+        while hex_val(s.get(j).copied()).is_some() {
+            j += 1;
+            digits += 1;
+        }
+        if s.get(j) == Some(&b'.') {
+            j += 1;
+            while hex_val(s.get(j).copied()).is_some() {
+                j += 1;
+                digits += 1;
+            }
+        }
+        if digits == 0 {
+            return i; // "0x" alone does not convert past the sign
+        }
+        if matches!(s.get(j).map(|c| c | 0x20), Some(b'p')) {
+            let mut k = j + 1;
+            if matches!(s.get(k), Some(b'-') | Some(b'+')) {
+                k += 1;
+            }
+            if s.get(k).map(|c| is_digit(*c)).unwrap_or(false) {
+                j = k + 1;
+                while s.get(j).map(|c| is_digit(*c)).unwrap_or(false) {
+                    j += 1;
+                }
+            }
+        }
+        return j;
+    }
+    // decimal
+    let mut j = i;
+    let mut digits = 0usize;
+    while s.get(j).map(|c| is_digit(*c)).unwrap_or(false) {
+        j += 1;
+        digits += 1;
+    }
+    if s.get(j) == Some(&b'.') {
+        j += 1;
+        while s.get(j).map(|c| is_digit(*c)).unwrap_or(false) {
+            j += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        return 0;
+    }
+    if matches!(s.get(j).map(|c| c | 0x20), Some(b'e')) {
+        let mut k = j + 1;
+        if matches!(s.get(k), Some(b'-') | Some(b'+')) {
+            k += 1;
+        }
+        if s.get(k).map(|c| is_digit(*c)).unwrap_or(false) {
+            j = k + 1;
+            while s.get(j).map(|c| is_digit(*c)).unwrap_or(false) {
+                j += 1;
+            }
+        }
+    }
+    let _ = start;
+    j
+}
+
+/// debug_key's (offset, width) for the byte string GNU underlines.
+fn debug_span(content: &[u8], key: &KeyField, tab: Option<u8>) -> (usize, usize) {
+    let mut beg = if key.sword != usize::MAX {
+        begfield(content, key, tab)
+    } else {
+        0
+    };
+    let mut lim = if key.eword != usize::MAX {
+        beg.max(limfield(content, key, tab))
+    } else {
+        content.len()
+    };
+    if (key.skipsblanks && key.sword == usize::MAX) || key.month || key.key_numeric() {
+        while beg < content.len() && is_blank(content[beg]) {
+            beg += 1;
+        }
+        if lim < beg {
+            lim = beg;
+        } else if key.month {
+            // getmonth consumes the 3-letter prefix when it matches
+            lim = if getmonth(&content[beg..lim]) > 0 {
+                (beg + 3).min(lim)
+            } else {
+                beg
+            };
+        } else if key.general_numeric {
+            lim = beg + general_prefix_len(&content[beg..lim]);
+        } else if key.numeric || key.human_numeric {
+            let p = beg + usize::from(beg < lim && content[beg] == b'-');
+            let (max_digit, stop) = traverse_raw_number(&content[p..lim]);
+            if max_digit != 0 {
+                let mut end = p + stop;
+                if key.human_numeric && unit_order(*content.get(end).unwrap_or(&0)) != 0 {
+                    end += 1;
+                }
+                lim = end.min(lim);
+            } else {
+                lim = beg;
+            }
+        }
+    }
+    (beg, lim.saturating_sub(beg).min(content.len().saturating_sub(beg)))
+}
+
+fn mark_key<W: Write>(w: &mut W, content: &[u8], key: Option<&KeyField>, tab: Option<u8>) -> std::io::Result<()> {
+    let (offset, width) = match key {
+        Some(k) => debug_span(content, k, tab),
+        None => (0, content.len()),
+    };
+    if offset > 0 {
+        w.write_all(&vec![b' '; offset])?;
+    }
+    if width == 0 {
+        w.write_all(b"^ no match for key\n")
+    } else {
+        w.write_all(&vec![b'_'; width])?;
+        w.write_all(b"\n")
+    }
+}
+
+/// sort.c write_line's debug branch: the line with TAB shown as '>' and
+/// the eol forced to '\n', then one underline per key plus the
+/// last-resort whole-line underline unless -u/-s.
+fn debug_write_line<W: Write>(w: &mut W, raw: &[u8], cfg: &Cfg) -> std::io::Result<()> {
+    let content = &raw[..raw.len().saturating_sub(1)];
+    let shown: Vec<u8> = content
+        .iter()
+        .map(|&b| if b == b'\t' { b'>' } else { b })
+        .collect();
+    w.write_all(&shown)?;
+    w.write_all(b"\n")?;
+    if cfg.keys.is_empty() {
+        mark_key(w, content, None, cfg.tab)?;
+    } else {
+        for k in &cfg.keys {
+            mark_key(w, content, Some(k), cfg.tab)?;
+        }
+        if !cfg.unique && !cfg.stable {
+            mark_key(w, content, None, cfg.tab)?;
+        }
+    }
+    Ok(())
+}
+
+/// key_warnings port (sort.c 2594): data-independent diagnostics emitted
+/// once, before any input, when --debug is active.
+fn debug_warnings(io: &mut Io, cfg: &Cfg) {
+    let mut ugkey = cfg.gkey.clone();
+    let mut basic_numeric_field = false;
+    let mut general_numeric_field = false;
+    let mut basic_numeric_field_span = false;
+    let mut general_numeric_field_span = false;
+
+    for (idx, key) in cfg.keys.iter().enumerate() {
+        let keynum = idx + 1;
+
+        // sort.c key_warnings traditional_used block: rebuild the
+        // obsolescent spelling and its -k equivalent. Char offsets never
+        // appear in either form; sword wraps SIZE_MAX+1 -> 0 for +0.
+        if key.traditional_used {
+            let mut sword = key.sword;
+            if sword == usize::MAX {
+                sword = sword.wrapping_add(1);
+            }
+            let mut obuf = format!("+{sword}");
+            let mut nbuf = format!("-k {}", sword.wrapping_add(1));
+            if key.eword != usize::MAX {
+                obuf += &format!(" -{}", key.eword.wrapping_add(1));
+                nbuf += &format!(
+                    ",{}",
+                    key.eword
+                        .wrapping_add(1)
+                        .wrapping_add(usize::from(key.echar == usize::MAX))
+                );
+            }
+            let _ = writeln!(
+                io.stderr,
+                "sort: obsolescent key {} used; consider {} instead",
+                sq(&obuf),
+                sq(&nbuf)
+            );
+        }
+
+        if key.key_numeric() {
+            if key.general_numeric {
+                general_numeric_field = true;
+            } else {
+                basic_numeric_field = true;
+            }
+        }
+
+        let zero_width = key.sword != usize::MAX && key.eword < key.sword;
+        if zero_width {
+            let _ = writeln!(
+                io.stderr,
+                "sort: key {keynum} has zero width and will be ignored"
+            );
+        }
+
+        let implicit_skip = key.key_numeric() || key.month;
+        let line_offset = key.eword == 0 && key.echar != 0;
+        if !zero_width
+            && !cfg.gkey_only
+            && cfg.tab.is_none()
+            && !line_offset
+            && ((!key.skipsblanks && !implicit_skip)
+                || (!key.skipsblanks && key.schar != 0)
+                || (!key.skipeblanks && key.echar != 0))
+        {
+            let _ = writeln!(
+                io.stderr,
+                "sort: leading blanks are significant in key {keynum}; consider also specifying 'b'"
+            );
+        }
+
+        if !cfg.gkey_only && key.key_numeric() {
+            let mut sword = key.sword.wrapping_add(1);
+            let eword = key.eword.wrapping_add(1);
+            if sword == 0 {
+                sword += 1;
+            }
+            if eword == 0 || sword < eword {
+                let _ = writeln!(
+                    io.stderr,
+                    "sort: key {keynum} is numeric and spans multiple fields"
+                );
+                if key.general_numeric {
+                    general_numeric_field_span = true;
+                } else {
+                    basic_numeric_field_span = true;
+                }
+            }
+        }
+
+        // flag global options not copied into (or specified by) any key
+        if ugkey.ignore != Ignore::None && ugkey.ignore == key.ignore {
+            ugkey.ignore = Ignore::None;
+        }
+        if ugkey.translate && key.translate {
+            ugkey.translate = false;
+        }
+        ugkey.skipsblanks &= !key.skipsblanks;
+        ugkey.skipeblanks &= !key.skipeblanks;
+        ugkey.month &= !key.month;
+        ugkey.numeric &= !key.numeric;
+        ugkey.general_numeric &= !key.general_numeric;
+        ugkey.human_numeric &= !key.human_numeric;
+        ugkey.random &= !key.random;
+        ugkey.version &= !key.version;
+        ugkey.reverse &= !key.reverse;
+    }
+
+    let mut number_locale_warned = false;
+    // C locale: thousands_sep is absent, decimal_point is '.'.
+    if basic_numeric_field_span && cfg.tab == Some(b'.') {
+        let _ = writeln!(
+            io.stderr,
+            "sort: field separator '.' is treated as a decimal point in numbers"
+        );
+        number_locale_warned = true;
+    }
+    if basic_numeric_field_span || general_numeric_field_span {
+        if cfg.tab == Some(b'.') {
+            if !number_locale_warned {
+                let _ = writeln!(
+                    io.stderr,
+                    "sort: field separator '.' is treated as a decimal point in numbers"
+                );
+                number_locale_warned = true;
+            }
+        } else if cfg.tab == Some(b'-') {
+            let _ = writeln!(
+                io.stderr,
+                "sort: field separator '-' is treated as a minus sign in numbers"
+            );
+        } else if general_numeric_field_span && cfg.tab == Some(b'+') {
+            let _ = writeln!(
+                io.stderr,
+                "sort: field separator '+' is treated as a plus sign in numbers"
+            );
+        }
+    }
+    if (basic_numeric_field || general_numeric_field) && !number_locale_warned {
+        if cfg.tab.is_none() {
+            let _ = writeln!(
+                io.stderr,
+                "sort: note numbers use '.' as a decimal point in this locale"
+            );
+        } else {
+            let _ = writeln!(
+                io.stderr,
+                "sort: numbers use '.' as a decimal point in this locale"
+            );
+        }
+    }
+
+    if !ugkey.default_compare() || (ugkey.reverse && (cfg.stable || cfg.unique) && !cfg.keys.is_empty()) {
+        let saved_reverse = ugkey.reverse;
+        if !(cfg.stable || cfg.unique) {
+            ugkey.reverse = false;
+        }
+        let opts = ugkey.to_opts();
+        let _ = writeln!(
+            io.stderr,
+            "sort: {} '-{opts}' {} ignored",
+            if opts.len() == 1 { "option" } else { "options" },
+            if opts.len() == 1 { "is" } else { "are" }
+        );
+        ugkey.reverse = saved_reverse;
+    }
+    if ugkey.reverse && !(cfg.stable || cfg.unique) && !cfg.keys.is_empty() {
+        let _ = writeln!(
+            io.stderr,
+            "sort: option '-r' only applies to last-resort comparison"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -2982,7 +3400,13 @@ fn run_sort(cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> CmdResult {
                 let mut failed = false;
                 for idx in &out {
                     let ln = &lines[*idx];
-                    if w.write_all(&buf[ln.start..ln.start + ln.len]).is_err() {
+                    let raw = &buf[ln.start..ln.start + ln.len];
+                    let res = if cfg.debug {
+                        debug_write_line(&mut w, raw, cfg)
+                    } else {
+                        w.write_all(raw)
+                    };
+                    if res.is_err() {
                         failed = true;
                         break;
                     }
@@ -3020,7 +3444,13 @@ fn run_sort(cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> CmdResult {
         let mut failed = false;
         for idx in &out {
             let ln = &lines[*idx];
-            if w.write_all(&buf[ln.start..ln.start + ln.len]).is_err() {
+            let raw = &buf[ln.start..ln.start + ln.len];
+            let res = if cfg.debug {
+                debug_write_line(&mut w, raw, cfg)
+            } else {
+                w.write_all(raw)
+            };
+            if res.is_err() {
                 failed = true;
                 break;
             }
@@ -3831,5 +4261,112 @@ mod tests {
         std::fs::write(sc.path("a.txt"), "b\na\n").unwrap();
         let (r, err) = run0(b"a.txt");
         assert_eq!(r, 0, "{err:?}");
+    }
+
+    // ---------- --debug annotation (probed p4b..p4f) ----------
+
+    #[test]
+    fn debug_annotates_keys_on_stdout() {
+        let (r, out, err) = run(
+            &["--debug", "-k2,2n"],
+            "beta 10\nalpha 2\nalpha 1\nbeta 2\n",
+        );
+        assert_eq!(r, 0);
+        assert_eq!(
+            out,
+            "alpha 1\n      _\n_______\n\
+             alpha 2\n      _\n_______\n\
+             beta 2\n     _\n______\n\
+             beta 10\n     __\n_______\n"
+        );
+        assert!(err.contains(super::DEBUG_HEADER), "{err:?}");
+        assert!(
+            err.contains("note numbers use '.' as a decimal point in this locale"),
+            "{err:?}"
+        );
+        assert!(!err.contains("sort: debug"), "{err:?}");
+    }
+
+    #[test]
+    fn debug_plain_tab_and_no_match() {
+        let (_, out, _) = run(&["--debug"], "a\tb\na b\n");
+        assert_eq!(out, "a>b\n___\na b\n___\n");
+        let (_, out, err) = run(&["--debug", "-k2,1"], "a b\nc d\n");
+        assert_eq!(
+            out,
+            "a b\n ^ no match for key\n___\nc d\n ^ no match for key\n___\n"
+        );
+        assert!(
+            err.contains("sort: key 1 has zero width and will be ignored"),
+            "{err:?}"
+        );
+        let (_, out, err) = run(&["--debug", "-n"], "abc\nx9\n");
+        assert_eq!(
+            out,
+            "abc\n^ no match for key\n___\nx9\n^ no match for key\n__\n"
+        );
+        assert!(err.contains("note numbers use"), "{err:?}");
+    }
+
+    #[test]
+    fn debug_unique_stable_drop_last_resort_line() {
+        let (_, out, err) = run(&["--debug", "-u", "-k1,1"], "b 2\na 2\na 1\n");
+        assert_eq!(out, "a 2\n_\nb 2\n_\n");
+        assert!(
+            err.contains("leading blanks are significant in key 1"),
+            "{err:?}"
+        );
+        let (_, out, _) = run(&["--debug", "-s", "-k1,1"], "b 2\na 2\na 1\n");
+        assert_eq!(out, "a 2\n_\na 1\n_\nb 2\n_\n");
+    }
+
+    #[test]
+    fn debug_month_and_general_underline_the_prefix() {
+        let (_, out, _) = run(&["--debug", "-M"], "JANX\nzzz\nfeb\n");
+        assert_eq!(
+            out,
+            "zzz\n^ no match for key\n___\nJANX\n___\n____\nfeb\n___\n___\n"
+        );
+        let (_, out, _) = run(&["--debug", "-g"], "1.5x\nabc\n2e3y\n");
+        assert_eq!(
+            out,
+            "abc\n^ no match for key\n___\n1.5x\n___\n____\n2e3y\n___\n____\n"
+        );
+    }
+
+    #[test]
+    fn debug_obsolescent_key_warning() {
+        // GNU 9.4 (sort-probes/p8-traditional.sh): the +POS/-POS spelling is
+        // echoed with its -k equivalent; char offsets never appear.
+        let (_, _, err) = run(&["--debug", "+1", "-2"], "b 2\na 10\na 1\n");
+        assert!(
+            err.contains("obsolescent key '+1 -2' used; consider '-k 2,2' instead"),
+            "{err:?}"
+        );
+        let (_, _, err) = run(&["--debug", "+0"], "b\na\n");
+        assert!(
+            err.contains("obsolescent key '+0' used; consider '-k 1' instead"),
+            "{err:?}"
+        );
+        let (_, _, err) = run(&["--debug", "+1.2", "-2.3"], "a b c d\n1 2 3 4\n");
+        assert!(
+            err.contains("obsolescent key '+1 -3' used; consider '-k 2,3' instead"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn debug_reverse_warnings() {
+        let (_, out, err) = run(&["--debug", "-k1,1n", "-r"], "b 2\na 10\na 1\n");
+        assert_eq!(
+            out,
+            "b 2\n^ no match for key\n___\na 10\n^ no match for key\n____\na 1\n^ no match for key\n___\n"
+        );
+        assert!(
+            err.contains("option '-r' only applies to last-resort comparison"),
+            "{err:?}"
+        );
+        let (_, _, err) = run(&["--debug", "-k1,1n", "-r", "-s"], "b 2\na 1\n");
+        assert!(err.contains("option '-r' is ignored"), "{err:?}");
     }
 }
