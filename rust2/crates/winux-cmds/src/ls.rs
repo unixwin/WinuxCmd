@@ -515,7 +515,9 @@ fn argmatch<'a, T: PartialEq>(value: &str, table: &[(&'a str, T)]) -> Result<usi
     let mut hit: Option<usize> = None;
     let mut ambiguous = false;
     for (i, (name, v)) in table.iter().enumerate() {
-        if !value.is_empty() && name.starts_with(value) {
+        // An empty value is a prefix of every candidate, so `--sort=` is
+        // ambiguous, not "the first entry" (gnulib argmatch; #1645).
+        if name.starts_with(value) {
             match hit {
                 None => hit = Some(i),
                 Some(h) if table[h].1 == *v => hit = Some(h),
