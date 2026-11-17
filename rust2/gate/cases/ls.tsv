@@ -146,3 +146,26 @@ ls201-dot-op	strict	mkdir -p f/d1 f/sub; printf 'x' > f/a.txt; printf 'yy' > f/b
 ls202-C-nonl	strict	mkdir f; printf a > 'f/a b'; printf b > 'f/c d'			-C	f
 ls203-x-order	strict	mkdir f; printf a > f/1; printf b > f/2; printf c > f/3; printf d > f/4; printf e > f/5; printf g > f/6; printf h > f/7; printf i > f/8; printf j > f/9; printf k > f/10			-x	-w	20	f
 ls204-m-long-names	strict	mkdir f; printf a > f/aaaaaaaaaaaaaaaaaaaa; printf b > f/bbbbbbbbbbbbbbbbbbbb; printf c > f/cccccccccccccccccccc; printf d > f/dddddddddddddddddddd; printf e > f/eeeeeeeeeeeeeeeeeeee			-m	f
+ls210-w-invalid-colon	strict	mkdir f; printf x > f/a.txt			-w	abc	f
+ls211-l-perm-regular	exit	mkdir f; printf x > f/plain.txt			-l	f/plain.txt
+ls212-l-perm-exe	exit	mkdir f; printf x > f/tool.exe			-l	f/tool.exe
+ls213-l-perm-dir	exit	mkdir -p f/dir			-ld	f/dir
+ls214-l-perm-readonly	exit	mkdir f; printf x > f/ro.txt; chmod 444 f/ro.txt			-l	f/ro.txt
+ls215-l-lx-dir-link-row	exit	mkdir targetdir; printf x > targetdir/inner.txt; if [ "$(uname -s)" = Linux ]; then ln -s targetdir dirlink; else wsl.exe ln -s targetdir dirlink; fi			-l	dirlink
+ls216-l-classify-target-indicator	exit	mkdir targetdir; printf x > targetdir/inner.txt; if [ "$(uname -s)" = Linux ]; then ln -s targetdir dirlink; else wsl.exe ln -s targetdir dirlink; fi			-ldF	dirlink
+ls217-l-dev-null	exit				-l	/dev/null
+ls218-l-dev-zero	exit				-l	/dev/zero
+ls219-sort-empty-ambig	strict	mkdir f; printf x > f/a.txt			--sort=	f/a.txt
+ls220-color-empty-ambig	strict	mkdir f; printf x > f/a.txt			--color=
+ls221-posixly-stops-at-operand	exit	mkdir f; printf x > f/a.txt	POSIXLY_CORRECT=1		.	--color=never
+ls222-posixly-empty-still-stops	exit	mkdir f; printf x > f/a.txt	POSIXLY_CORRECT=		.	--color=never
+ls223-mnt-bare-drive	exit				-d	/mnt/c
+ls224-across-color-space-padding	strict	mkdir f; printf aaa > f/a.txt; printf bbbbb > f/b.txt; printf x > f/huge.bin	LS_COLORS=		--color=always	-x	-w	20	f
+ls225-L-lx-file-link-operand	exit	printf abc > a.txt; if [ "$(uname -s)" = Linux ]; then ln -s a.txt link; else wsl.exe ln -s a.txt link; fi			-lL	link	a.txt
+ls226-L-lx-file-link-entry	exit	printf abc > a.txt; if [ "$(uname -s)" = Linux ]; then ln -s a.txt link; else wsl.exe ln -s a.txt link; fi			-lL	.
+ls227-lx-dir-link-lists-target	strict	mkdir targetdir; printf x > targetdir/inner.txt; if [ "$(uname -s)" = Linux ]; then ln -s targetdir dirlink; else wsl.exe ln -s targetdir dirlink; fi			-1	dirlink
+ls228-Ld-lx-dir-link-self	exit	mkdir targetdir; printf x > targetdir/inner.txt; if [ "$(uname -s)" = Linux ]; then ln -s targetdir dirlink; else wsl.exe ln -s targetdir dirlink; fi			-lLd	dirlink
+ls229-R-lx-dir-link	strict	mkdir targetdir; printf x > targetdir/inner.txt; if [ "$(uname -s)" = Linux ]; then ln -s targetdir dirlink; else wsl.exe ln -s targetdir dirlink; fi			-R	dirlink
+ls230-group-dirs-first-lx-dir-link	strict	mkdir -p f/targetdir f/dir; printf x > f/targetdir/inner.txt; printf x > f/a.txt; if [ "$(uname -s)" = Linux ]; then ln -s targetdir f/dirlink; else wsl.exe ln -s targetdir f/dirlink; fi			--group-directories-first	-1L	f
+ls231-group-dangling-elides-dot	exit	printf x > a.txt; if [ "$(uname -s)" = Linux ]; then ln -s missing dangling; else wsl.exe ln -s missing dangling; fi; mkdir dir			--group-directories-first	-1L
+ls232-L-dangling-elides-dot	exit	printf x > a.txt; if [ "$(uname -s)" = Linux ]; then ln -s missing dangling; else wsl.exe ln -s missing dangling; fi			-lL	.

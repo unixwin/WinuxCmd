@@ -5590,6 +5590,17 @@ MTIMES = ("mkdir f; printf 'x' > f/n1; printf 'y' > f/n2; printf 'z' > f/n3; "
           "touch -d @1577836800 f/n1; touch -d @1577836900 f/n2; "
           "touch -d @1577837000 f/n3")
 EXTF = "mkdir f; printf a > f/f.c; printf b > f/f.h; printf c > f/noext; printf d > f/f.py; printf e > f/g.c"
+# LX reparse fixtures (#1639/#1640/#1642): the GNU oracle side gets a real
+# symlink, the Windows sides a WSL DrvFs LX reparse point (no Developer Mode).
+LS_LXFILE = ("printf abc > a.txt; "
+             "if [ \"$(uname -s)\" = Linux ]; then ln -s a.txt link; "
+             "else wsl.exe ln -s a.txt link; fi")
+LS_LXDIR = ("mkdir targetdir; printf x > targetdir/inner.txt; "
+            "if [ \"$(uname -s)\" = Linux ]; then ln -s targetdir dirlink; "
+            "else wsl.exe ln -s targetdir dirlink; fi")
+LS_DANGLING = ("printf x > a.txt; "
+               "if [ \"$(uname -s)\" = Linux ]; then ln -s missing dangling; "
+               "else wsl.exe ln -s missing dangling; fi")
 ls_rows = [
     # ---- basic listing / hidden filtering (ls.c:3527-3558 filter rules)
     ("ls01-default", "strict", FIX, "", "", ["f"]),
@@ -5820,6 +5831,64 @@ ls_rows = [
      "printf b > f/bbbbbbbbbbbbbbbbbbbb; printf c > f/cccccccccccccccccccc; "
      "printf d > f/dddddddddddddddddddd; printf e > f/eeeeeeeeeeeeeeeeeeee",
      "", "", ["-m", "f"]),
+    # ---- C1 library-parity rows (fix/ls-c1-parity, DOCS/2.0-ls-rm-ctest-triage.md §4)
+    # GNU's Windows-side gap rows: long-format permission/device/junction
+    # output is platform-form-bound, so stdout is recorded (exit) and the
+    # diagnostic contract is byte-checked by gate/stderr-check.sh.
+    ("ls210-w-invalid-colon", "strict",
+     "mkdir f; printf x > f/a.txt", "", "", ["-w", "abc", "f"]),
+    ("ls211-l-perm-regular", "exit",
+     "mkdir f; printf x > f/plain.txt", "", "",
+     ["-l", "f/plain.txt"]),
+    ("ls212-l-perm-exe", "exit",
+     "mkdir f; printf x > f/tool.exe", "", "", ["-l", "f/tool.exe"]),
+    ("ls213-l-perm-dir", "exit",
+     "mkdir -p f/dir", "", "", ["-ld", "f/dir"]),
+    ("ls214-l-perm-readonly", "exit",
+     "mkdir f; printf x > f/ro.txt; chmod 444 f/ro.txt", "", "",
+     ["-l", "f/ro.txt"]),
+    ("ls215-l-lx-dir-link-row", "exit", LS_LXDIR, "", "",
+     ["-l", "dirlink"]),
+    ("ls216-l-classify-target-indicator", "exit", LS_LXDIR, "", "",
+     ["-ldF", "dirlink"]),
+    ("ls217-l-dev-null", "exit", "", "", "", ["-l", "/dev/null"]),
+    ("ls218-l-dev-zero", "exit", "", "", "", ["-l", "/dev/zero"]),
+    ("ls219-sort-empty-ambig", "strict",
+     "mkdir f; printf x > f/a.txt", "", "", ["--sort=", "f/a.txt"]),
+    ("ls220-color-empty-ambig", "strict",
+     "mkdir f; printf x > f/a.txt", "", "", ["--color="]),
+    ("ls221-posixly-stops-at-operand", "exit",
+     "mkdir f; printf x > f/a.txt", "POSIXLY_CORRECT=1", "",
+     [".", "--color=never"]),
+    ("ls222-posixly-empty-still-stops", "exit",
+     "mkdir f; printf x > f/a.txt", "POSIXLY_CORRECT=", "",
+     [".", "--color=never"]),
+    ("ls223-mnt-bare-drive", "exit", "", "", "", ["-d", "/mnt/c"]),
+    ("ls224-across-color-space-padding", "strict",
+     "mkdir f; printf aaa > f/a.txt; printf bbbbb > f/b.txt; "
+     "printf x > f/huge.bin",
+     "LS_COLORS=", "", ["--color=always", "-x", "-w", "20", "f"]),
+    ("ls225-L-lx-file-link-operand", "exit", LS_LXFILE, "", "",
+     ["-lL", "link", "a.txt"]),
+    ("ls226-L-lx-file-link-entry", "exit", LS_LXFILE, "", "",
+     ["-lL", "."]),
+    ("ls227-lx-dir-link-lists-target", "strict", LS_LXDIR, "", "",
+     ["-1", "dirlink"]),
+    ("ls228-Ld-lx-dir-link-self", "exit", LS_LXDIR, "", "",
+     ["-lLd", "dirlink"]),
+    ("ls229-R-lx-dir-link", "strict", LS_LXDIR, "", "",
+     ["-R", "dirlink"]),
+    ("ls230-group-dirs-first-lx-dir-link", "strict",
+     "mkdir -p f/targetdir f/dir; printf x > f/targetdir/inner.txt; "
+     "printf x > f/a.txt; "
+     "if [ \"$(uname -s)\" = Linux ]; then ln -s targetdir f/dirlink; "
+     "else wsl.exe ln -s targetdir f/dirlink; fi", "", "",
+     ["--group-directories-first", "-1L", "f"]),
+    ("ls231-group-dangling-elides-dot", "exit",
+     LS_DANGLING + "; mkdir dir", "", "",
+     ["--group-directories-first", "-1L"]),
+    ("ls232-L-dangling-elides-dot", "exit", LS_DANGLING, "", "",
+     ["-lL", "."]),
 ]
 
 # ----------------------------------------------------------------------
