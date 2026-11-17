@@ -4623,8 +4623,12 @@ fn collect_entries(
         let full_path = join_path(&lookup_w, &name);
         let mut stat_failed = false;
         if should_deref(cfg.deref, &fd, false) && dereferenced_fd(ctx, &full_path, &fd).is_none() {
+            // GNU attach() elides a "." dirname: `ls -lL .` names the
+            // member, not "./member" (#1640/#1642).
             let joined = if display_name.is_empty() {
                 full_path.clone()
+            } else if display_name == "." {
+                name.clone()
             } else {
                 format!(
                     "{}{}{}",
