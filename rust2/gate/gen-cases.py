@@ -3668,6 +3668,11 @@ csplit_rows = [
     ("cs32-crlf-bytes", "strict", "printf 'x\\r\\n--\\r\\ny\\r\\n' > w.txt", "", "",
      ["w.txt", "/--/"]),
     ("cs33-short-h-rejected", "strict", "", "", "", ["-h"]),
+    # GNU csplit opens FILE verbatim: '*.txt' is not a glob (9.4 probe:
+    # "cannot open '*.txt' for reading: No such file or directory", rc 1).
+    ("cs34-wildcard-literal", "strict",
+     "printf 'line1\\nseparator\\n' > a.txt; printf 'line2\\nseparator\\n' > b.txt",
+     "", "", ["*.txt", "/separator/"]),
 ]
 
 

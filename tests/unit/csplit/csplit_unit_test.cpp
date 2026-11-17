@@ -101,7 +101,13 @@ TEST(csplit, csplit_quiet_and_elide_empty_files) {
   EXPECT_EQ_TEXT(r.stdout_text, "");
 }
 
-TEST(csplit, csplit_wildcard_input_rejects_ambiguous_match) {
+// [GNU] csplit opens the operand as spelled; '*.txt' is not a glob. Probe
+// WSL coreutils 9.4: `csplit '*.txt' '/separator/'` ->
+//   csplit: cannot open '*.txt' for reading: No such file or directory
+//   (rc 1)
+// The 1.x applet glob-expanded inside the command and then rejected an
+// ambiguous match; retired in 2.0 (§3 wildcard precedent).
+TEST(csplit, csplit_wildcard_operand_stays_literal) {
   TempDir tmp;
   tmp.write("a.txt", "line1\nseparator\n");
   tmp.write("b.txt", "line2\nseparator\n");
@@ -112,9 +118,13 @@ TEST(csplit, csplit_wildcard_input_rejects_ambiguous_match) {
 
   auto r = p.run();
 
-  EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("exactly one file") != std::string::npos ||
-              r.stderr_text.find("exactly one file") != std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text.find("exactly one file"), std::string::npos);
+  EXPECT_NE(
+      r.stderr_text.find("csplit: cannot open '*.txt' for reading: No such "
+                         "file or directory"),
+      std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "xx00"));
 }
 
 TEST(csplit, csplit_missing_input_reports_help_hint) {

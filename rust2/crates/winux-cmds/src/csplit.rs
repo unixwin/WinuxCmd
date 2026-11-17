@@ -1256,4 +1256,58 @@ mod tests {
             "csplit: invalid option -- 'h'\nTry 'csplit --help' for more information.\n"
         );
     }
+
+    #[test]
+    fn wildcard_operand_stays_literal() {
+        // GNU 9.4 probe: csplit '*.txt' '/separator/' opens argv verbatim ->
+        // "cannot open '*.txt' for reading: No such file or directory", rc 1.
+        // The 1.x applet glob-expanded inside the command; that extension is
+        // retired (GNU never globs), which is what the ctest re-pin checks.
+        let r = run(
+            &[
+                ("a.txt", "line1\nseparator\n"),
+                ("b.txt", "line2\nseparator\n"),
+            ],
+            &["*.txt", "/separator/"],
+        );
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.out, "");
+        assert!(r
+            .err
+            .contains("cannot open '*.txt' for reading: No such file or directory"));
+        assert!(!r.dir.join("xx00").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn prefix_drive_dialect_writes_named_directory() {
+        // #1276: the /X drive dialect must name its native directory even
+        // when ctx.cwd sits on the same drive; the fold is the same
+        // shell-namespace boundary the input operand uses.
+        let sc = ScratchCtx::new("csplit-dialect");
+        std::fs::write(sc.path("test.txt"), "aaa\nbbb\nccc\n").unwrap();
+        std::fs::create_dir_all(sc.path("out")).unwrap();
+        let native = sc.path("out").to_string_lossy().into_owned();
+        let dialect = format!(
+            "/{}{}",
+            native[..1].to_ascii_lowercase(),
+            native[2..].replace('\\', "/")
+        );
+        let prefix = format!("{dialect}/seg-");
+        let args = ["-f", prefix.as_str(), "test.txt", "2"];
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = args.iter().map(Into::into).collect();
+        let rc = super::csplit_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(rc, 0);
+        assert_eq!(io.out(), "4\n8\n");
+        assert_eq!(
+            std::fs::read_to_string(sc.path("out/seg-00")).unwrap(),
+            "aaa\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(sc.path("out/seg-01")).unwrap(),
+            "bbb\nccc\n"
+        );
+    }
 }
