@@ -890,6 +890,7 @@ fn parse_check_line(
     configured_bits: usize,
     bsd_reversed: &mut i32,
 ) -> Option<CheckLine> {
+    let is_explicit = explicit.is_some();
     let algo = match explicit {
         Some(algo) => algo,
         None => {
@@ -901,7 +902,17 @@ fn parse_check_line(
     if let Some(parsed) = parse_tagged(line, algo, configured_bits) {
         return Some(parsed);
     }
-    let _ = (configured_bits, bsd_reversed);
+    // digest.c:split_3 non-tagged branch: `hex  name` is legal only when
+    // -a selected the algorithm — an untagged line carries no tag for
+    // algorithm_from_tag to detect (probe p-cksum-check.sh: `-a md5 -c`
+    // verifies `hex  f` -> "f: OK"; bare `-c` rejects it).
+    if is_explicit {
+        if let Some(parsed) =
+            parse_untagged(line, algo, configured_bits, bsd_reversed)
+        {
+            return Some(parsed);
+        }
+    }
     None
 }
 
