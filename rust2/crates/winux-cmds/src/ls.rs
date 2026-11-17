@@ -3725,8 +3725,9 @@ fn build_display_name(
             indicator_suffix(cfg.indicator, name, fd, is_fifo).to_string()
         }
         Some((_, resolved)) => {
-            // The indicator reflects the TARGET's type (GNU prints it
-            // after the target in `name -> target/`).
+            // The indicator reflects the TARGET's type, and GNU prints it
+            // after the target (`name -> target/`), never on the link name
+            // (#1639/#1640).
             let p = probe_path(ctx, resolved);
             if p.found || p.attrs_valid {
                 let tf = p.fd;
@@ -3741,8 +3742,13 @@ fn build_display_name(
             }
         }
     };
-    let name_width = display_width(&rendered) + display_width(&indicator_extra);
-    rendered.push_str(&indicator_extra);
+    let mut name_indicator = String::new();
+    match &mut target {
+        Some((disp, _)) => disp.push_str(&indicator_extra),
+        None => name_indicator = indicator_extra,
+    }
+    let name_width = display_width(&rendered) + display_width(&name_indicator);
+    rendered.push_str(&name_indicator);
     DisplayName {
         rendered,
         target,
@@ -5017,9 +5023,17 @@ fn gobble_operand(ctx: &Ctx, path: &str, c: &Cfg, cfg: &Resolved, io: &mut Io) -
     // operand-level deref for classification: the effective stat decides
     // dir-vs-file the way gobble_file's do_stat does (ls.c:1696-1700).
     let mut classify_fd = fd;
+    let mut entry_lookup = lookup.clone();
     if should_deref(cfg.deref, &fd, true) {
         match dereferenced_fd(ctx, &lookup, &fd) {
-            Some((d, _)) => classify_fd = d,
+            Some((d, resolved)) => {
+                classify_fd = d;
+                // The target's spelling is what the pending-dir queue and
+                // -R use; the operand spelling stays the display name.
+                if d.is_dir() && !d.is_reparse() && !c.immediate_dirs {
+                    entry_lookup = normalize_lookup_path(&resolved);
+                }
+            }
             None => {
                 if cfg.deref == Deref::All || cfg.deref == Deref::CmdlineAll {
                     // -L/-H on a dangling operand: stat() failed (GNU
@@ -5041,10 +5055,13 @@ fn gobble_operand(ctx: &Ctx, path: &str, c: &Cfg, cfg: &Resolved, io: &mut Io) -
             }
         }
     }
-    let arg_dir = classify_fd.is_dir() && !c.immediate_dirs;
+    // A bare reparse directory (junction / LX link under -l or -d) is a
+    // link, not a directory operand: GNU's lstat shape is S_IFLNK, so the
+    // long-format row stays a link row instead of extracting the target.
+    let arg_dir = classify_fd.is_dir() && !classify_fd.is_reparse() && !c.immediate_dirs;
     Some(Entry {
         name: path.to_string(),
-        full_path: lookup,
+        full_path: entry_lookup,
         fd,
         command_line: true,
         arg_dir,
