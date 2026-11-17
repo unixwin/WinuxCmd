@@ -2328,6 +2328,12 @@ tail_rows = [
     ("tl101-debug-retired", "strict", HEAD_TAIL_FILE, "", "", ["--debug", "-n", "1", "f"]),
     ("tl102-use-polling-retired", "strict", HEAD_TAIL_FILE, "", "",
      ["--use-polling", "-n", "1", "f"]),
+    # follow mode is ASSIGNED in argv order (tail.c:2185-2193): -F sets
+    # name+retry, a later --follow=descriptor re-selects descriptor.
+    ("tl103-F-then-follow-descriptor", "strict", HEAD_TAIL_FILE, "", "",
+     ["-F", "--follow=descriptor", "--pid=2147483647", "f"]),
+    ("tl104-follow-descriptor-then-F", "strict", HEAD_TAIL_FILE, "", "",
+     ["--follow=descriptor", "-F", "--pid=2147483647", "f"]),
 ]
 
 cut_rows = [

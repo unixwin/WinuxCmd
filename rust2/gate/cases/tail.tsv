@@ -102,3 +102,5 @@ tl99-qv-last-wins	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-q	-v	f	f
 tl100-vq-last-wins	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-v	-q	f	f
 tl101-debug-retired	strict	printf '1\n2\n3\n4\n5\n' > f			--debug	-n	1	f
 tl102-use-polling-retired	strict	printf '1\n2\n3\n4\n5\n' > f			--use-polling	-n	1	f
+tl103-F-then-follow-descriptor	strict	printf '1\n2\n3\n4\n5\n' > f			-F	--follow=descriptor	--pid=2147483647	f
+tl104-follow-descriptor-then-F	strict	printf '1\n2\n3\n4\n5\n' > f			--follow=descriptor	-F	--pid=2147483647	f

@@ -1569,6 +1569,23 @@ mod tests {
     const DEAD: &str = "--pid=2147483647";
 
     #[test]
+    fn follow_mode_last_occurrence_wins() {
+        // tail.c:2185-2193: every -f/--follow/-F ASSIGNS follow_mode.
+        // -F also sets reopen_inaccessible_files; the warning shape is
+        // the GNU-observable proof of the final mode (probed WSL 9.4).
+        let sc = ScratchCtx::new("tail-lastwins");
+        std::fs::write(sc.path("f"), "a\n").unwrap();
+        let (r, o, e) = run_in(&sc, &["-F", "--follow=descriptor", DEAD, "f"]);
+        assert_eq!((r, o.as_str()), (0, "a\n"));
+        assert_eq!(
+            e,
+            "tail: warning: --retry only effective for the initial open\n"
+        );
+        let (r, o, e) = run_in(&sc, &["--follow=descriptor", "-F", DEAD, "f"]);
+        assert_eq!((r, o.as_str(), e.as_str()), (0, "a\n", ""));
+    }
+
+    #[test]
     fn retired_1x_follow_extensions_are_unrecognized() {
         // coreutils 9.4 tail.c:237 long_options[] has neither --debug
         // nor --use-polling; the 1.x follow-diagnostic switches are

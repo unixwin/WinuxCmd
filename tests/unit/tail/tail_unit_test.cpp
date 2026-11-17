@@ -608,14 +608,20 @@ TEST(tail, tail_follow_mode_last_occurrence_wins_to_descriptor) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"tail.exe", {L"--debug", L"-F", L"--follow=descriptor", L"--pid",
+  p.add(L"tail.exe", {L"-F", L"--follow=descriptor", L"--pid",
                       L"999999", L"a.txt"});
   auto r = p.run();
 
+  // [GNU] each -f/--follow/-F ASSIGNS the mode in argv order
+  // (tail.c:2185-2193). -F first sets retry+name; the later
+  // --follow=descriptor wins, so --retry is only effective for the
+  // initial open and GNU warns (probed WSL 9.4).
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
-  EXPECT_TRUE(r.stderr_text.find("following by descriptor") !=
-              std::string::npos);
+  EXPECT_TRUE(
+      r.stderr_text.find(
+          "tail: warning: --retry only effective for the initial open") !=
+      std::string::npos);
 }
 
 TEST(tail, tail_follow_mode_last_occurrence_wins_to_name) {
@@ -624,13 +630,16 @@ TEST(tail, tail_follow_mode_last_occurrence_wins_to_name) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"tail.exe", {L"--debug", L"--follow=descriptor", L"-F", L"--pid",
+  p.add(L"tail.exe", {L"--follow=descriptor", L"-F", L"--pid",
                       L"999999", L"a.txt"});
   auto r = p.run();
 
+  // [GNU] the later -F wins (name+retry). --retry is now effective, so
+  // the descriptor-only warning must be absent (probed WSL 9.4: empty
+  // stderr).
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
-  EXPECT_TRUE(r.stderr_text.find("following by name") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
 }
 
 TEST(tail, tail_retry_and_pid_follow_missing_file_until_it_appears) {
