@@ -14,6 +14,7 @@
 import std;
 import core;
 import utils;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -44,43 +45,9 @@ REGISTER_COMMAND(
 
     /* see also */
     "isatty(3)", "WinuxCmd", "Copyright © 2026 WinuxCmd", TTY_OPTIONS) {
-  clear_pipe_closed_flags();
-
-  namespace cp = core::pipeline;
-
-  if (!ctx.positionals.empty()) {
-    safeErrorPrintLn("tty: extra operand '" +
-                     std::string(ctx.positionals.front()) + "'");
-    safeErrorPrintLn("Try 'tty --help' for more information.");
-    return 2;
-  }
-
-  bool silent = ctx.get<bool>("--silent", false) ||
-                ctx.get<bool>("--quiet", false) || ctx.get<bool>("-s", false);
-  HANDLE hStdIn = GetStdHandle(STD_INPUT_HANDLE);
-
-  DWORD mode = 0;
-  bool is_console = GetConsoleMode(hStdIn, &mode) != 0;
-
-  if (silent) {
-    return is_console ? 0 : 1;
-  }
-
-  if (is_console) {
-    safePrintLn("con");
-  } else {
-    safePrintLn("not a tty");
-  }
-
-  // [GNU] tty's documented exit status 3 covers a failed stdout write as
-  // well (#1368); the pipe-closed arm is the pre-existing SIGPIPE-style
-  // silent case.
-  if (is_stdout_pipe_closed()) {
-    return 3;
-  }
-  if (is_stdout_write_failed()) {
-    return 3;
-  }
-
-  return is_console ? 0 : 1;
+  // #1488 mechanical replacement: the semantics live in the rust2 library
+  // (rust2/crates/winux-cmds/src/tty.rs); the C++ isatty probe and status
+  // ladder are deleted. tty never reads stdin bytes (it stats the handle),
+  // so the plain bridge entry carries the call.
+  return winux::rust2::run_command("tty", ctx.raw_args);
 }
