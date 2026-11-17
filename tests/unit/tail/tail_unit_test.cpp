@@ -582,19 +582,23 @@ TEST(tail, tail_follow_option_recognized) {
   EXPECT_TRUE(r.stdout_text.find("--follow") != std::string::npos);
 }
 
-TEST(tail, tail_use_polling_option_is_recognized) {
+TEST(tail, tail_use_polling_is_unrecognized_like_gnu) {
   TempDir tmp;
   tmp.write("a.txt", "line1\nline2\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"tail.exe",
-        {L"--debug", L"--use-polling", L"-f", L"--pid", L"999999", L"a.txt"});
+  p.add(L"tail.exe", {L"--use-polling", L"-n", L"1", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
-  EXPECT_TRUE(r.stderr_text.find("polling follow implementation") !=
+  // [GNU] coreutils 9.4 tail.c long_options[] (tail.c:237) has no
+  // --use-polling; the 1.x extension is retired. Probed WSL 9.4:
+  // "tail: unrecognized option '--use-polling'", rc 1.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("tail: unrecognized option '--use-polling'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'tail --help' for more information.") !=
               std::string::npos);
 }
 
@@ -687,7 +691,7 @@ TEST(tail, tail_repeated_pid_last_wins) {
   EXPECT_TRUE(r.stdout_text.find("after-short-pid\n") != std::string::npos);
 }
 
-TEST(tail, tail_debug_reports_follow_mode_to_stderr_only) {
+TEST(tail, tail_debug_is_unrecognized_like_gnu) {
   TempDir tmp;
   tmp.write("live.txt", "line1\nline2\n");
 
@@ -696,11 +700,14 @@ TEST(tail, tail_debug_reports_follow_mode_to_stderr_only) {
   p.add(L"tail.exe", {L"--debug", L"-f", L"--pid", L"999999", L"live.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
-  EXPECT_TRUE(r.stderr_text.find("polling follow implementation") !=
+  // [GNU] coreutils 9.4 tail.c long_options[] (tail.c:237) has no --debug
+  // (it arrives upstream after the 9.4 oracle); the 1.x follow diagnostic
+  // extension is retired. Probed WSL 9.4: rc 1, stderr only.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("tail: unrecognized option '--debug'") !=
               std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("following by descriptor") !=
+  EXPECT_TRUE(r.stderr_text.find("Try 'tail --help' for more information.") !=
               std::string::npos);
 }
 

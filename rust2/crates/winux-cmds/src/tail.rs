@@ -1569,6 +1569,24 @@ mod tests {
     const DEAD: &str = "--pid=2147483647";
 
     #[test]
+    fn retired_1x_follow_extensions_are_unrecognized() {
+        // coreutils 9.4 tail.c:237 long_options[] has neither --debug
+        // nor --use-polling; the 1.x follow-diagnostic switches are
+        // retired. Probed WSL 9.4 (LC_ALL=C.UTF-8): rc 1, stderr only,
+        // ASCII quotes in the getopt diagnostic.
+        for opt in ["--debug", "--use-polling"] {
+            let (r, out, err) = run(&[opt, "-n", "1"], "x\n");
+            assert_eq!(r, 1, "{opt}");
+            assert!(out.is_empty(), "{opt}");
+            assert_eq!(
+                err,
+                format!("tail: unrecognized option '{opt}'\nTry 'tail --help' for more information.\n"),
+                "{opt}"
+            );
+        }
+    }
+
+    #[test]
     fn follow_with_dead_writer_terminates_like_gnu() {
         let sc = ScratchCtx::new("tail-dead");
         std::fs::write(sc.path("f"), "a\nb\n").unwrap();
