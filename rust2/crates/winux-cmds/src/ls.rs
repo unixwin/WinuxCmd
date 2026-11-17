@@ -32,9 +32,10 @@
 //! #1645/#1646 and #1504/#1536/#1145/#1572): reparse points carry
 //! SYMLINK/MOUNT_POINT/LX(0xA000001D) tags and are read through
 //! FSCTL_GET_REPARSE_POINT; a junction stays a reparse `l` entry; the
-//! permission string is synthesized (no exec bit on Windows: 'x' for every
-//! non-device entry, 'w' triplet-wide unless READONLY); -Z prints the '?'
-//! stand-in; --si scales by 1000 with lowercase k; enumeration is
+//! permission string follows the shared #1777 Windows mode model
+//! (regular 0644, executable extensions and directories 0755, character
+//! devices 0666, links 0777, READONLY clears the write bits); -Z prints the
+//! '?'; --si scales by 1000 with lowercase k; enumeration is
 //! case-insensitive on disk but all matching is case-sensitive; DOS device
 //! names (NUL, /dev/null, ...) are character devices; a bare-name operand
 //! retries as name.exe (#1572).
@@ -3526,31 +3527,52 @@ fn wildcard_match(pattern: &str, name: &str) -> bool {
 // Entry model + permission string + display name assembly.
 // ======================================================================
 
-/// get_permissions_string (ls.cpp): the synthesized 10-char POSIX form —
-/// 'c' for character devices, 'l' for reparse links, 'd' for plain dirs,
-/// '-' otherwise; 'rwx' triplets with 'w' removed under READONLY and 'x'
-/// absent on devices.
-fn permissions_string(fd: &Fd, is_fifo: bool) -> String {
-    let mut p = String::with_capacity(10);
-    p.push(if is_fifo {
-        'p'
+/// get_permissions_string (#1777 shared Windows mode model): the
+/// synthesized 10-char POSIX form — 'c' for character devices, 'l' for
+/// reparse links, 'd' for plain dirs, 'p' for the fifo marker, '-'
+/// otherwise. The bits are the same model `stat -c %a` and
+/// `find -printf %m` answer: character devices 0666, directories and
+/// `modemap::EXEC_EXTS` executables 0755, other regulars 0644, links
+/// 0777; FILE_ATTRIBUTE_READONLY clears the write bits (directories
+/// included).
+fn permissions_string(fd: &Fd, is_fifo: bool, name: &str) -> String {
+    let (type_char, bits) = if is_fifo {
+        // GNU lstat() shape: S_IFIFO | 0644 (0444 when read-only).
+        ('p', 0o644u32)
     } else if fd.is_chardev() {
-        'c'
+        ('c', 0o666)
     } else if fd.is_reparse() {
-        'l'
+        ('l', 0o777)
     } else if fd.is_plain_dir() {
-        'd'
+        ('d', 0o755)
+    } else if is_exec_mode_name(name) {
+        ('-', 0o755)
     } else {
-        '-'
-    });
-    let w = if fd.read_only() { '-' } else { 'w' };
-    let x = if fd.is_chardev() { '-' } else { 'x' };
-    for _ in 0..3 {
-        p.push('r');
-        p.push(w);
-        p.push(x);
+        ('-', 0o644)
+    };
+    let bits = if fd.read_only() && !fd.is_reparse() && !fd.is_chardev() {
+        bits & !0o222
+    } else {
+        bits
+    };
+    let mut p = String::with_capacity(10);
+    p.push(type_char);
+    for shift in [6, 3, 0] {
+        let v = (bits >> shift) & 0o7;
+        p.push(if v & 4 != 0 { 'r' } else { '-' });
+        p.push(if v & 2 != 0 { 'w' } else { '-' });
+        p.push(if v & 1 != 0 { 'x' } else { '-' });
     }
     p
+}
+
+/// The mode model's executable class (`modemap::EXEC_EXTS`), so `ls -l`
+/// agrees with `stat -c %a`, `find -perm -u+x` and `test -x` (#1777).
+/// This is narrower than the classify `*` heuristic (`is_executable_name`
+/// also stars .ps1, which the shared model deliberately does not).
+fn is_exec_mode_name(name: &str) -> bool {
+    let e = ext_lower(name);
+    crate::modemap::EXEC_EXTS.iter().any(|x| e == *x)
 }
 
 /// The effective dereference decision for one entry
@@ -4730,10 +4752,7 @@ fn print_long_entries(
         }
         let (disp, _) = display_fd(ctx, e, cfg.deref);
         let is_fifo = disp.system() && is_winux_fifo(ctx, &e.full_path);
-        let mut perms = permissions_string(&disp, is_fifo);
-        if perms.starts_with('-') && is_fifo {
-            perms.replace_range(0..1, "p");
-        }
+        let perms = permissions_string(&disp, is_fifo, &e.name);
         let inode = if c.print_inode {
             inode_string(ctx, &e.full_path, &e.fd, cfg.deref, e.command_line)
         } else {
