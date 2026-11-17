@@ -2084,7 +2084,18 @@ fn lex_collapse(path: &str) -> String {
             _ => stack.push(part),
         }
     }
-    format!("{}{}", prefix, stack.join("\\"))
+    let joined = stack.join("\\");
+    // A root keeps its trailing separator: "\\?\C:\" collapses to the
+    // component "C:", but FindFirstFileW / GetFileAttributesW read
+    // "\\?\C:" as the drive's *current* directory and fail. GNU treats
+    // "C:\" (and a bare dir dialect that folds onto it) as the root.
+    let root_with_sep =
+        absolute && stack.len() <= min_comps && p.ends_with('\\') && !joined.ends_with('\\');
+    if root_with_sep {
+        format!("{}{}\\", prefix, joined)
+    } else {
+        format!("{}{}", prefix, joined)
+    }
 }
 
 /// ls.cpp normalize_lookup_path: an all-separator operand is the root;
