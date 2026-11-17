@@ -2334,6 +2334,10 @@ tail_rows = [
      ["-F", "--follow=descriptor", "--pid=2147483647", "f"]),
     ("tl104-follow-descriptor-then-F", "strict", HEAD_TAIL_FILE, "", "",
      ["--follow=descriptor", "-F", "--pid=2147483647", "f"]),
+    # descriptor-mode --retry on a file that never appears: GNU keeps the
+    # initial-open failure as the run status (tail.c main's `ok`).
+    ("tl105-f-retry-missing-only", "strict", "", "", "",
+     ["-f", "--retry", "--pid=2147483647", "missing"]),
 ]
 
 cut_rows = [

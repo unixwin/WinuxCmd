@@ -661,8 +661,22 @@ TEST(tail, tail_retry_and_pid_follow_missing_file_until_it_appears) {
   auto r = p.run();
   writer.join();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] -f --retry gives descriptor mode, so the initial open failure
+  // is only retried; once the name appears it is read, but the run's
+  // status stays the initial-open failure (the polling fallback exits
+  // with tail.c's `ok`, probed WSL 9.4: rc 1 with the data on stdout).
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
+  EXPECT_TRUE(
+      r.stderr_text.find(
+          "tail: warning: --retry only effective for the initial open") !=
+      std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "tail: cannot open 'live.txt' for reading: No such file or "
+                  "directory") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "tail: 'live.txt' has appeared;  following new file") !=
+              std::string::npos);
 }
 
 TEST(tail, tail_repeated_pid_last_wins) {
@@ -919,7 +933,6 @@ TEST(tail, tail_invalid_count_message_matches_gnu) {
       "tail: invalid number of bytes: '99999999999999999999': Value too "
       "large for defined data type\n");
 }
-
 // [#1212] fd 0 is text mode by default, so a pipe stopped at the first 0x1A
 // and disagreed with the file operand. Both forms must be byte-identical.
 TEST(tail, tail_stdin_ctrlz_matches_file_operand_issue1212) {

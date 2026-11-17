@@ -18,6 +18,7 @@ name_noretry_rename_last   rc 0/0  out:=  err:=  PASS
 retry_missing              rc 1/1  out:=  err:=  PASS
 retry_missing_multi        rc 0/0  out:=  err:=  PASS
 desc_retry_missing         rc 1/1  out:=  err:=  PASS
+desc_retry_missing_only    rc 1/1  out:=  err:=  PASS
 pid_exit                   rc 0/0  out:=  err:=  PASS
 stdin_file                 rc 0/0  out:=  err:=  PASS
 stdin_file_truncate        rc 0/0  out:=  err:=  PASS
@@ -30,7 +31,7 @@ lines_zero                 rc 0/0  out:=  err:=  PASS
 zero_term                  rc 0/0  out:=  err:=  PASS
 sleep_fraction             rc 0/0  out:=  err:=  PASS
 broken_pipe                rc pipe-death/pipe-death  out:=  err:=  PASS
-# totals: pass=30 fail=0 known-deviation=0
+# totals: pass=31 fail=0 known-deviation=0
 
 # ---- GNU transcripts (stdout via cat -A, then stderr) ----
 == append (rc 0)
@@ -165,6 +166,13 @@ f0$
 $
 ==> g <==$
 g1$
+-- stderr
+tail: warning: --retry only effective for the initial open
+tail: cannot open 'f' for reading: No such file or directory
+tail: 'f' has appeared;  following new file
+== desc_retry_missing_only (rc 1)
+hi$
+more$
 -- stderr
 tail: warning: --retry only effective for the initial open
 tail: cannot open 'f' for reading: No such file or directory

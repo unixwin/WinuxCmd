@@ -1586,6 +1586,22 @@ mod tests {
     }
 
     #[test]
+    fn desc_retry_missing_only_keeps_initial_open_status() {
+        // GNU: -f --retry (descriptor mode) on an initially missing name
+        // keeps trying, but the run's status is the initial-open failure
+        // (tail.c's polling fallback returns tail_file's `ok`). Probed
+        // WSL 9.4: rc 1, warning + cannot-open on stderr.
+        let sc = ScratchCtx::new("tail-retry-missing");
+        let (r, o, e) = run_in(&sc, &["-f", "--retry", DEAD, "missing"]);
+        assert_eq!((r, o.as_str()), (1, ""));
+        assert_eq!(
+            e,
+            "tail: warning: --retry only effective for the initial open\n\
+             tail: cannot open 'missing' for reading: No such file or directory\n"
+        );
+    }
+
+    #[test]
     fn retired_1x_follow_extensions_are_unrecognized() {
         // coreutils 9.4 tail.c:237 long_options[] has neither --debug
         // nor --use-polling; the 1.x follow-diagnostic switches are
