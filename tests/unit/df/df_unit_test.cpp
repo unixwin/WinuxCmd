@@ -378,7 +378,10 @@ TEST(df, df_inodes_shape) {
   EXPECT_NE(r.stdout_text.find("IUse%"), std::string::npos);
 }
 
-TEST(df, df_wildcard_operands_expand) {
+// [GNU] operands arrive shell-expanded; df itself never globs (the §3 cp
+// precedent). Probe WSL 9.4: `df '*.txt'` ->
+//   df: '*.txt': No such file or directory                    (rc 1)
+TEST(df, df_wildcard_operand_stays_literal) {
   TempDir tmp;
   tmp.write("sample.txt", "abc");
 
@@ -394,8 +397,10 @@ TEST(df, df_wildcard_operands_expand) {
   TEST_LOG("df.exe wildcard output", r.stdout_text);
   TEST_LOG("df.exe wildcard stderr", r.stderr_text);
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_NE(r.stdout_text.find("Filesystem"), std::string::npos);
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text.find("Filesystem"), std::string::npos);
+  EXPECT_NE(r.stderr_text.find("df: '*.txt': No such file or directory"),
+            std::string::npos);
 }
 
 // [GNU] -m is a synonym for --block-size=1M (#308).

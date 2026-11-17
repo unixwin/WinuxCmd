@@ -6,15 +6,16 @@ df03-bad-option	strict				--bogus
 df04-listing	win			
 df05-human	win				-h
 df06-posix	win				-P
-df07-c-drive	strict				C:\
+# [win] native drive-letter operands: GNU on WSL cannot stat a native Windows spelling (it sees a relative name), so this is a platform-surface row; the ctest pins the product behavior (native `C:\` resolves to its volume).
+df07-c-drive	win				C:\
 df08-dot	exit				.
-df09-h-drive	strict				-h	C:\
+df09-h-drive	win				-h	C:\
 df10-si	win				-H
 df11-all-flag	win				-a
 df12-output-all-columns	win				--output
-df13-drive-path	strict				C:\Windows
+df13-drive-path	win				C:\Windows
 df14-relative-deep	exit	mkdir -p sub/deep			sub/deep
-df15-block-size-k	strict				-k	C:\
+df15-block-size-k	win				-k	C:\
 df16-output-unknown-field	strict				--output=bogus
 df17-output-dup-field	strict				--output=source,source
 df18-output-empty-list	strict				--output=
@@ -35,7 +36,7 @@ df32-mixed-missing	exit				/nope-xyz	.
 df33-symlink-operand	note	ln -s . l			l
 df34-kP-combined	exit				-kP	.
 df35-output-total	exit				--output=size,used,avail,pcent	--total	.
-df36-output-source-drive	strict				--output=source	C:\
+df36-output-source-drive	win				--output=source	C:\
 df37-output-file-shape	strict				--output=file	.
 df38-output-file-two-rows	strict				--output=file	.	.
 df39-output-file-total	strict				--output=file	--total	.
