@@ -8,8 +8,10 @@ nh05-missing-operand	strict
 nh06-posixly-correct	strict		POSIXLY_CORRECT=1	
 nh07-empty-command	strict				
 nh08-child-rc-seven	strict				sh	-c	exit 7
-nh09-help	strict				--help
-nh10-version	strict				--version
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+nh09-help	win				--help
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+nh10-version	win				--version
 nh11-short-h	strict				-h
 nh12-unknown-long	strict				--bogus	true
 nh13-child-cmd-exe	win				cmd	/c	exit	5
@@ -17,13 +19,15 @@ nh14-extra-child-args	win				true	extra	args
 nh15-dashdash-consumed	win				--	true
 nh16-dashdash-only	strict				--
 nh17-invalid-short	strict				-5	true
-nh18-lead-version-extra	strict				--version	extra
+# [win] help/version token reached the dispatcher (prefix/extra-arg form): it prints the WinuxCmd brand text, and old C++ == new was measured, so this row is a product-design comparison, not GNU (echo.tsv ec29/ec30 precedent).
+nh18-lead-version-extra	win				--version	extra
 nh19-child-exit-zero	strict				sh	-c	exit 0
 nh20-child-echo-abc	strict				sh	-c	echo abc
 nh21-child-dashdash-arg	win				true	--	x
 nh22-posixly-empty	strict		POSIXLY_CORRECT=	
 nh23-short-h-with-cmd	strict				-h	true
-nh24-version-then-help	strict				--version	--help
+# [win] help/version token reached the dispatcher (prefix/extra-arg form): it prints the WinuxCmd brand text, and old C++ == new was measured, so this row is a product-design comparison, not GNU (echo.tsv ec29/ec30 precedent).
+nh24-version-then-help	win				--version	--help
 nh25-shebang-exit	strict	printf '#!/bin/sh\nexit 6\n' > hi.sh; chmod +x hi.sh			./hi.sh
 nh26-shebang-missing-interp	strict	printf '#!/bin/no-such-interp-xyz\necho never\n' > bad.sh; chmod +x bad.sh			./bad.sh
 nh27-nonpe-badformat	win	printf 'not a script\n' > plain.txt; chmod +x plain.txt			./plain.txt
