@@ -726,6 +726,12 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Deferred((u64, u64)),
         Lines(Vec<String>),
     }
+    // Size of the input FILE operand when it is a regular file (GNU
+    // input_size(): fstat on the reopened stdin minus the current offset).
+    // stdin has no cheap portable fstat here and the gate feeds it through a
+    // pipe, so the redirected-regular-file spelling is left on the read-all
+    // path (documented deviation).
+    let mut input_file_size: Option<u64> = None;
     let source = if echo_mode {
         Source::Lines(
             p.positionals
@@ -780,6 +786,12 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             match std::fs::File::open(&full) {
                 Ok(mut file) => {
+                    // usable_st_size(): only a regular file's size feeds
+                    // input_size(); directories were rejected above.
+                    input_file_size = std::fs::metadata(&full)
+                        .ok()
+                        .filter(|m| m.is_file())
+                        .map(|m| m.len());
                     let mut buf = Vec::new();
                     if let Err(e) = file.read_to_end(&mut buf) {
                         let _ = writeln!(io.stderr, "shuf: read error: {}", fsutil::reason(&e));
@@ -903,27 +915,82 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
             }
         } else {
-            let output_count = head_count
-                .map(|n| n.min(lines.len() as u64) as usize)
-                .unwrap_or(lines.len());
-            let mut lines = lines;
-            // GNU randperm_new runs BEFORE any output is written; a draw
-            // that needs another byte at EOF makes randread error out and
-            // exit, so nothing reaches stdout (probed: empty source on any
-            // line count, one byte on a 6-line input).
-            let mut swapped = Vec::new();
-            for idx in 0..output_count {
-                let offset = match rng.generate_at_most((lines.len() - idx - 1) as u64) {
-                    Ok(v) => v as usize,
-                    Err(()) => {
-                        let _ = writeln!(io.stderr, "shuf: '{source_file}': end of file");
-                        return Ok(1);
+            // GNU shuf.c:525: with -n over a large seekable input it avoids
+            // materializing every line and uses reservoir sampling instead
+            // (RESERVOIR_MIN_INPUT = 8192 * 1024; input_size() is the file
+            // operand's regular-file size). Every line past the first k costs
+            // one randint draw, so a bounded --random-source dies mid-sample
+            // with "'X': end of file" and nothing printed (gate su49).
+            let reservoir_mode = matches!(head_count, Some(n) if n != u64::MAX)
+                && input_file_size.map(|sz| sz > 8192 * 1024).unwrap_or(false);
+            if reservoir_mode {
+                // read_input_reservoir_sampling (shuf.c:172): fill the first
+                // k lines with no draws, then for every remaining line —
+                // including the one past EOF — draw randint_choose(s,
+                // n_lines + 1) BEFORE reading it; j < k stores the line at
+                // rsrv[j], otherwise it is discarded. The final draw at EOF
+                // is consumed but wasted.
+                let k = head_count.unwrap() as usize;
+                let fill = k.min(lines.len());
+                let mut reservoir: Vec<String> = lines[..fill].to_vec();
+                let mut idx = fill;
+                let mut n_lines = fill;
+                if lines.len() >= k {
+                    // The fill loop's last read succeeded (shuf.c:186 leaves
+                    // `line` non-null), so the fate loop always runs — even
+                    // when the input ended exactly at k lines, whose single
+                    // draw is then wasted on the EOF read.
+                    loop {
+                        let slot = match rng.generate_at_most(n_lines as u64) {
+                            Ok(v) => v as usize,
+                            Err(()) => {
+                                let _ = writeln!(io.stderr, "shuf: '{source_file}': end of file");
+                                return Ok(1);
+                            }
+                        };
+                        if idx >= lines.len() {
+                            break;
+                        }
+                        if slot < k {
+                            reservoir[slot] = lines[idx].clone();
+                        }
+                        idx += 1;
+                        n_lines += 1;
                     }
-                };
-                lines.swap(idx, idx + offset);
-                swapped.push(lines[idx].clone());
+                }
+                // main (shuf.c:567) still randperm_new()s the reservoir:
+                // ahead_lines == n_lines == MIN(k, lines read), a full
+                // Fisher-Yates of the reservoir on top of the sampling
+                // draws. A draw that hits EOF still prints nothing.
+                let n_res = reservoir.len();
+                if let Err(()) = rng.shuffle_prefix(&mut reservoir, n_res) {
+                    let _ = writeln!(io.stderr, "shuf: '{source_file}': end of file");
+                    return Ok(1);
+                }
+                output = reservoir;
+            } else {
+                let output_count = head_count
+                    .map(|n| n.min(lines.len() as u64) as usize)
+                    .unwrap_or(lines.len());
+                let mut lines = lines;
+                // GNU randperm_new runs BEFORE any output is written; a draw
+                // that needs another byte at EOF makes randread error out and
+                // exit, so nothing reaches stdout (probed: empty source on any
+                // line count, one byte on a 6-line input).
+                let mut swapped = Vec::new();
+                for idx in 0..output_count {
+                    let offset = match rng.generate_at_most((lines.len() - idx - 1) as u64) {
+                        Ok(v) => v as usize,
+                        Err(()) => {
+                            let _ = writeln!(io.stderr, "shuf: '{source_file}': end of file");
+                            return Ok(1);
+                        }
+                    };
+                    lines.swap(idx, idx + offset);
+                    swapped.push(lines[idx].clone());
+                }
+                output = swapped;
             }
-            output = swapped;
         }
         return emit_output(output_file.as_deref(), &output, zero_terminated, io, ctx);
     }
