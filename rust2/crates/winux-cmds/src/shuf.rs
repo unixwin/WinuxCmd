@@ -20,6 +20,12 @@
 //!   recursive tail) consumes the file's bytes in order. That is the gate's
 //!   strict-comparison path against GNU — every emitted line is diffed.
 //!   A source exhausted mid-repeat dies with "'X': end of file" (probed).
+//!   The non-repeat shuffle builds the whole permutation first, so an EOF
+//!   during it also dies with "'X': end of file" and prints NOTHING (probed:
+//!   an empty source fails on the first draw; a one-byte source drives a
+//!   5-line shuffle to completion but dies on 6 lines, because randint.c
+//!   recycles the byte's entropy). A missing source is
+//!   "X: No such file or directory".
 //! * The range splits on the FIRST '-'; both endpoints are non-negative
 //!   decimals (GNU xstrtoumax tolerates surrounding spaces where the C++
 //!   value model rejects them — win-classified rows); lo > hi is
@@ -782,8 +788,10 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         let full = fsutil::resolve(ctx, source_file);
         let bytes = match std::fs::read(&full) {
             Ok(b) => b,
-            Err(_) => {
-                let _ = writeln!(io.stderr, "shuf: cannot open random source");
+            Err(e) => {
+                // randread_new -> fopen_safer failure: "shuf: NAME: REASON"
+                // (the load path below reports read errors with quotes).
+                let _ = writeln!(io.stderr, "shuf: {source_file}: {}", fsutil::reason(&e));
                 return Ok(1);
             }
         };
@@ -830,24 +838,22 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 .map(|n| n.min(lines.len() as u64) as usize)
                 .unwrap_or(lines.len());
             let mut lines = lines;
-            // [GNU observed] A source exhausted mid-shuffle continues with
-            // identity draws (probed: 4 lines / 1 byte seed -> "2 1 3 4",
-            // rc 0), while the repeat path errors out (probed "end of
-            // file" rc 1). Mirror exactly that split.
+            // GNU randperm_new runs BEFORE any output is written; a draw
+            // that needs another byte at EOF makes randread error out and
+            // exit, so nothing reaches stdout (probed: empty source on any
+            // line count, one byte on a 6-line input).
             let mut swapped = Vec::new();
-            let mut exhausted = false;
             for idx in 0..output_count {
                 let offset = match rng.generate_at_most((lines.len() - idx - 1) as u64) {
                     Ok(v) => v as usize,
                     Err(()) => {
-                        exhausted = true;
-                        0
+                        let _ = writeln!(io.stderr, "shuf: '{source_file}': end of file");
+                        return Ok(1);
                     }
                 };
                 lines.swap(idx, idx + offset);
                 swapped.push(lines[idx].clone());
             }
-            let _ = exhausted;
             output = swapped;
         }
         return emit_output(output_file.as_deref(), &output, zero_terminated, io, ctx);
@@ -1136,9 +1142,9 @@ mod tests {
         assert_eq!(sorted, ["a", "b"]);
 
         let r = run(&[], "p\nq\n", &["--random-source=/dev/null-x", "-e", "x"]);
-        // missing source file -> rc 1 message
+        // missing source file -> rc 1 with GNU's open diagnostic
         assert_eq!(r.rc, 1);
-        assert!(r.err.contains("cannot open random source"));
+        assert!(r.err.contains("No such file or directory"));
 
         // stdin via "-" with a deterministic source: seed A's first byte
         // ('0' = 0x30) is even, so the 2-record shuffle keeps the order
@@ -1163,8 +1169,9 @@ mod tests {
         assert_eq!(r.rc, 0);
         assert_eq!(r.out, "x\ny\n");
 
-        // a source exhausted mid-SHUFFLE continues with identity draws
-        // (GNU probed: 4 lines, 1 byte 0x01 -> "2 1 3 4", rc 0)
+        // a source exhausted mid-SHUFFLE dies with end-of-file and no
+        // output; randint.c recycles a byte's entropy, so one byte is
+        // enough for 4 lines but not for 6 (GNU probed 2026-11-17).
         let r = run(&[("one", "\x01")], "", &["--random-source=one", "4l.txt"]);
         assert_eq!(r.rc, 1); // missing operand file in this bare call
         let r = run(
@@ -1174,6 +1181,32 @@ mod tests {
         );
         assert_eq!(r.rc, 0);
         assert_eq!(r.out, "2\n1\n3\n4\n");
+
+        let r = run(
+            &[("empty.bin", ""), ("3l.txt", "1\n2\n3\n")],
+            "",
+            &["--random-source=empty.bin", "3l.txt"],
+        );
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.out, "");
+        assert!(r.err.contains("'empty.bin': end of file"));
+
+        let r = run(
+            &[("one.bin", "x"), ("5l.txt", "1\n2\n3\n4\n5\n")],
+            "",
+            &["--random-source=one.bin", "5l.txt"],
+        );
+        assert_eq!(r.rc, 0);
+        assert_eq!(r.out, "1\n2\n3\n4\n5\n");
+
+        let r = run(
+            &[("one.bin", "x"), ("6l.txt", "1\n2\n3\n4\n5\n6\n")],
+            "",
+            &["--random-source=one.bin", "6l.txt"],
+        );
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.out, "");
+        assert!(r.err.contains("'one.bin': end of file"));
 
         // empty file: silent success rc 0
         let r = run(&[("empty.txt", "")], "", &["empty.txt"]);
