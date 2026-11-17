@@ -4040,9 +4040,13 @@ fn resolve(c: &Cfg, ctx: &Ctx, io: &mut Io) -> Result<Resolved, u32> {
     }
     let line_length = line_length.unwrap_or(80);
 
-    // tabsize only matters to column formats (ls.c:2309-2324).
+    // tabsize only matters to column formats (ls.c:2309-2324). Color turns
+    // tab padding off entirely (ls.c:1686-1689: tabsize = 0), so the grid
+    // indents with spaces (#1641).
     let mut tabsize = 8usize;
-    if matches!(format, Format::Columns | Format::Across | Format::Commas) {
+    if c.with_color {
+        tabsize = 0;
+    } else if matches!(format, Format::Columns | Format::Across | Format::Commas) {
         if let Some(t) = c.tabsize_opt {
             tabsize = t as usize;
         } else if let Some(v) = env(ctx, "TABSIZE") {
