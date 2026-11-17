@@ -888,7 +888,7 @@ fn interpret(occs: &[Occ], io: &mut Io, ctx: &Ctx) -> Result<Cfg, Early> {
                         &tr!(
                             ctx,
                             "command.ls.error.invalid_line_width",
-                            "invalid line width \u{2018}{value}\u{2019}",
+                            "invalid line width: \u{2018}{value}\u{2019}",
                             value = v
                         ),
                     );
