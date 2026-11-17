@@ -29,8 +29,10 @@ su26-output-diff	strict				-o	a	-o	b	-i	1-2
 su27-seed-ext	win				--random-seed	x	-i	1-5
 su28-seed-source-exclusive	strict	printf 'abc' > seed.bin			--random-seed	x	--random-source=seed.bin	-i	1-2
 su29-short-h-rejected	strict				-h
-su30-help	strict				--help
-su31-version	strict				--version
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+su30-help	win				--help
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+su31-version	win				--version
 su32-range-space	win				-i	 1-3
 su33-rs-stdin-dash	strict	printf 'a\nb\nc\nd\ne\n' > f5.txt; printf '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n' > n20.txt; printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' > seed.bin		p\nq\n	--random-source=seed.bin	-
 su34-rs-no-trailing-nl	strict	printf 'a\nb\nc\nd\ne\n' > f5.txt; printf '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n' > n20.txt; printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' > seed.bin		x\ny	--random-source=seed.bin	-
