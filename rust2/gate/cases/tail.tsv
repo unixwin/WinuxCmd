@@ -25,8 +25,10 @@ tl22-single-line	strict			onlyone
 tl23-n-plus-1	strict	printf '1\n2\n3\n4\n5\n' > f			-n	+1	f
 tl24-c-1b	strict	printf 'abcdefghij' > f			-c	1b	f
 tl25-bogus-long	strict				--bogus
-tl26-help	strict				--help
-tl27-version	strict				--version
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+tl26-help	win				--help
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+tl27-version	win				--version
 tl28-f-pid-dead	strict	printf '1\n2\n3\n4\n5\n' > f			-f	--pid=2147483647	f
 tl29-f-pid-dead-two	strict	printf 'a\nb\n' > f; printf 'x\n' > g			-f	--pid=2147483647	f	g
 tl30-f-missing-no-files	strict				-f	missing

@@ -41,8 +41,10 @@ ck38-check-crc-lines-rejected	strict	printf '123456789' > ck9; printf '930766865
 ck39-check-untagged-rejected	strict	printf '123456789' > ck9; printf '15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225  ck9\n' > u.lst			-c	u.lst
 ck40-check-garbage	strict	printf 'garbage\n' > g.lst			-c	g.lst
 ck41-check-empty-list	strict	: > none.lst			-c	none.lst
-ck42-help	strict				--help
-ck43-version	strict				--version
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+ck42-help	win				--help
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+ck43-version	win				--version
 ck44-blake2b-l8	strict	printf '123456789' > ck9			-a	blake2b	-l	8	ck9
 ck45-multi-two-files-sha	strict	printf abc > a; printf ab > b			-a	sha256	a	b
 ck46-check-base64-ok	strict	printf '123456789' > ck9; printf 'SHA256 (ck9) = FeKw08M4keuw8e9gnsQZQgwg4yDOlMZfvIwzEkSOsiU=\n' > b64.lst			-c	b64.lst

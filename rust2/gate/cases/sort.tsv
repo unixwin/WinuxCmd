@@ -80,7 +80,9 @@ so77-tab-nul	strict	printf 'a\0z\nb\0y\n' > s77	LC_ALL=C		-t	\0	-k2	s77
 so78-key-empty-error	strict		LC_ALL=C		--key=
 so79-check-stdin-sorted	strict		LC_ALL=C		-c
 so80-random	win	printf 'b\na\na\nc\n' > s80	LC_ALL=C		-R	s80
-so81-help	strict		LC_ALL=C		--help
-so82-version	strict		LC_ALL=C		--version
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+so81-help	win		LC_ALL=C		--help
+# [win] bare --help/--version: the dispatcher intercepts the whole token and prints the WinuxCmd brand text (echo.tsv ec29/ec30 precedent; product design, not a GNU comparison).
+so82-version	win		LC_ALL=C		--version
 so83-unknown-opt	strict		LC_ALL=C		--bogus
 so84-stdin-ignored-flag	strict		LC_ALL=C	zz	--parallel=2
