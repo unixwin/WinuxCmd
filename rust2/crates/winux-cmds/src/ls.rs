@@ -206,6 +206,10 @@ fn scan(args: &[OsString], ctx: &Ctx) -> (Vec<Occ>, Vec<OsString>) {
     let mut operands: Vec<OsString> = Vec::new();
     let mut i = 0usize;
     let mut no_more = false;
+    // glibc getopt counts mere presence of POSIXLY_CORRECT (an empty value
+    // too): option scanning stops at the first non-option operand, and
+    // everything after it is an operand (#1304).
+    let posixly = env(ctx, "POSIXLY_CORRECT").is_some();
     while i < args.len() {
         let arg = args[i].to_string_lossy().into_owned();
         if no_more {
@@ -368,6 +372,10 @@ fn scan(args: &[OsString], ctx: &Ctx) -> (Vec<Occ>, Vec<OsString>) {
             continue;
         }
         operands.push(args[i].clone());
+        if posixly {
+            // POSIXLY_CORRECT: the first operand ends option scanning.
+            no_more = true;
+        }
         i += 1;
     }
     (occs, operands)
