@@ -19,9 +19,10 @@
 //!
 //! Exit status: 0 when stdin is a terminal, 1 when it is not, 2 usage
 //! error (probed: `tty extra` -> rc 2), 3 write failure on stdout (GNU
-//! documents 3 for "write error"; the driver maps a broken stdout handle
-//! to 125 before this command can observe it, so 3 is unreachable here
-//! and documented as such).
+//! documents 3 for "write error", tty.c:20 + initialize_exit_failure at
+//! tty.c:92). The buffered ABI cannot fail a write inside this library, so
+//! the host drain (src/bridge/rust2_bridge.cppm) detects the closed handle
+//! and emits GNU's `tty: write error: ...` frame with status 3.
 
 use std::ffi::OsString;
 
