@@ -473,6 +473,8 @@ run_case() {
                 # way a POSIX /usr/bin package resolves them.
                 printf 'export MSYS_NO_PATHCONV=1\n'
                 printf 'export PATH="$PATH:%s"\n' "$(dirname "$CPP_BIN")"
+                printf 'export LC_ALL=%s\n' "$(qsh "${GATE_GNU_LOCALE:-C.UTF-8}")"
+                printf 'export WSLENV="${WSLENV:+$WSLENV:}LC_ALL:LC_CTYPE:LANG"\n'
                 [ -n "$setup" ] && printf '%s\n' "$setup"
                 printf 'printf %%s %s > .stdin\n' "$(qsh "$stdin")"
                 printf '%s %s %s' "$envpre" "$WIN_TIMEOUT" "$exe_q"
