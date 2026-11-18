@@ -375,16 +375,24 @@ TEST(integration, rm_wildcard_then_ls) {
   p1.set_cwd(tmp.wpath());
   p1.add(L"rm.exe", {L"*.txt"});
   auto r1 = p1.run();
-  EXPECT_EQ(r1.exit_code, 0);
+
+  // [GNU] rm receives shell-expanded operands; the program itself treats
+  // them literally (the rm_wildcard pin in rm_unit_test.cpp). Probe WSL
+  // 9.4: rm '*.txt' -> rc 1 with "cannot remove '*.txt': No such file or
+  // directory"; the 1.x in-command glob expansion is retired in 2.0.
+  EXPECT_EQ(r1.exit_code, 1);
+  EXPECT_NE(r1.stderr_text.find("rm: cannot remove '*.txt': No such file or "
+                                "directory"),
+            std::string::npos);
 
   Pipeline p2;
   p2.set_cwd(tmp.wpath());
   p2.add(L"ls.exe", {});
   auto r2 = p2.run();
   EXPECT_EQ(r2.exit_code, 0);
+  EXPECT_TRUE(r2.stdout_text.find("a.txt") != std::string::npos);
+  EXPECT_TRUE(r2.stdout_text.find("b.txt") != std::string::npos);
   EXPECT_TRUE(r2.stdout_text.find("c.log") != std::string::npos);
-  EXPECT_TRUE(r2.stdout_text.find("a.txt") == std::string::npos);
-  EXPECT_TRUE(r2.stdout_text.find("b.txt") == std::string::npos);
 }
 
 // ============================================================
