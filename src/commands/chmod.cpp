@@ -105,23 +105,16 @@ auto is_root_path(std::string_view path) -> bool {
   return false;
 }
 
-auto expand_file_operands(const CommandContext<CHMOD_OPTIONS.size()> &ctx,
+auto file_operands(const CommandContext<CHMOD_OPTIONS.size()> &ctx,
                           size_t first_index) -> std::vector<std::string> {
   std::vector<std::string> files;
 
+  // [GNU] chmod never globs its operands itself: the shell expands
+  // wildcards before exec, so a literal "*.txt" operand is a (missing)
+  // file name, not a pattern (coreutils chmod.c takes argv verbatim;
+  // same invariant as the cp fix in 8384ce9e).
   for (size_t i = first_index; i < ctx.positionals.size(); ++i) {
-    std::string file_arg = std::string(ctx.positionals[i]);
-    if (contains_wildcard(file_arg)) {
-      auto glob_result = glob_expand(file_arg);
-      if (glob_result.expanded && !glob_result.files.empty()) {
-        for (const auto &file : glob_result.files) {
-          files.push_back(wstring_to_utf8(file));
-        }
-        continue;
-      }
-    }
-
-    files.push_back(file_arg);
+    files.emplace_back(ctx.positionals[i]);
   }
 
   return files;
@@ -902,8 +895,8 @@ REGISTER_COMMAND(
   }
 
   std::string_view mode_str = {};
-  std::vector<std::string> files = has_reference ? expand_file_operands(ctx, 0)
-                                                 : expand_file_operands(ctx, 1);
+  std::vector<std::string> files = has_reference ? file_operands(ctx, 0)
+                                                 : file_operands(ctx, 1);
   if (!has_reference) {
     mode_str = ctx.positionals[0];
     auto mode_result = parse_mode(mode_str);
