@@ -215,73 +215,24 @@ auto batch_option_family_name(BatchOptionFamily family) -> std::string_view {
 }
 
 auto warn_conflicting_batch_options(BatchOptionFamily previous_family,
-                                    BatchOptionFamily next_family) -> void {
+                                    BatchOptionFamily next_family,
+                                    std::string_view next_label) -> void {
   if (previous_family == BatchOptionFamily::None ||
       previous_family == next_family) {
     return;
   }
 
-  if (previous_family == BatchOptionFamily::MaxLines &&
-      next_family == BatchOptionFamily::MaxArgs) {
-    safeErrorPrint(
-        "xargs: warning: options --max-lines and --max-args/-n "
-        "are mutually exclusive, ignoring previous --max-lines "
-        "value\n");
-    return;
-  }
-
-  if (previous_family == BatchOptionFamily::MaxArgs &&
-      next_family == BatchOptionFamily::MaxLines) {
-    safeErrorPrint(
-        "xargs: warning: options --max-args and "
-        "--max-lines/-L/-l are mutually exclusive, ignoring "
-        "previous --max-args value\n");
-    return;
-  }
-
-  if (previous_family == BatchOptionFamily::MaxArgs &&
-      next_family == BatchOptionFamily::Replace) {
-    safeErrorPrint(
-        "xargs: warning: options --max-args and "
-        "--replace/-I/-i are mutually exclusive, ignoring "
-        "previous --max-args value\n");
-    return;
-  }
-
-  if (previous_family == BatchOptionFamily::Replace &&
-      next_family == BatchOptionFamily::MaxArgs) {
-    safeErrorPrint(
-        "xargs: warning: options --replace/-I/-i and "
-        "--max-args/-n are mutually exclusive, ignoring "
-        "previous --replace value\n");
-    return;
-  }
-
-  if (previous_family == BatchOptionFamily::MaxLines &&
-      next_family == BatchOptionFamily::Replace) {
-    safeErrorPrint(
-        "xargs: warning: options --max-lines and "
-        "--replace/-I/-i are mutually exclusive, ignoring "
-        "previous --max-lines value\n");
-    return;
-  }
-
-  if (previous_family == BatchOptionFamily::Replace &&
-      next_family == BatchOptionFamily::MaxLines) {
-    safeErrorPrint(
-        "xargs: warning: options --replace/-I/-i and "
-        "--max-lines/-L/-l are mutually exclusive, ignoring "
-        "previous --replace value\n");
-    return;
-  }
-
-  safeErrorPrint("xargs: warning: options ");
-  safeErrorPrint(std::string(batch_option_family_name(previous_family)));
-  safeErrorPrint(" and ");
-  safeErrorPrint(std::string(batch_option_family_name(next_family)));
-  safeErrorPrint(" are mutually exclusive, ignoring previous ");
-  safeErrorPrint(std::string(batch_option_family_name(previous_family)));
-  safeErrorPrint(" value\n");
+  std::string_view prev_label = batch_option_family_name(previous_family);
+  std::string msg;
+  msg.reserve(96);
+  msg += "xargs: warning: options ";
+  msg += prev_label;
+  msg += " and ";
+  msg += next_label;
+  msg += " are mutually exclusive, ignoring previous ";
+  msg += prev_label;
+  msg += " value\n";
+  safeErrorPrint(msg);
 }
 
 auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
@@ -296,10 +247,11 @@ auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
     options.max_lines_present = false;
   };
 
-  auto switch_family = [&](BatchOptionFamily family) {
+  auto switch_family = [&](BatchOptionFamily family,
+                           std::string_view next_label) {
     if (options.active_family != BatchOptionFamily::None &&
         options.active_family != family) {
-      warn_conflicting_batch_options(options.active_family, family);
+      warn_conflicting_batch_options(options.active_family, family, next_label);
       clear_active();
     }
     options.active_family = family;
@@ -317,7 +269,7 @@ auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
         continue;
       }
 
-      switch_family(BatchOptionFamily::MaxArgs);
+      switch_family(BatchOptionFamily::MaxArgs, "--max-args/-n");
       options.max_args = static_cast<int>(std::clamp(
           *value,
           static_cast<std::int64_t>(std::numeric_limits<int>::min()),
@@ -331,7 +283,11 @@ auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
       const auto *value = std::get_if<std::int64_t>(&occurrence.value);
       if (!value) continue;
 
-      switch_family(BatchOptionFamily::MaxLines);
+      // [GNU] xargs.c names bare -L as "-L" when conflicting, whereas -l and
+      // --max-lines are named "--max-lines/-l".
+      std::string_view next_label =
+          option_matches(meta, "-L", "") ? "-L" : "--max-lines/-l";
+      switch_family(BatchOptionFamily::MaxLines, next_label);
       options.max_lines =
           *value < 0
               ? 1
@@ -347,7 +303,7 @@ auto normalize_batch_options(const CommandContext<XARGS_OPTIONS.size()> &ctx)
       const auto *value = std::get_if<std::string>(&occurrence.value);
       if (!value) continue;
 
-      switch_family(BatchOptionFamily::Replace);
+      switch_family(BatchOptionFamily::Replace, "--replace/-I/-i");
       options.replace_str = *value;
       // [GNU] xargs.c:549-554: replace_pat is optarg when one is
       // attached ("--replace=" keeps the empty string) and "{}" only
@@ -401,73 +357,122 @@ auto resolve_delimiter_mode(const CommandContext<XARGS_OPTIONS.size()> &ctx)
  * @param replace_str Replacement string for -I option
  * @return Vector of parsed arguments
  */
-auto hex_value(char c) -> int {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-  if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+auto digit_value_in_base(char c, int base) -> int {
+  if (c >= '0' && c <= '9') {
+    int d = c - '0';
+    return d < base ? d : -1;
+  }
+  if (base == 16) {
+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+  }
   return -1;
 }
 
+struct StrtoulResult {
+  std::uint64_t value = 0;
+  size_t consumed = 0;
+  bool overflow = false;
+};
+
+// Replicates glibc strtoul(p, &end, base) for GNU xargs -d escape parsing:
+// empty digit runs consume 0 bytes and evaluate to 0 (so `\x` is NUL).
+auto parse_strtoul_escape(std::string_view p, int base) -> StrtoulResult {
+  size_t i = 0;
+  while (i < p.size() &&
+         (p[i] == ' ' || p[i] == '\t' || p[i] == '\n' || p[i] == '\r' ||
+          p[i] == '\f' || p[i] == '\v')) {
+    ++i;
+  }
+  bool neg = false;
+  if (i < p.size() && (p[i] == '+' || p[i] == '-')) {
+    neg = (p[i] == '-');
+    ++i;
+  }
+  if (base == 16 && i + 2 < p.size() && p[i] == '0' &&
+      (p[i + 1] == 'x' || p[i + 1] == 'X') &&
+      digit_value_in_base(p[i + 2], 16) >= 0) {
+    i += 2;
+  }
+  size_t start = i;
+  std::uint64_t val = 0;
+  bool overflow = false;
+  std::uint64_t ubase = static_cast<std::uint64_t>(base);
+  while (i < p.size()) {
+    int d = digit_value_in_base(p[i], base);
+    if (d < 0) break;
+    std::uint64_t ud = static_cast<std::uint64_t>(d);
+    if (val > (std::numeric_limits<std::uint64_t>::max() - ud) / ubase) {
+      overflow = true;
+    } else {
+      val = val * ubase + ud;
+    }
+    ++i;
+  }
+  if (i == start) return {0, 0, false};
+  if (overflow) return {std::numeric_limits<std::uint64_t>::max(), i, true};
+  return {neg ? (0ULL - val) : val, i, false};
+}
+
 auto parse_delimiter(std::string_view text) -> cp::Result<char> {
-  if (text.empty()) return std::unexpected("delimiter must not be empty");
   if (text.size() == 1) return text[0];
-  if (text[0] != '\\') {
-    return std::unexpected("delimiter must be a single character");
+  if (text.empty() || text[0] != '\\') {
+    return std::unexpected(
+        "Invalid input delimiter specification " + std::string(text) +
+        ": the delimiter must be either a single character or an escape "
+        "sequence starting with \\.");
   }
 
-  if (text.size() == 2) {
-    switch (text[1]) {
-      case '0':
-        return '\0';
-      case 'a':
-        return '\a';
-      case 'b':
-        return '\b';
-      case 'f':
-        return '\f';
-      case 'n':
-        return '\n';
-      case 'r':
-        return '\r';
-      case 't':
-        return '\t';
-      case 'v':
-        return '\v';
-      case '\\':
-        return '\\';
-      default:
-        if (text[1] == 'x') {
-          return std::unexpected("invalid hex delimiter escape");
-        }
-        return std::unexpected("invalid delimiter escape");
-        break;
-    }
+  switch (text[1]) {
+    case 'a':
+      return '\a';
+    case 'b':
+      return '\b';
+    case 'f':
+      return '\f';
+    case 'n':
+      return '\n';
+    case 'r':
+      return '\r';
+    case 't':
+      return '\t';
+    case 'v':
+      return '\v';
+    case '\\':
+      return '\\';
+    default:
+      break;
   }
 
-  if (text.size() >= 3 && text[1] == 'x') {
-    int value = 0;
-    for (size_t i = 2; i < text.size(); ++i) {
-      int digit = hex_value(text[i]);
-      if (digit < 0) return std::unexpected("invalid hex delimiter escape");
-      value = value * 16 + digit;
-      if (value > 255) return std::unexpected("delimiter escape out of range");
-    }
-    return static_cast<char>(value);
+  int base = 0;
+  std::string_view rest;
+  if (text[1] == 'x') {
+    base = 16;
+    rest = text.substr(2);
+  } else if (text[1] >= '0' && text[1] <= '9') {
+    base = 8;
+    rest = text.substr(1);
+  } else {
+    return std::unexpected("Invalid escape sequence " + std::string(text) +
+                           " in input delimiter specification.");
   }
 
-  if (text.size() >= 2 && text[1] >= '0' && text[1] <= '7') {
-    int value = 0;
-    for (size_t i = 1; i < text.size(); ++i) {
-      if (text[i] < '0' || text[i] > '7') {
-        return std::unexpected("invalid octal delimiter escape");
-      }
-      value = value * 8 + (text[i] - '0');
-      if (value > 255) return std::unexpected("delimiter escape out of range");
-    }
-    return static_cast<char>(value);
+  auto parsed = parse_strtoul_escape(rest, base);
+  if (parsed.overflow || parsed.value > 0xff) {
+    std::string_view max_str = (base == 16) ? "ff" : "377";
+    return std::unexpected("Invalid escape sequence " + std::string(text) +
+                           " in input delimiter specification; character "
+                           "values must not exceed " +
+                           std::string(max_str) + ".");
   }
-
-  return std::unexpected("delimiter must be a single character");
+  if (parsed.consumed < rest.size()) {
+    return std::unexpected("Invalid escape sequence " + std::string(text) +
+                           " in input delimiter specification; trailing "
+                           "characters " +
+                           std::string(rest.substr(parsed.consumed)) +
+                           " not recognised.");
+  }
+  return static_cast<char>(static_cast<unsigned char>(parsed.value));
 }
 
 auto read_input_text(std::istream &input,
@@ -642,7 +647,8 @@ auto is_blank_input_line(std::string_view value) -> bool {
 }
 
 auto parse_replacement_arguments(std::istream &input,
-                                 const std::optional<std::string> &eof_str)
+                                 const std::optional<std::string> &eof_str,
+                                 int max_chars = 0)
     -> cp::Result<std::vector<std::string>> {
   // #1321/#1322: -I mode rewritten to the GNU line model.  The old code
   // copied raw lines (no quote processing at all) and treated a trailing
@@ -659,6 +665,17 @@ auto parse_replacement_arguments(std::istream &input,
   bool have_item = false;
   bool continuing = false;
   bool pending_newline = false;
+  const std::ptrdiff_t item_limit =
+      max_chars > 0 ? static_cast<std::ptrdiff_t>(max_chars) - 1 : -1;
+
+  auto append_char = [&](char ch) -> bool {
+    if (item_limit >= 0 &&
+        static_cast<std::ptrdiff_t>(item.size()) >= item_limit) {
+      return false;
+    }
+    item.push_back(ch);
+    return true;
+  };
 
   auto unmatched_error = [&]() -> std::string {
     return in_single_quote
@@ -669,8 +686,8 @@ auto parse_replacement_arguments(std::istream &input,
   };
 
   // Feed one physical line into the current item.  Returns an error string
-  // on an unclosed quote, or std::nullopt on success.  `strip_leading`
-  // applies only to the first line of an item.
+  // on an unclosed quote or oversized line, or std::nullopt on success.
+  // `strip_leading` applies only to the first line of an item.
   auto feed_line = [&](std::string_view line, bool strip_leading)
       -> std::optional<std::string> {
     size_t i = 0;
@@ -681,10 +698,12 @@ auto parse_replacement_arguments(std::istream &input,
       char c = line[i];
       if (escaped) {
         if (in_double_quote) {
-          if (c != '$' && c != '`' && c != '"' && c != '\\') item += '\\';
-          item += c;
+          if (c != '$' && c != '`' && c != '"' && c != '\\') {
+            if (!append_char('\\')) return std::string("argument line too long");
+          }
+          if (!append_char(c)) return std::string("argument line too long");
         } else {
-          item += c;
+          if (!append_char(c)) return std::string("argument line too long");
         }
         have_item = true;
         escaped = false;
@@ -694,7 +713,7 @@ auto parse_replacement_arguments(std::istream &input,
         if (c == '\'') {
           in_single_quote = false;
         } else {
-          item += c;
+          if (!append_char(c)) return std::string("argument line too long");
         }
         have_item = true;
         continue;
@@ -705,7 +724,7 @@ auto parse_replacement_arguments(std::istream &input,
         } else if (c == '\\') {
           escaped = true;
         } else {
-          item += c;
+          if (!append_char(c)) return std::string("argument line too long");
         }
         have_item = true;
         continue;
@@ -720,9 +739,11 @@ auto parse_replacement_arguments(std::istream &input,
         in_double_quote = true;
         have_item = true;
       } else if (c == '\r') {
-        if (have_item) item += c;
+        if (have_item && !append_char(c)) {
+          return std::string("argument line too long");
+        }
       } else {
-        item += c;
+        if (!append_char(c)) return std::string("argument line too long");
         have_item = true;
       }
     }
@@ -755,7 +776,7 @@ auto parse_replacement_arguments(std::istream &input,
     if (!continuing && is_blank_input_line(line)) continue;
 
     if (pending_newline) {
-      item += '\n';
+      if (!append_char('\n')) return std::unexpected("argument line too long");
       pending_newline = false;
     }
     if (auto error = feed_line(line, !continuing)) {
@@ -913,30 +934,6 @@ auto materialize_arguments(const std::vector<std::string> &base_args,
   }
 
   return std::vector<std::string>(all_args.begin(), all_args.end());
-}
-
-auto expand_command_template_args(const SmallVector<std::string, 32> &base_args)
-    -> std::vector<std::string> {
-  SmallVector<std::string, 64> expanded_args;
-
-  for (const auto &arg : base_args) {
-    if (!contains_wildcard(arg)) {
-      expanded_args.push_back(arg);
-      continue;
-    }
-
-    auto glob_result = glob_expand(arg);
-    if (glob_result.files.empty()) {
-      expanded_args.push_back(arg);
-      continue;
-    }
-
-    for (const auto &match : glob_result.files) {
-      expanded_args.push_back(wstring_to_utf8(match));
-    }
-  }
-
-  return std::vector<std::string>(expanded_args.begin(), expanded_args.end());
 }
 
 auto build_command_line(const std::string &command,
@@ -1516,10 +1513,22 @@ auto execute_command(const std::string &command,
     }
     return true;
   };
-  // #1323: GNU's two single-item errors: the command + initial arguments
-  // alone already over the limit, versus a fitting base pushed over by
-  // one item.
+  // #1323: GNU's single-item / replacement-overflow errors: in normal mode,
+  // base over the limit reports "cannot fit single argument...", while a
+  // fitting base pushed over by one item reports "argument line too long".
+  // In -I mode, command name alone over the limit reports "cannot fit
+  // single argument...", while substituted args pushing over report
+  // "argument list too long".
   auto report_oversized_single = [&]() {
+    if (!replace_str.empty()) {
+      if (max_chars > 0 && command.size() + 1 > static_cast<size_t>(max_chars)) {
+        safeErrorPrint("xargs: cannot fit single argument within argument "
+                       "list size limit\n");
+      } else {
+        safeErrorPrint("xargs: argument list too long\n");
+      }
+      return;
+    }
     if (max_chars > 0 && base_argv_size() > static_cast<size_t>(max_chars)) {
       safeErrorPrint("xargs: cannot fit single argument within argument "
                      "list size limit\n");
@@ -1668,10 +1677,10 @@ REGISTER_COMMAND(
   int max_lines = batch_options.max_lines;
   std::string replace_str = batch_options.replace_str;
   int max_procs = last_option_value<int>(ctx, "-P", "--max-procs", 1);
-  int max_chars = last_option_value<int>(ctx, "-s", "--max-chars", 0);
+  std::int64_t raw_max_chars =
+      last_option_value<std::int64_t>(ctx, "-s", "--max-chars", 0);
   // Windows CreateProcess has a finite command-line limit.  GNU xargs
   // batches by default, so an omitted -s must still enforce that limit.
-  if (max_chars == 0) max_chars = kWindowsCommandLineLimit;
   bool exit_if_exceeded =
       ctx.get<bool>("--exit", false) || ctx.get<bool>("-x", false);
   bool show_limits = ctx.get<bool>("--show-limits", false);
@@ -1684,15 +1693,17 @@ REGISTER_COMMAND(
     return 1;
   }
   if (max_procs == 0) max_procs = std::numeric_limits<int>::max();
-  if (max_chars < 0) {
+  if (raw_max_chars < 0) {
     cp::report_custom_error(L"xargs", L"max-chars must be non-negative");
     return 1;
   }
-  if (max_chars > kWindowsCommandLineLimit) {
-    safeErrorPrint("xargs: warning: value for -s option is too large; using ");
-    safeErrorPrint(std::to_string(kWindowsCommandLineLimit));
-    safeErrorPrint("\n");
-    max_chars = kWindowsCommandLineLimit;
+  int max_chars = kWindowsCommandLineLimit;
+  if (raw_max_chars > kWindowsCommandLineLimit) {
+    safeErrorPrint("xargs: value " + std::to_string(raw_max_chars) +
+                   " for -s option should be <= " +
+                   std::to_string(kWindowsCommandLineLimit) + "\n");
+  } else if (raw_max_chars > 0) {
+    max_chars = static_cast<int>(raw_max_chars);
   }
   if (max_lines < 0 || (batch_options.max_lines_present && max_lines == 0)) {
     cp::report_custom_error(L"xargs", L"max-lines must be positive");
@@ -1790,7 +1801,7 @@ REGISTER_COMMAND(
   } else if (!replace_str.empty() && !delimiter_mode.use_null &&
              !delimiter_mode.has_delimiter) {
     auto input_args_vec =
-        parse_replacement_arguments(parsed_input, logical_eof);
+        parse_replacement_arguments(parsed_input, logical_eof, max_chars);
     if (!input_args_vec) {
       cp::report_error(input_args_vec, L"xargs");
       return 1;
@@ -1909,6 +1920,16 @@ REGISTER_COMMAND(
         continue;
       }
 
+      if (!replace_str.empty()) {
+        // [GNU] -I replaces inside INITIAL-ARGS only; the default command
+        // is bare "echo" with no placeholder, so each item runs `echo`
+        // with zero arguments.
+        for (size_t idx = 0; idx < input_args.size(); ++idx) {
+          if (!flush_echo_batch(true)) return 1;
+        }
+        continue;
+      }
+
       for (const auto &input_arg : input_args) {
         batch.push_back(input_arg);
         std::vector<std::string> candidate(batch.begin(), batch.end());
@@ -1955,16 +1976,14 @@ REGISTER_COMMAND(
   // normally (GNU runs the command afterwards); it suppresses nothing.
   if (show_limits) print_show_limits(max_chars);
 
-  // Execute command with arguments - convert SmallVector to std::vector for
-  // compatibility
-  std::vector<std::string> base_args_vec =
-      expand_command_template_args(base_args);
+  // [GNU] findutils xargs never globs its command-template arguments.
+  std::vector<std::string> base_args_vec(base_args.begin(), base_args.end());
   // #1323: the old clamp lifted -s up to the command line and kept
   // running; GNU instead refuses when the command + initial arguments
   // alone exceed -s -- even with -r or --show-limits, and even with no
-  // items.  The one exception is -I with no items, where GNU runs
-  // nothing at all.  (With the default -s of 32767 this never fires.)
-  if (max_chars > 0 && !( !replace_str.empty() && input_empty )) {
+  // items.  In -I mode, initial args are empty until per-item substitution
+  // (and -I with no items runs nothing at all).
+  if (max_chars > 0 && replace_str.empty()) {
     size_t base_size = command.size() + 1;
     for (const auto &arg : base_args_vec) base_size += arg.size() + 1;
     if (base_size > static_cast<size_t>(max_chars)) {
