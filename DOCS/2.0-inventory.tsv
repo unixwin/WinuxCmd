@@ -112,7 +112,7 @@ regtool	327	win32-console	none	none	no-oracle(doc-audited)	unit	2	c++-only	defer
 renice	161	win32-console	none	none	audited:notes	unit+differential:2	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 reset	143	win32-console	none	none	audited:notes	unit	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 rev	166	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:5	3	wired	rust2-wired	rust2	#1488 (wave6 wired; GATE-REPORT.md)
-rm	1072	mixed(iostream+win32-console+win32-direct)	none	none	audited:clean	unit+differential:3	3	c++-only	deferred(#1488)	c++-1.x	#1650; #1672; #1488
+rm	1072	mixed(iostream+win32-console+win32-direct)	none	none	audited:clean	unit+differential:3	3	wired	rust2-wired	rust2	#1751 (library 38e68352); f14bc603 (wire)
 rmdir	266	win32-console	none	none	audited:clean	unit+differential:3	1	wired	rust2-wired	rust2	#1488 (wave1 wired; GATE-REPORT.md)
 runcon	113	win32-console	none	none	audited:notes	unit	2	rust-ready	deferred(#1488)	rust2-ready	#1488 (wave2 gate green; wiring pending)
 sdiff	827	mixed(crt-stdio+iostream+win32-console+win32-direct)	static-mutable,locale/setmode	none	audited:notes	unit+differential:29	3	c++-only	deferred(#1488)	c++-1.x	#1488 (wave3)

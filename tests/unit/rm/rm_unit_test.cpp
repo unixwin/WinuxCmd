@@ -128,14 +128,28 @@ TEST(rm, rm_file_with_trailing_separator_reports_not_directory) {
   TempDir tmp;
   tmp.write("file.txt", "content");
 
+  // [GNU] probed coreutils 9.4: `rm -r file.txt/` reports ENOTDIR (rc 1);
+  // `rm -rf file.txt/` is silent rc 0 because ENOTDIR is in rm's -f
+  // ignorable-missing set (remove.c nonexistent_file_errno). The 1.x
+  // applet reported ENOTDIR even under -f; retired in 2.0.
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"rm.exe", {L"-r", L"-f", L"file.txt/"});
+  p.add(L"rm.exe", {L"-r", L"file.txt/"});
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stderr_text.find("Not a directory") != std::string::npos);
+  EXPECT_TRUE(std::filesystem::exists(tmp.path / "file.txt"));
+
+  Pipeline pf;
+  pf.set_cwd(tmp.wpath());
+  pf.add(L"rm.exe", {L"-rf", L"file.txt/"});
+
+  auto rf = pf.run();
+
+  EXPECT_EQ(rf.exit_code, 0);
+  EXPECT_TRUE(rf.stderr_text.empty());
   EXPECT_TRUE(std::filesystem::exists(tmp.path / "file.txt"));
 }
 
@@ -351,14 +365,23 @@ TEST(rm, rm_wildcard) {
   TEST_LOG_EXIT_CODE(r);
   TEST_LOG("rm output", r.stdout_text);
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] rm receives shell-expanded operands; the program itself treats
+  // them literally (the §3 cp precedent, same as chmod_wildcard_multiple_
+  // files). Probe WSL 9.4:
+  //   rm '*.txt' -> rm: cannot remove '*.txt': No such file or directory
+  //   (rc 1)
+  // The 1.x applet glob-expanded inside the command; retired in 2.0.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_NE(r.stderr_text.find("rm: cannot remove '*.txt': No such file or "
+                               "directory"),
+            std::string::npos);
 
-  // Verify .txt files were removed but .log file remains
+  // Verify nothing was removed
   bool txt1_exists = std::filesystem::exists(tmp.path / "file1.txt");
   bool txt2_exists = std::filesystem::exists(tmp.path / "file2.txt");
   bool log_exists = std::filesystem::exists(tmp.path / "keep.log");
-  EXPECT_TRUE(!txt1_exists);
-  EXPECT_TRUE(!txt2_exists);
+  EXPECT_TRUE(txt1_exists);
+  EXPECT_TRUE(txt2_exists);
   EXPECT_TRUE(log_exists);
 }
 
