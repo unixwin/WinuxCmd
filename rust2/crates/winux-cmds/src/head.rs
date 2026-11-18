@@ -7,7 +7,8 @@
 //! multiplier suffix (b 512, kB 1000, K 1024, MB/M 1024^2, ... R/Q; the
 //! probed `-n 1b` / `-c 1b` rows cover the b suffix). `-n -0` / `-c -0`
 //! print everything (all but last 0, probed). A malformed count dies with
-//! `invalid number of lines|bytes: '<arg>'` (curly quotes, rc 1).
+//! `invalid number of lines|bytes: '<arg>'` (ASCII quotes — the LC_ALL=C
+//! shape the differential oracle pins and the 1.x C++ emits; rc 1).
 //!
 //! Records are lines, or NUL-delimited chunks with -z. Inputs are STREAMED
 //! the way head.c does it: `head_lines`/`copy_fd` (src/head.c:789/206) read
@@ -496,12 +497,15 @@ pub(crate) enum HeaderMode {
 
 /// head.c's "invalid number of lines|bytes" diagnostic; `post` is the
 /// count string as xdectoumax saw it (after head's own '-' elide strip).
+/// ASCII quotes: the differential oracle pins LC_ALL=C (runner.sh
+/// ORACLE_LOCALE), where GNU quote() renders ASCII — the same shape the
+/// 1.x C++ head emits; regressions/108 pins this byte for byte.
 fn invalid_count(io: &mut Io, word: &str, post: &str, e: &CountVal) {
     let errno = match e {
         CountVal::Overflow => ": Value too large for defined data type",
         CountVal::Invalid => "",
     };
-    let _ = writeln!(io.stderr, "head: invalid number of {word}: ‘{post}’{errno}");
+    let _ = writeln!(io.stderr, "head: invalid number of {word}: '{post}'{errno}");
 }
 
 pub fn head_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
