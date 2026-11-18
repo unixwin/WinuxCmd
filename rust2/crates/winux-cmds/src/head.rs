@@ -740,8 +740,18 @@ pub fn head_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         // GNU head_file opens the operand first and only then lets head()
         // write the header, so a failed open prints no header (ctest
         // head_multi_file_skips_header_for_missing_file).
+        //
+        // "-" and the /dev/stdin family all read the real fd 0 (#1452; the
+        // 1.x C++ head routes them the same way, src/commands/head.cpp).
+        // Without this a /dev/stdin operand resolves through
+        // resolve_pseudo_device to CONIN$ and head blocks on the console
+        // rather than draining the piped stdin:
+        // regressions/71-head-dev-stdin-pipe timed out (rc 124) in the
+        // differential baseline. GNU keeps the operand spelling in the
+        // header, so only the reader changes.
+        let reads_stdin = file == "-" || winux_core::path::pseudo_device_std_fd(file) == Some(0);
         let mut reader: Option<Box<dyn Read>> = None;
-        if file != "-" {
+        if !reads_stdin {
             match crate::fsutil::open_read_operand(ctx, file) {
                 Ok(r) => reader = Some(r),
                 Err(e) => {
@@ -1031,6 +1041,15 @@ mod tests {
         let owned: Vec<OsString> = ["-v", "-"].iter().map(Into::into).collect();
         head_cmd(&owned, &mut io.split(), &ctx).unwrap();
         assert_eq!(io.out(), "==> standard input <==\nx\n");
+        // The /dev/stdin family reads fd 0 like '-', but GNU keeps the
+        // operand spelling in the header (regressions/71-head-dev-stdin-pipe).
+        for operand in ["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"] {
+            let mut io = MemIo::new("y\n");
+            let owned: Vec<OsString> = ["-v", operand].iter().map(Into::into).collect();
+            head_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            assert_eq!(io.out(), format!("==> {operand} <==\ny\n"));
+            assert_eq!(io.err(), "");
+        }
         let mut io = MemIo::new("");
         let owned: Vec<OsString> = ["f1"].iter().map(Into::into).collect();
         head_cmd(&owned, &mut io.split(), &ctx).unwrap();
