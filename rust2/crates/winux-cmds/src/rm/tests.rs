@@ -153,6 +153,31 @@ fn trailing_separator_semantics() {
 }
 
 #[test]
+fn wildcard_operand_is_literal_not_globbed() {
+    // GNU never expands operands itself — the shell does. `rm '*.txt'`
+    // stats the literal name: ENOENT, "No such file or directory", rc 1
+    // (probed 9.4). ERROR_INVALID_NAME (123) is the Win32 spelling of
+    // that ENOENT class for names that cannot exist ('*', '?', '<', ...).
+    let sc = ScratchCtx::new("rm-glob");
+    file(&sc, "file1.txt");
+    file(&sc, "file2.txt");
+    file(&sc, "keep.log");
+    let (r, _, err) = run(&sc, &["*.txt"]);
+    assert_eq!(r, 1);
+    assert_eq!(
+        err,
+        "rm: cannot remove '*.txt': No such file or directory\n"
+    );
+    assert!(sc.path("file1.txt").exists());
+    assert!(sc.path("file2.txt").exists());
+    assert!(sc.path("keep.log").exists());
+    // -f swallows the same ENOENT class silently
+    let (r, _, err) = run(&sc, &["-f", "*.txt"]);
+    assert_eq!(r, 0);
+    assert!(err.is_empty());
+}
+
+#[test]
 fn dir_option_removes_only_empty() {
     let sc = ScratchCtx::new("rm-d");
     dir(&sc, "e");

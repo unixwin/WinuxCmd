@@ -104,8 +104,30 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: Some('v'),
+        short: None,
         long: "debug",
+        takes_value: false,
+    },
+    OptSpec {
+        short: None,
+        long: "universal",
+        takes_value: false,
+    },
+    OptSpec {
+        // obsolete alias of --utc (GNU accepts it; issue #1073)
+        short: None,
+        long: "uct",
+        takes_value: false,
+    },
+    OptSpec {
+        // obsolete alias of -R/--rfc-email (GNU accepts it; issue #1073)
+        short: None,
+        long: "rfc-822",
+        takes_value: false,
+    },
+    OptSpec {
+        short: None,
+        long: "resolution",
         takes_value: false,
     },
 ];
@@ -306,6 +328,9 @@ pub(crate) struct DateTime {
     pub epoch: i64,      // UTC epoch seconds
     pub utc_offset: i64, // seconds east of UTC
     pub tzname: String,
+    /// sub-second nanoseconds (FILETIME carries 100 ns units; -d/-r
+    /// operands usually land on 0)
+    pub ns: u32,
 }
 
 impl DateTime {
@@ -324,7 +349,16 @@ impl DateTime {
             epoch,
             utc_offset: offset,
             tzname,
+            ns: 0,
         }
+    }
+
+    /// from_epoch with an explicit sub-second part (the --resolution
+    /// instant and file mtimes carry real 100 ns ticks).
+    pub fn from_epoch_ns(epoch: i64, offset: i64, tzname: String, ns: u32) -> Self {
+        let mut dt = Self::from_epoch(epoch, offset, tzname);
+        dt.ns = ns;
+        dt
     }
 
     fn days_since_epoch(&self) -> i64 {
@@ -641,9 +675,11 @@ fn system_local_zone() -> TimeZone {
             let end = chars.iter().position(|&c| c == 0).unwrap_or(0);
             String::from_utf16_lossy(&chars[..end])
         };
-        // rc 1 = in DST window (0 unknown, 2 standard)
-        let (bias, zone_name) = if rc == 1 {
+        // rc 2 = TIME_ZONE_ID_DAYLIGHT, rc 1 = TIME_ZONE_ID_STANDARD, 0 = UNKNOWN
+        let (bias, zone_name) = if rc == 2 {
             (tzi.bias + tzi.daylight_bias, name(&tzi.daylight_name))
+        } else if rc == 1 {
+            (tzi.bias + tzi.standard_bias, name(&tzi.standard_name))
         } else {
             (tzi.bias, name(&tzi.standard_name))
         };
@@ -696,7 +732,8 @@ struct ParsedDate {
     hh: i64,
     mm: i64,
     ss: i64,
-    /// @EPOCH (wall fields are UTC) or an explicit UTC/GMT/Z suffix
+    ns: u32,
+    /// @EPOCH (wall fields are UTC) or an explicit UTC/GMT/Z/numeric suffix
     force_utc: bool,
     /// The operand is anchored on `now` (`+N unit`, `tomorrow`, `now + …`)
     from_now: bool,
@@ -704,8 +741,9 @@ struct ParsedDate {
     /// Time-of-day-only operand (`HH`, `HHMM`, `HH:MM[:SS][am|pm]`): the
     /// civil date comes from `now` at resolve time.
     time_only: Option<(i64, i64, i64)>,
-    /// Military-zone letter attached to a time-only operand, in seconds
-    /// east of UTC (parse-datetime.y military_table: T = -7h, Z = 0).
+    /// Explicit zone offset in seconds east of UTC (e.g. military zone
+    /// letter `T` = -7h, `Z` = 0, or `±hhmm`). `None` uses the effective
+    /// zone (including military `J`).
     zone_override: Option<i64>,
 }
 
@@ -720,6 +758,7 @@ impl ParsedDate {
             hh: 0,
             mm: 0,
             ss: 0,
+            ns: 0,
             force_utc: true,
             from_now: true,
             rels,
@@ -732,22 +771,26 @@ impl ParsedDate {
 /// Unit word -> (exact seconds, calendar kind); parse-datetime.y
 /// time_units_table plus the `fortnight` alias.
 fn rel_unit(word: &str) -> Option<(i64, CalUnit)> {
-    match word.trim_end_matches('s') {
-        "second" | "sec" => Some((1, CalUnit::None)),
-        "minute" | "min" => Some((60, CalUnit::None)),
-        "hour" => Some((3600, CalUnit::None)),
-        "day" => Some((86400, CalUnit::Day)),
-        "fortnight" => Some((14 * 86400, CalUnit::Day)),
-        "week" => Some((7 * 86400, CalUnit::Week)),
-        "month" => Some((0, CalUnit::Month)),
-        "year" => Some((0, CalUnit::Year)),
+    let lower = word.to_ascii_lowercase();
+    match lower.as_str() {
+        "second" | "seconds" | "sec" | "secs" => Some((1, CalUnit::None)),
+        "minute" | "minutes" | "min" | "mins" => Some((60, CalUnit::None)),
+        "hour" | "hours" => Some((3600, CalUnit::None)),
+        "day" | "days" => Some((86400, CalUnit::Day)),
+        "fortnight" | "fortnights" => Some((14 * 86400, CalUnit::Day)),
+        "week" | "weeks" => Some((7 * 86400, CalUnit::Week)),
+        "month" | "months" => Some((0, CalUnit::Month)),
+        "year" | "years" => Some((0, CalUnit::Year)),
         _ => None,
     }
 }
 
-/// Military time-zone letter (parse-datetime.y:1193 military_table).
-/// `J` is not a zone (`{ "J", 'J', 0 }` is a literal, not tZONE).
-fn military_offset(letter: u8) -> Option<i64> {
+/// Military time-zone letter (parse-datetime.y military_table).
+/// `J` is the *local* military zone (`{ "J", 'J', 0 }` + `item: 'J'`),
+/// added in gnulib commit 9cde39f8 / coreutils 9.2: returns `Some(None)`
+/// so callers use the effective zone's offset, while A-I/K-Z return
+/// `Some(Some(seconds_east))`.
+fn military_offset(letter: u8) -> Option<Option<i64>> {
     let hours = match letter.to_ascii_uppercase() {
         b'A' => 1,
         b'B' => 2,
@@ -758,6 +801,7 @@ fn military_offset(letter: u8) -> Option<i64> {
         b'G' => 7,
         b'H' => 8,
         b'I' => 9,
+        b'J' => return Some(None),
         b'K' => 10,
         b'L' => 11,
         b'M' => 12,
@@ -776,7 +820,7 @@ fn military_offset(letter: u8) -> Option<i64> {
         b'Z' => 0,
         _ => return None,
     };
-    Some(hours * 3600)
+    Some(Some(hours * 3600))
 }
 
 fn parse_rel_groups(s: &str) -> Option<Vec<RelAmount>> {
@@ -805,8 +849,17 @@ fn parse_rel_groups(s: &str) -> Option<Vec<RelAmount>> {
         }
         let (unit_seconds, calendar) = rel_unit(toks[i])?;
         i += 1;
+        let mut count = sign.checked_mul(n)?;
+        if i < toks.len() {
+            if toks[i].eq_ignore_ascii_case("ago") {
+                count = count.checked_neg()?;
+                i += 1;
+            } else if toks[i].eq_ignore_ascii_case("hence") {
+                i += 1;
+            }
+        }
         out.push(RelAmount {
-            count: sign * n,
+            count,
             unit_seconds,
             calendar,
         });
@@ -821,7 +874,7 @@ fn parse_rel_groups(s: &str) -> Option<Vec<RelAmount>> {
 /// Row of `parse-datetime.y` `relative_time_table` for today/tomorrow/
 /// yesterday (all three keep the current time of day).
 fn keyword_day(s: &str) -> Option<i64> {
-    match s {
+    match s.to_ascii_lowercase().as_str() {
         "today" => Some(0),
         "tomorrow" => Some(1),
         "yesterday" => Some(-1),
@@ -838,7 +891,7 @@ fn parse_named_relative(s: &str) -> Option<Vec<RelAmount>> {
     if it.next().is_some() {
         return None;
     }
-    let count = match head {
+    let count = match head.to_ascii_lowercase().as_str() {
         "next" => 1,
         "last" => -1,
         "this" => 0,
@@ -852,39 +905,103 @@ fn parse_named_relative(s: &str) -> Option<Vec<RelAmount>> {
     }])
 }
 
-/// Parse a time-of-day-only operand (`HH`, `HHMM`, `HH:MM[:SS]`), with an
-/// optional meridian (`am`/`pm`) and military-zone letter. Returns the wall
-/// fields and the parsed zone override in seconds east. Mirrors
-/// parse-datetime.y `digits_to_date_time` (<=2 digits = hour, 3-4 = HHMM)
-/// plus the `time`/`iso_8601_time` colon forms.
-fn parse_time_only(s: &str) -> Option<((i64, i64, i64), Option<i64>)> {
-    let mut body = s;
-    let mut meridian: Option<bool> = None;
-    let mut zone: Option<i64> = None;
-    let lower = body.to_ascii_lowercase();
-    if lower.len() > 2 && (lower.ends_with("am") || lower.ends_with("pm")) {
-        meridian = Some(lower.ends_with("pm"));
-        body = body[..body.len() - 2].trim_end();
-    } else if body.len() >= 2 && body.as_bytes()[body.len() - 1].is_ascii_alphabetic() {
-        zone = Some(military_offset(body.as_bytes()[body.len() - 1])?);
-        body = body[..body.len() - 1].trim_end();
+/// Strip optional trailing meridian (`am`/`pm`/`a.m.`/`p.m.`, case-insensitive)
+/// from a time expression. Returns `(rest, Some(is_pm))` if found, or
+/// `(s, None)` otherwise.
+fn strip_meridian(s: &str) -> (&str, Option<bool>) {
+    let trimmed = s.trim_end();
+    let lower = trimmed.to_ascii_lowercase();
+    for (suffix, is_pm) in [("a.m.", false), ("p.m.", true), ("am", false), ("pm", true)] {
+        if lower.len() > suffix.len() && lower.ends_with(suffix) {
+            let before = trimmed[..trimmed.len() - suffix.len()].trim_end();
+            // Meridian must follow a digit (e.g. `3pm`, `03:04:05 PM`, `03:04:05 P.M.`).
+            if before.bytes().last().is_some_and(|b| b.is_ascii_digit()) {
+                return (before, Some(is_pm));
+            }
+        }
     }
-    if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit() || b == b':') {
+    (trimmed, None)
+}
+
+/// Parse a time expression (`H:M[:S[.frac]]`, or if `allow_bare_digits`
+/// is true, `H`/`HH`/`HHMM`), with optional meridian (`am`/`pm`/`a.m.`/`p.m.`)
+/// and optional trailing military-zone letter (`1024t`, `1024j`, `10:24:30 T`,
+/// `03:04:05Z`).
+/// Returns `((hh, mm, ss, ns), explicit_zone_seen, zone_override)`.
+fn parse_time_expr(
+    s: &str,
+    allow_bare_digits: bool,
+) -> Option<((i64, i64, i64, u32), bool, Option<i64>)> {
+    let (mut body, meridian) = strip_meridian(s.trim());
+    let mut zone_seen = false;
+    let mut zone_override: Option<i64> = None;
+
+    if meridian.is_none() && body.len() >= 2 {
+        let last = body.as_bytes()[body.len() - 1];
+        if last.is_ascii_alphabetic() {
+            let before = body[..body.len() - 1].trim_end();
+            if before.bytes().last().is_some_and(|b| b.is_ascii_digit()) {
+                zone_override = military_offset(last)?;
+                zone_seen = true;
+                body = before;
+            }
+        }
+    }
+
+    if body.is_empty()
+        || !body
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b':' || b == b'.')
+    {
         return None;
     }
-    let (mut hh, mut mm, mut ss) = (0i64, 0i64, 0i64);
+
+    let (mut mm, mut ss, mut ns) = (0i64, 0i64, 0u32);
+    let mut hh: i64;
     if body.contains(':') {
         let parts: Vec<&str> = body.split(':').collect();
         if parts.len() < 2 || parts.len() > 3 {
             return None;
         }
+        if parts[0].is_empty() || !parts[0].bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        if parts[1].is_empty() || !parts[1].bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
         hh = parts[0].parse().ok()?;
         mm = parts[1].parse().ok()?;
         if parts.len() == 3 {
-            ss = parts[2].parse().ok()?;
+            let sec_str = parts[2];
+            if let Some((whole, frac)) = sec_str.split_once('.') {
+                if whole.is_empty()
+                    || !whole.bytes().all(|b| b.is_ascii_digit())
+                    || frac.is_empty()
+                    || !frac.bytes().all(|b| b.is_ascii_digit())
+                {
+                    return None;
+                }
+                ss = whole.parse().ok()?;
+                let mut acc = 0u32;
+                let fb = frac.as_bytes();
+                for i in 0..9 {
+                    let d = if i < fb.len() {
+                        (fb[i] - b'0') as u32
+                    } else {
+                        0
+                    };
+                    acc = acc * 10 + d;
+                }
+                ns = acc;
+            } else {
+                if sec_str.is_empty() || !sec_str.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                ss = sec_str.parse().ok()?;
+            }
         }
     } else {
-        if body.len() > 4 {
+        if !allow_bare_digits || body.contains('.') || body.len() > 4 {
             return None;
         }
         let v: i64 = body.parse().ok()?;
@@ -895,6 +1012,7 @@ fn parse_time_only(s: &str) -> Option<((i64, i64, i64), Option<i64>)> {
             mm = v % 100;
         }
     }
+
     if let Some(pm) = meridian {
         if !(1..=12).contains(&hh) {
             return None;
@@ -906,18 +1024,108 @@ fn parse_time_only(s: &str) -> Option<((i64, i64, i64), Option<i64>)> {
             (true, h) => h + 12,
         };
     }
-    if hh > 23 || mm > 59 || ss > 59 {
+    if hh > 23 || mm > 59 || ss > 60 {
         return None;
     }
-    Some(((hh, mm, ss), zone))
+    Some(((hh, mm, ss, ns), zone_seen, zone_override))
 }
 
-/// Split `<base> <relative groups>` at the first space whose suffix is a
+/// Parse a `YYYY-M-D`, `YYYY/M/D`, or `YYYYMMDD` date token.
+fn parse_date_token(tok: &str) -> Option<(i64, i64, i64)> {
+    if tok.len() == 8 && tok.bytes().all(|b| b.is_ascii_digit()) {
+        let y: i64 = tok[0..4].parse().ok()?;
+        let m: i64 = tok[4..6].parse().ok()?;
+        let d: i64 = tok[6..8].parse().ok()?;
+        return Some((y, m, d));
+    }
+    let sep = if tok.contains('-') && !tok.contains('/') {
+        '-'
+    } else if tok.contains('/') && !tok.contains('-') {
+        '/'
+    } else {
+        return None;
+    };
+    let mut parts = tok.split(sep);
+    let ys = parts.next()?;
+    let ms = parts.next()?;
+    let ds = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if ys.len() != 4 || !(1..=2).contains(&ms.len()) || !(1..=2).contains(&ds.len()) {
+        return None;
+    }
+    if !ys.bytes().all(|b| b.is_ascii_digit())
+        || !ms.bytes().all(|b| b.is_ascii_digit())
+        || !ds.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let y: i64 = ys.parse().ok()?;
+    let m: i64 = ms.parse().ok()?;
+    let d: i64 = ds.parse().ok()?;
+    Some((y, m, d))
+}
+
+/// Strip an optional trailing explicit zone (`UTC`, `GMT`, `UT`, `±hhmm`,
+/// `±hh:mm`) from a base date+time string. Returns `(trimmed, Some(offset_sec))`
+/// or `(s, None)`.
+fn strip_trailing_zone(s: &str) -> (&str, Option<i64>) {
+    let s = s.trim_end();
+    let lower = s.to_ascii_lowercase();
+    for suffix in [" utc", " gmt", " ut"] {
+        if lower.ends_with(suffix) {
+            return (s[..s.len() - suffix.len()].trim_end(), Some(0));
+        }
+    }
+    let b = s.as_bytes();
+    // ±hhmm
+    if b.len() >= 6 {
+        let pos = b.len() - 5;
+        if (b[pos] == b'+' || b[pos] == b'-')
+            && (b[pos - 1].is_ascii_digit() || b[pos - 1].is_ascii_whitespace())
+            && b[pos + 1..].iter().all(|c| c.is_ascii_digit())
+        {
+            if let (Ok(hh), Ok(mm)) = (
+                s[pos + 1..pos + 3].parse::<i64>(),
+                s[pos + 3..].parse::<i64>(),
+            ) {
+                if hh <= 23 && mm <= 59 {
+                    let sign = if b[pos] == b'-' { -1 } else { 1 };
+                    return (s[..pos].trim_end(), Some(sign * (hh * 3600 + mm * 60)));
+                }
+            }
+        }
+    }
+    // ±hh:mm
+    if b.len() >= 7 {
+        let pos = b.len() - 6;
+        if (b[pos] == b'+' || b[pos] == b'-')
+            && (b[pos - 1].is_ascii_digit() || b[pos - 1].is_ascii_whitespace())
+            && b[pos + 3] == b':'
+            && b[pos + 1..pos + 3].iter().all(|c| c.is_ascii_digit())
+            && b[pos + 4..].iter().all(|c| c.is_ascii_digit())
+        {
+            if let (Ok(hh), Ok(mm)) = (
+                s[pos + 1..pos + 3].parse::<i64>(),
+                s[pos + 4..].parse::<i64>(),
+            ) {
+                if hh <= 23 && mm <= 59 {
+                    let sign = if b[pos] == b'-' { -1 } else { 1 };
+                    return (s[..pos].trim_end(), Some(sign * (hh * 3600 + mm * 60)));
+                }
+            }
+        }
+    }
+    (s, None)
+}
+
+/// Split `<base> <relative groups>` at the first whitespace whose suffix is a
 /// well-formed relative list. Used for hybrid forms like
 /// `2020-01-02 03:04:05 UTC +1 day` (the sign may be glued to the number).
 fn split_base_rels(s: &str) -> Option<(&str, Vec<RelAmount>)> {
     for (pos, ch) in s.char_indices() {
-        if ch != ' ' {
+        if !ch.is_ascii_whitespace() {
             continue;
         }
         let head = s[..pos].trim_end();
@@ -944,6 +1152,7 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
             hh: 0,
             mm: 0,
             ss: 0,
+            ns: 0,
             force_utc: true,
             from_now: false,
             rels: Vec::new(),
@@ -952,38 +1161,54 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
         });
     }
     // @EPOCH (probed @0/@1234567890/@-1)
-    if let Some(rest) = s.strip_prefix('@') {
-        let epoch: i64 = rest.trim().parse().ok()?;
+    let parse_epoch = |expr: &str, rels: Vec<RelAmount>| -> Option<ParsedDate> {
+        let rest = expr.strip_prefix('@')?.trim();
+        let (epoch_str, ns) = if let Some((whole, frac)) = rest.split_once('.') {
+            if frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let mut acc = 0u32;
+            let fb = frac.as_bytes();
+            for i in 0..9 {
+                let d = if i < fb.len() {
+                    (fb[i] - b'0') as u32
+                } else {
+                    0
+                };
+                acc = acc * 10 + d;
+            }
+            (whole, acc)
+        } else {
+            (rest, 0u32)
+        };
+        let epoch: i64 = epoch_str.parse().ok()?;
         let days = epoch.div_euclid(86400);
         let secs = epoch.rem_euclid(86400);
         let (y, m, d) = civil_from_days(days);
-        return Some(ParsedDate {
+        Some(ParsedDate {
             y,
             m,
             d,
             hh: secs / 3600,
             mm: (secs % 3600) / 60,
             ss: secs % 60,
+            ns,
             force_utc: true,
             from_now: false,
-            rels: Vec::new(),
+            rels,
             time_only: None,
-            zone_override: None,
-        });
+            zone_override: Some(0),
+        })
+    };
+    if s.starts_with('@') {
+        if let Some(pd) = parse_epoch(s, Vec::new()) {
+            return Some(pd);
+        }
     }
-    if s == "now" {
+    if s.eq_ignore_ascii_case("now") {
         return Some(ParsedDate::anchored_on_now(Vec::new()));
     }
-    // "<N unit> ago" negates only the group the suffix follows (probed:
-    // "+1 day 2 hours ago" = +1 day -2 hours).
-    if let Some(rest) = s.strip_suffix(" ago") {
-        let mut rels = parse_rel_groups(rest)?;
-        if let Some(last) = rels.last_mut() {
-            last.count = -last.count;
-        }
-        return Some(ParsedDate::anchored_on_now(rels));
-    }
-    // A lone relative expression: "+1 day", "1 day", "+1 day +2 hours".
+    // A lone relative expression: "+1 day", "1 day", "+1 day +2 hours", "1 day 2 hours ago".
     if let Some(rels) = parse_rel_groups(s) {
         return Some(ParsedDate::anchored_on_now(rels));
     }
@@ -998,19 +1223,20 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
         }]));
     }
     // time-of-day only (digits_to_date_time / iso time rules)
-    if let Some((tod, zone)) = parse_time_only(s) {
+    if let Some(((hh, mm, ss, ns), zone_seen, zone_override)) = parse_time_expr(s, true) {
         return Some(ParsedDate {
             y: 1970,
             m: 1,
             d: 1,
-            hh: tod.0,
-            mm: tod.1,
-            ss: tod.2,
-            force_utc: false,
+            hh,
+            mm,
+            ss,
+            ns,
+            force_utc: zone_seen && zone_override.is_some(),
             from_now: false,
             rels: Vec::new(),
-            time_only: Some(tod),
-            zone_override: zone,
+            time_only: Some((hh, mm, ss)),
+            zone_override,
         });
     }
     // "<base> [+-] N unit[ ...]": the relative tail may be glued to its sign
@@ -1022,8 +1248,11 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
     if let Some((b, r)) = split_base_rels(s) {
         base = b;
         rels = r;
+        if base.starts_with('@') {
+            return parse_epoch(base, rels);
+        }
         // base keywords share the now anchor with any tail groups
-        if base == "now" {
+        if base.eq_ignore_ascii_case("now") {
             return Some(ParsedDate::anchored_on_now(rels));
         }
         if let Some(days) = keyword_day(base) {
@@ -1040,48 +1269,76 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
             all.extend(rels);
             return Some(ParsedDate::anchored_on_now(all));
         }
-    }
-    // explicit trailing zone word (probed "… UTC")
-    let mut force_utc = false;
-    let mut words = base.split_whitespace().collect::<Vec<_>>();
-    if let Some(last) = words.last() {
-        if *last == "UTC" || *last == "GMT" || *last == "Z" {
-            force_utc = true;
-            words.pop();
+        if let Some(((hh, mm, ss, ns), zone_seen, zone_override)) = parse_time_expr(base, true) {
+            return Some(ParsedDate {
+                y: 1970,
+                m: 1,
+                d: 1,
+                hh,
+                mm,
+                ss,
+                ns,
+                force_utc: zone_seen && zone_override.is_some(),
+                from_now: false,
+                rels,
+                time_only: Some((hh, mm, ss)),
+                zone_override,
+            });
         }
     }
-    // ISO 8601 allows 'T' (or 't') between the date and time halves
-    // (probed 2020-01-02T03:04:05); only a date-shaped left side is split.
-    let mut normalized = String::new();
-    if let Some(idx) = base.find(|c| c == 'T' || c == 't') {
-        let head = &base[..idx];
-        let tail = &base[idx + 1..];
-        if head.matches('-').count() == 2 && tail.starts_with(|c: char| c.is_ascii_digit()) {
-            normalized = format!("{head} {tail}");
-            words = normalized.split_whitespace().collect();
+
+    // Explicit trailing zone suffix ("... UTC", "... GMT", "... +08:00")
+    let (base_no_zone, mut zone_override) = strip_trailing_zone(base);
+
+    // Tokenize `base_no_zone`, splitting ISO `YYYY-M-D[T|t]HH...` per token so
+    // any trailing zone or meridian stays intact, and accept the date token
+    // in either first or last position ("2026-01-01 10:00 PM" and "10:00 PM 2026-01-01").
+    let mut tokens: Vec<&str> = Vec::new();
+    for raw_tok in base_no_zone.split_whitespace() {
+        if let Some(idx) = raw_tok.find(|c| c == 'T' || c == 't') {
+            let head = &raw_tok[..idx];
+            let tail = &raw_tok[idx + 1..];
+            if parse_date_token(head).is_some() && tail.starts_with(|c: char| c.is_ascii_digit()) {
+                tokens.push(head);
+                tokens.push(tail);
+                continue;
+            }
+        }
+        tokens.push(raw_tok);
+    }
+
+    let mut date_vals: Option<(i64, i64, i64)> = None;
+    let mut time_tokens: Vec<&str> = Vec::new();
+    for tok in tokens {
+        if date_vals.is_none() {
+            if let Some(d) = parse_date_token(tok) {
+                date_vals = Some(d);
+                continue;
+            }
+        }
+        time_tokens.push(tok);
+    }
+    let (y, m, d) = date_vals?;
+    if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
+        return None;
+    }
+
+    let (mut hh, mut mm, mut ss, mut ns) = (0i64, 0i64, 0i64, 0u32);
+    if !time_tokens.is_empty() {
+        let time_str = time_tokens.join(" ");
+        let ((th, tm, ts, tns), time_zone_seen, time_zone_off) = parse_time_expr(&time_str, false)?;
+        hh = th;
+        mm = tm;
+        ss = ts;
+        ns = tns;
+        if time_zone_seen {
+            if zone_override.is_some() {
+                return None;
+            }
+            zone_override = time_zone_off;
         }
     }
-    // ISO: Y-M-D [H:M[:S]]
-    if words.is_empty() {
-        return None;
-    }
-    let mut dmy = words[0].split('-');
-    let y: i64 = dmy.next()?.parse().ok()?;
-    let m: i64 = dmy.next()?.parse().ok()?;
-    let d: i64 = dmy.next()?.parse().ok()?;
-    let (mut hh, mut mm, mut ss) = (0, 0, 0);
-    if words.len() > 1 {
-        let mut t = words[1].split(':');
-        hh = t.next()?.parse().ok()?;
-        mm = t.next().map(|v| v.parse().ok()).unwrap_or(Some(0))?;
-        ss = t.next().map(|v| v.parse().ok()).unwrap_or(Some(0))?;
-    }
-    if words.len() > 2 {
-        return None;
-    }
-    if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) || hh > 23 || mm > 59 || ss > 60 {
-        return None;
-    }
+
     Some(ParsedDate {
         y,
         m,
@@ -1089,17 +1346,18 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
         hh,
         mm,
         ss,
-        force_utc,
+        ns,
+        force_utc: zone_override.is_some(),
         from_now: false,
         rels,
         time_only: None,
-        zone_override: None,
+        zone_override,
     })
 }
 
 /// Build the epoch of a parsed date under `zone` and apply the relative
 /// adjustments.
-fn resolve_parsed(p: &ParsedDate, zone: &TimeZone, now_epoch: i64) -> DateTime {
+fn resolve_parsed(p: &ParsedDate, zone: &TimeZone, now_epoch: i64) -> Option<DateTime> {
     if let Some((hh, mm, ss)) = p.time_only {
         // Time-of-day-only: take the civil date from `now`, then apply the
         // operand's own zone (military letter) before converting back to
@@ -1113,13 +1371,23 @@ fn resolve_parsed(p: &ParsedDate, zone: &TimeZone, now_epoch: i64) -> DateTime {
         let parsed_off = p.zone_override.unwrap_or(off_now);
         let epoch = wall - parsed_off;
         let (off, name) = zone.at(epoch);
-        return apply_rels(DateTime::from_epoch(epoch, off, name), &p.rels, zone);
+        return apply_rels(
+            DateTime::from_epoch_ns(epoch, off, name, p.ns),
+            &p.rels,
+            zone,
+        );
     }
     if p.from_now {
         let (off, name) = zone.at(now_epoch);
-        return apply_rels(DateTime::from_epoch(now_epoch, off, name), &p.rels, zone);
+        return apply_rels(
+            DateTime::from_epoch_ns(now_epoch, off, name, p.ns),
+            &p.rels,
+            zone,
+        );
     }
-    let epoch0 = if p.force_utc {
+    let epoch0 = if let Some(z_off) = p.zone_override {
+        days_from_civil(p.y, p.m, p.d) * 86400 + p.hh * 3600 + p.mm * 60 + p.ss - z_off
+    } else if p.force_utc {
         // @EPOCH and explicit-zone forms: the wall fields already ARE UTC
         days_from_civil(p.y, p.m, p.d) * 86400 + p.hh * 3600 + p.mm * 60 + p.ss
     } else {
@@ -1131,75 +1399,344 @@ fn resolve_parsed(p: &ParsedDate, zone: &TimeZone, now_epoch: i64) -> DateTime {
         wall - off
     };
     let (off, name) = zone.at(epoch0);
-    apply_rels(DateTime::from_epoch(epoch0, off, name), &p.rels, zone)
+    apply_rels(
+        DateTime::from_epoch_ns(epoch0, off, name, p.ns),
+        &p.rels,
+        zone,
+    )
 }
 
-fn apply_rels(dt: DateTime, rels: &[RelAmount], zone: &TimeZone) -> DateTime {
-    let mut dt = dt;
+fn apply_rels(dt: DateTime, rels: &[RelAmount], zone: &TimeZone) -> Option<DateTime> {
+    if rels.is_empty() {
+        return Some(dt);
+    }
+    let mut delta_months: i64 = 0;
+    let mut delta_days: i64 = 0;
+    let mut delta_secs: i64 = 0;
     for r in rels {
-        if r.calendar == CalUnit::None {
-            dt.epoch += r.count * r.unit_seconds;
-            let (off, name) = zone.at(dt.epoch);
-            dt = DateTime::from_epoch(dt.epoch, off, name);
-        } else {
-            let days = r.count
-                * match r.calendar {
-                    CalUnit::Day | CalUnit::Week => r.unit_seconds / 86400,
-                    _ => 0,
-                };
-            if days != 0 {
-                let nd = dt.days_since_epoch() + days;
-                let (y, m, d) = civil_from_days(nd);
-                dt.year = y;
-                dt.month = m;
-                dt.day = d;
-            } else if r.calendar == CalUnit::Month {
-                // probed: Jan 31 + 1 month -> Mar 2 (overflow rolls)
-                let total = dt.year * 12 + (dt.month - 1) + r.count;
-                let mut y = total.div_euclid(12);
-                let mut m = total.rem_euclid(12) + 1;
-                let mut d = dt.day;
-                while d > days_in_month(y, m) {
-                    d -= days_in_month(y, m);
-                    m += 1;
-                    if m > 12 {
-                        m = 1;
-                        y += 1;
-                    }
-                }
-                dt.year = y;
-                dt.month = m;
-                dt.day = d;
-            } else {
-                dt.year += r.count;
-                if dt.month == 2 && dt.day == 29 && !is_leap(dt.year) {
-                    dt.day = 28;
-                }
+        match r.calendar {
+            CalUnit::Month => {
+                delta_months = delta_months.checked_add(r.count)?;
             }
-            // Keep dt.epoch in step: a following exact-unit group rebuilds
-            // `dt` from the epoch, which would otherwise drop this calendar
-            // step (probed: "+1 day +2 hours").
-            let wall = dt.days_since_epoch() * 86400 + dt.hour * 3600 + dt.minute * 60 + dt.second;
-            dt.epoch = wall - dt.utc_offset;
+            CalUnit::Year => {
+                let m = r.count.checked_mul(12)?;
+                delta_months = delta_months.checked_add(m)?;
+            }
+            CalUnit::Day | CalUnit::Week => {
+                let factor = r.unit_seconds / 86400;
+                let d = r.count.checked_mul(factor)?;
+                delta_days = delta_days.checked_add(d)?;
+            }
+            CalUnit::None => {
+                let s = r.count.checked_mul(r.unit_seconds)?;
+                delta_secs = delta_secs.checked_add(s)?;
+            }
         }
     }
-    // re-sync the epoch to the final civil fields
-    let wall = dt.days_since_epoch() * 86400 + dt.hour * 3600 + dt.minute * 60 + dt.second;
-    dt.epoch = wall - dt.utc_offset;
-    dt
+    let mut dt = dt;
+    // Sum all month/year items and apply once before day/second items
+    // (gnulib parse-datetime.y: "2026-01-31 +1 month +1 month" = 2026-03-31,
+    // "2024-02-29 +1 year" = 2025-03-01).
+    if delta_months != 0 {
+        let total = dt
+            .year
+            .checked_mul(12)?
+            .checked_add(dt.month - 1)?
+            .checked_add(delta_months)?;
+        let mut y = total.div_euclid(12);
+        let mut m = total.rem_euclid(12) + 1;
+        if !(1..=9999).contains(&y) {
+            return None;
+        }
+        let mut d = dt.day;
+        while d > days_in_month(y, m) {
+            d -= days_in_month(y, m);
+            m += 1;
+            if m > 12 {
+                m = 1;
+                y += 1;
+                if y > 9999 {
+                    return None;
+                }
+            }
+        }
+        dt.year = y;
+        dt.month = m;
+        dt.day = d;
+        let wall = days_from_civil(dt.year, dt.month, dt.day).checked_mul(86400)?
+            + dt.hour * 3600
+            + dt.minute * 60
+            + dt.second;
+        let west = zone.std_offset_west();
+        let (off, name) = zone.at(wall - west);
+        dt.epoch = wall - off;
+        dt.utc_offset = off;
+        dt.tzname = name;
+    }
+    if delta_days != 0 {
+        let nd = dt.days_since_epoch().checked_add(delta_days)?;
+        let (y, m, d) = civil_from_days(nd);
+        if !(1..=9999).contains(&y) {
+            return None;
+        }
+        dt.year = y;
+        dt.month = m;
+        dt.day = d;
+        let wall = nd.checked_mul(86400)? + dt.hour * 3600 + dt.minute * 60 + dt.second;
+        let west = zone.std_offset_west();
+        let (off, name) = zone.at(wall - west);
+        dt.epoch = wall - off;
+        dt.utc_offset = off;
+        dt.tzname = name;
+    }
+    if delta_secs != 0 {
+        let ns = dt.ns;
+        let epoch = dt.epoch.checked_add(delta_secs)?;
+        let (off, name) = zone.at(epoch);
+        dt = DateTime::from_epoch_ns(epoch, off, name, ns);
+    }
+    Some(dt)
+}
+
+// ---------------------------------------------------------------------------
+// LC_TIME locale database projection (Windows NLS + C fallback)
+// ---------------------------------------------------------------------------
+
+struct TimeLocale {
+    day: [String; 7],
+    abday: [String; 7],
+    mon: [String; 12],
+    abmon: [String; 12],
+    am: String,
+    pm: String,
+    d_fmt: String,
+    t_fmt: String,
+    d_t_fmt: String,
+    t_fmt_ampm: String,
+    date_fmt: String,
+}
+
+impl TimeLocale {
+    fn c_locale() -> Self {
+        TimeLocale {
+            day: WEEKDAYS.map(String::from),
+            abday: WEEKDAYS_SHORT.map(String::from),
+            mon: MONTHS.map(String::from),
+            abmon: MONTHS_SHORT.map(String::from),
+            am: "AM".to_string(),
+            pm: "PM".to_string(),
+            d_fmt: "%m/%d/%y".to_string(),
+            t_fmt: "%H:%M:%S".to_string(),
+            d_t_fmt: "%a %b %e %H:%M:%S %Y".to_string(),
+            t_fmt_ampm: "%I:%M:%S %p".to_string(),
+            date_fmt: "%a %b %e %H:%M:%S %Z %Y".to_string(),
+        }
+    }
+
+    fn from_env(env: &dyn winux_core::EnvSource) -> Self {
+        let mut selected = String::new();
+        for key in ["LC_ALL", "LC_TIME", "LANG"] {
+            if let Some(v) = env.get(key) {
+                let s = v.to_string_lossy();
+                if !s.is_empty() {
+                    selected = s.into_owned();
+                    break;
+                }
+            }
+        }
+        if selected.is_empty() {
+            return Self::c_locale();
+        }
+        let no_mod = selected.split('@').next().unwrap_or("");
+        let base = no_mod.split('.').next().unwrap_or("");
+        let lower = base.to_ascii_lowercase();
+        if base.is_empty() || lower == "c" || lower == "posix" {
+            return Self::c_locale();
+        }
+        let win_name = base.replace('_', "-");
+        query_windows_time_locale(&win_name).unwrap_or_else(Self::c_locale)
+    }
+}
+
+fn picture_to_strftime(picture: &str) -> String {
+    let bytes = picture.as_bytes();
+    let mut out = String::with_capacity(picture.len() * 2);
+    let mut literal = String::new();
+    let flush = |lit: &mut String, dst: &mut String| {
+        for ch in lit.chars() {
+            if ch == '%' {
+                dst.push_str("%%");
+            } else {
+                dst.push(ch);
+            }
+        }
+        lit.clear();
+    };
+    let mut i = 0;
+    let mut quoted = false;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if ch == '\'' {
+            quoted = !quoted;
+            if !quoted {
+                flush(&mut literal, &mut out);
+            }
+            i += 1;
+            continue;
+        }
+        if quoted {
+            if ch == '\\' && i + 1 < bytes.len() {
+                literal.push(bytes[i + 1] as char);
+                i += 2;
+            } else {
+                let rest = &picture[i..];
+                let c = rest.chars().next().unwrap();
+                literal.push(c);
+                i += c.len_utf8();
+            }
+            continue;
+        }
+        let mut run = 1;
+        while i + run < bytes.len() && bytes[i + run] == bytes[i] {
+            run += 1;
+        }
+        let mut take = |tok: &str| {
+            flush(&mut literal, &mut out);
+            out.push_str(tok);
+            i += run;
+        };
+        match ch {
+            'd' => take(if run >= 4 {
+                "%A"
+            } else if run == 3 {
+                "%a"
+            } else {
+                "%d"
+            }),
+            'M' => take(if run >= 4 {
+                "%B"
+            } else if run == 3 {
+                "%b"
+            } else {
+                "%m"
+            }),
+            'y' => take(if run >= 3 { "%Y" } else { "%y" }),
+            'H' => take("%H"),
+            'h' => take("%I"),
+            'm' => take("%M"),
+            's' => take("%S"),
+            't' => take("%p"),
+            'g' | 'G' => {
+                flush(&mut literal, &mut out);
+                i += run;
+            }
+            '/' | '-' | '.' | ',' | ' ' | ':' => {
+                literal.push(ch);
+                i += 1;
+            }
+            '\\' => {
+                if i + 1 < bytes.len() {
+                    let rest = &picture[i + 1..];
+                    let c = rest.chars().next().unwrap();
+                    literal.push(c);
+                    i += 1 + c.len_utf8();
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                let rest = &picture[i..];
+                let c = rest.chars().next().unwrap();
+                literal.push(c);
+                i += c.len_utf8();
+            }
+        }
+    }
+    flush(&mut literal, &mut out);
+    out
+}
+
+fn picture_uses_meridiem(picture: &str) -> bool {
+    picture.contains("tt") || (picture.contains('h') && !picture.contains('H'))
+}
+
+#[cfg(windows)]
+fn query_windows_time_locale(win_name: &str) -> Option<TimeLocale> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLocaleInfoEx(
+            lpLocaleName: *const u16,
+            LCType: u32,
+            lpLCData: *mut u16,
+            cchData: i32,
+        ) -> i32;
+    }
+    let wide: Vec<u16> = win_name.encode_utf16().chain(std::iter::once(0)).collect();
+    let query = |lctype: u32| -> Option<String> {
+        let mut buf = vec![0u16; 256];
+        let n = unsafe { GetLocaleInfoEx(wide.as_ptr(), lctype, buf.as_mut_ptr(), 256) };
+        if n <= 0 {
+            return None;
+        }
+        let len = (n as usize).saturating_sub(1);
+        Some(String::from_utf16_lossy(&buf[..len]))
+    };
+    // Verify the locale resolves (LOCALE_SDAYNAME7 = 0x30)
+    const DAY_TYPES: [u32; 7] = [0x30, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F];
+    const ABDAY_TYPES: [u32; 7] = [0x37, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36];
+    let mut loc = TimeLocale::c_locale();
+    // Check if Windows knows this locale at all
+    query(0x30)?;
+    for i in 0..7 {
+        if let Some(v) = query(DAY_TYPES[i]) {
+            loc.day[i] = v;
+        }
+        if let Some(v) = query(ABDAY_TYPES[i]) {
+            loc.abday[i] = v;
+        }
+    }
+    for i in 0..12 {
+        if let Some(v) = query(0x38 + i as u32) {
+            loc.mon[i] = v;
+        }
+        if let Some(v) = query(0x44 + i as u32) {
+            loc.abmon[i] = v;
+        }
+    }
+    loc.am = query(0x28).unwrap_or_else(|| "AM".to_string());
+    loc.pm = query(0x29).unwrap_or_else(|| "PM".to_string());
+    if let Some(pic) = query(0x1F) {
+        let converted = picture_to_strftime(&pic);
+        if !converted.is_empty() {
+            loc.d_fmt = converted;
+        }
+    }
+    let time_pic = query(0x1003);
+    if let Some(ref pic) = time_pic {
+        let converted = picture_to_strftime(pic);
+        if !converted.is_empty() {
+            loc.t_fmt = converted;
+        }
+    }
+    loc.d_t_fmt = format!("{} {}", loc.d_fmt, loc.t_fmt);
+    let meridiem = time_pic.as_deref().is_some_and(picture_uses_meridiem);
+    loc.t_fmt_ampm = if meridiem && (!loc.am.is_empty() || !loc.pm.is_empty()) {
+        "%I:%M:%S %p".to_string()
+    } else {
+        String::new()
+    };
+    loc.date_fmt = format!("{} %Z", loc.d_t_fmt);
+    Some(loc)
+}
+
+#[cfg(not(windows))]
+fn query_windows_time_locale(_win_name: &str) -> Option<TimeLocale> {
+    None
 }
 
 // ---------------------------------------------------------------------------
 // +FORMAT strftime
 // ---------------------------------------------------------------------------
-
-fn fmt2(v: i64) -> String {
-    format!("{v:02}")
-}
-
-fn fmt_pad(v: i64, width: usize) -> String {
-    format!("{v:>width$}")
-}
 
 fn iso_week(dt: &DateTime) -> (i64, i64) {
     // ISO 8601 week %V/%G
@@ -1211,96 +1748,343 @@ fn iso_week(dt: &DateTime) -> (i64, i64) {
     (gy, week)
 }
 
+fn apply_case(text: String, to_uppcase: bool, to_lowcase: bool) -> String {
+    if to_lowcase {
+        text.to_lowercase()
+    } else if to_uppcase {
+        text.to_uppercase()
+    } else {
+        text
+    }
+}
+
+fn format_zone_offset_colons(utc_offset: i64, colons: usize) -> String {
+    let sign = if utc_offset < 0 { '-' } else { '+' };
+    let total = utc_offset.abs();
+    let oh = total / 3600;
+    let om = (total % 3600) / 60;
+    let os = total % 60;
+    match colons {
+        0 => format!("{sign}{oh:02}{om:02}"),
+        1 => format!("{sign}{oh:02}:{om:02}"),
+        2 => format!("{sign}{oh:02}:{om:02}:{os:02}"),
+        _ => {
+            if os != 0 {
+                format!("{sign}{oh:02}:{om:02}:{os:02}")
+            } else if om != 0 {
+                format!("{sign}{oh:02}:{om:02}")
+            } else {
+                format!("{sign}{oh:02}")
+            }
+        }
+    }
+}
+
 pub(crate) fn strftime(dt: &DateTime, fmt: &str) -> String {
-    let mut out = String::new();
-    let mut chars = fmt.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '%' {
+    strftime_with_locale(dt, fmt, &TimeLocale::c_locale())
+}
+
+fn strftime_with_locale(dt: &DateTime, fmt: &str, loc: &TimeLocale) -> String {
+    let mut out = String::with_capacity(fmt.len() * 2);
+    let bytes = fmt.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            let ch = fmt[i..].chars().next().unwrap();
             out.push(ch);
+            i += ch.len_utf8();
             continue;
         }
-        match chars.next() {
-            None => {
-                out.push('%');
-            }
-            Some(c) => match c {
-                'Y' => out.push_str(&dt.year.to_string()),
-                'y' => out.push_str(&fmt2(dt.year.rem_euclid(100))),
-                'C' => out.push_str(&fmt2(dt.year.div_euclid(100))),
-                'm' => out.push_str(&fmt2(dt.month)),
-                'd' => out.push_str(&fmt2(dt.day)),
-                'e' => out.push_str(&fmt_pad(dt.day, 2)),
-                'H' => out.push_str(&fmt2(dt.hour)),
-                'k' => out.push_str(&fmt_pad(dt.hour, 2)),
-                'I' => out.push_str(&fmt2(if dt.hour % 12 == 0 { 12 } else { dt.hour % 12 })),
-                'l' => out.push_str(&fmt_pad(
-                    if dt.hour % 12 == 0 { 12 } else { dt.hour % 12 },
-                    2,
-                )),
-                'M' => out.push_str(&fmt2(dt.minute)),
-                'S' => out.push_str(&fmt2(dt.second)),
-                'N' => out.push_str("000000000"),
-                'j' => out.push_str(&format!("{:03}", dt.yearday())),
-                'p' => out.push_str(if dt.hour < 12 { "AM" } else { "PM" }),
-                'P' => out.push_str(if dt.hour < 12 { "am" } else { "pm" }),
-                'A' => out.push_str(WEEKDAYS[dt.weekday()]),
-                'a' => out.push_str(WEEKDAYS_SHORT[dt.weekday()]),
-                'B' => out.push_str(MONTHS[(dt.month - 1) as usize]),
-                'b' | 'h' => out.push_str(MONTHS_SHORT[(dt.month - 1) as usize]),
-                'Z' => out.push_str(&dt.tzname),
-                'z' => {
-                    let sign = if dt.utc_offset < 0 { '-' } else { '+' };
-                    let a = dt.utc_offset.abs();
-                    out.push_str(&format!("{sign}{:02}{:02}", a / 3600, (a % 3600) / 60));
-                }
-                's' => out.push_str(&dt.epoch.to_string()),
-                'F' => out.push_str(&format!("{}-{}-{}", dt.year, fmt2(dt.month), fmt2(dt.day))),
-                'T' => out.push_str(&format!(
-                    "{}:{}:{}",
-                    fmt2(dt.hour),
-                    fmt2(dt.minute),
-                    fmt2(dt.second)
-                )),
-                'R' => out.push_str(&format!("{}:{}", fmt2(dt.hour), fmt2(dt.minute))),
-                'D' => out.push_str(&format!(
-                    "{}/{}/{}",
-                    fmt2(dt.month),
-                    fmt2(dt.day),
-                    fmt2(dt.year.rem_euclid(100))
-                )),
-                'n' => out.push('\n'),
-                't' => out.push('\t'),
-                '%' => out.push('%'),
-                'U' => {
-                    let jan1_wd = weekday_from_days(days_from_civil(dt.year, 1, 1));
-                    let yd = dt.yearday() - 1;
-                    out.push_str(&fmt2((yd + jan1_wd) / 7));
-                }
-                'W' => {
-                    let jan1_wd = (weekday_from_days(days_from_civil(dt.year, 1, 1)) + 6) % 7;
-                    let yd = dt.yearday() - 1;
-                    out.push_str(&fmt2((yd + jan1_wd) / 7));
-                }
-                'V' | 'G' => {
-                    let (gy, week) = iso_week(dt);
-                    if c == 'V' {
-                        out.push_str(&fmt2(week));
-                    } else {
-                        out.push_str(&gy.to_string());
+        let spec_start = i;
+        i += 1;
+        let mut to_uppcase = false;
+        let mut to_lowcase = false;
+        let mut change_case = false;
+        let mut colon_count = 0usize;
+        let mut no_pad = false;
+        let mut pad_char = '0';
+        let mut plus_pad = false;
+        let mut width = 0usize;
+        let mut has_width = false;
+
+        while i < bytes.len() {
+            match bytes[i] {
+                b'^' => to_uppcase = true,
+                b'#' => change_case = true,
+                b':' => colon_count += 1,
+                b'-' => no_pad = true,
+                b'_' => pad_char = ' ',
+                b'0' => pad_char = '0',
+                b'+' => plus_pad = true,
+                b'E' | b'O' => {}
+                b'1'..=b'9' => {
+                    has_width = true;
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        width = width
+                            .saturating_mul(10)
+                            .saturating_add((bytes[i] - b'0') as usize);
+                        i += 1;
                     }
+                    continue;
                 }
-                'g' => {
-                    let (gy, _) = iso_week(dt);
-                    out.push_str(&fmt2(gy.rem_euclid(100)));
+                _ => break,
+            }
+            i += 1;
+        }
+        // Note: a trailing '0' before a specifier was treated as pad_char='0';
+        // also consume any decimal digits following '0' as width (e.g. %02j).
+        if i < bytes.len() && bytes[i].is_ascii_digit() {
+            has_width = true;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                width = width
+                    .saturating_mul(10)
+                    .saturating_add((bytes[i] - b'0') as usize);
+                i += 1;
+            }
+            // Also check for E/O modifier right after width
+            while i < bytes.len() && (bytes[i] == b'E' || bytes[i] == b'O') {
+                i += 1;
+            }
+        }
+        if i >= bytes.len() {
+            // Dangling '%' (optionally with flags): emit verbatim.
+            out.push_str(&fmt[spec_start..]);
+            break;
+        }
+        let c = fmt[i..].chars().next().unwrap();
+        let char_end = i + c.len_utf8();
+        i = char_end;
+
+        if colon_count > 0 && c != 'z' {
+            out.push_str(&fmt[spec_start..char_end]);
+            continue;
+        }
+
+        let fmt_num = |val: i64, def_width: usize, def_pad: char| -> String {
+            let digits = val.abs().to_string();
+            let sign_prefix = if val < 0 { "-" } else { "" };
+            let target_w = if no_pad {
+                0
+            } else if has_width {
+                width
+            } else {
+                def_width
+            };
+            let fill = if has_width || no_pad {
+                pad_char
+            } else {
+                def_pad
+            };
+            if digits.len() >= target_w {
+                format!("{sign_prefix}{digits}")
+            } else if fill == '0' {
+                format!(
+                    "{sign_prefix}{}{digits}",
+                    "0".repeat(target_w - digits.len())
+                )
+            } else {
+                format!(
+                    "{}{sign_prefix}{digits}",
+                    " ".repeat(target_w - digits.len() - sign_prefix.len())
+                )
+            }
+        };
+
+        match c {
+            'Y' => {
+                if plus_pad && dt.year > 9999 {
+                    out.push('+');
                 }
-                'u' => out.push_str(&(((dt.weekday() as i64 + 6) % 7) + 1).to_string()),
-                'w' => out.push_str(&(dt.weekday() as i64).to_string()),
-                _ => {
-                    // GNU: an unknown conversion prints literally (probed %Q)
-                    out.push('%');
-                    out.push(c);
+                out.push_str(&fmt_num(dt.year, 4, '0'));
+            }
+            'y' => out.push_str(&fmt_num(dt.year.rem_euclid(100), 2, '0')),
+            'C' => out.push_str(&fmt_num(dt.year.div_euclid(100), 2, '0')),
+            'm' => out.push_str(&fmt_num(dt.month, 2, '0')),
+            'd' => out.push_str(&fmt_num(dt.day, 2, '0')),
+            'e' => out.push_str(&fmt_num(dt.day, 2, ' ')),
+            'H' => out.push_str(&fmt_num(dt.hour, 2, '0')),
+            'k' => out.push_str(&fmt_num(dt.hour, 2, ' ')),
+            'I' => out.push_str(&fmt_num(
+                if dt.hour % 12 == 0 { 12 } else { dt.hour % 12 },
+                2,
+                '0',
+            )),
+            'l' => out.push_str(&fmt_num(
+                if dt.hour % 12 == 0 { 12 } else { dt.hour % 12 },
+                2,
+                ' ',
+            )),
+            'M' => out.push_str(&fmt_num(dt.minute, 2, '0')),
+            'S' => out.push_str(&fmt_num(dt.second, 2, '0')),
+            'N' => {
+                let nanos = format!("{:09}", dt.ns);
+                if no_pad {
+                    let trimmed = nanos.trim_start_matches('0');
+                    out.push_str(if trimmed.is_empty() { "0" } else { trimmed });
+                } else if has_width {
+                    if width < nanos.len() {
+                        out.push_str(&nanos[..width]);
+                    } else {
+                        out.push_str(&"0".repeat(width - nanos.len()));
+                        out.push_str(&nanos);
+                    }
+                } else {
+                    out.push_str(&nanos);
                 }
-            },
+            }
+            'j' => out.push_str(&fmt_num(dt.yearday(), 3, '0')),
+            'q' => out.push_str(&((dt.month - 1) / 3 + 1).to_string()),
+            'p' => {
+                let text = if dt.hour < 12 {
+                    loc.am.clone()
+                } else {
+                    loc.pm.clone()
+                };
+                if change_case {
+                    to_uppcase = false;
+                    to_lowcase = true;
+                }
+                out.push_str(&apply_case(text, to_uppcase, to_lowcase));
+            }
+            'P' => {
+                let text = if dt.hour < 12 {
+                    loc.am.clone()
+                } else {
+                    loc.pm.clone()
+                };
+                out.push_str(&apply_case(text, false, true));
+            }
+            'A' => {
+                if change_case {
+                    to_uppcase = true;
+                    to_lowcase = false;
+                }
+                out.push_str(&apply_case(
+                    loc.day[dt.weekday()].clone(),
+                    to_uppcase,
+                    to_lowcase,
+                ));
+            }
+            'a' => {
+                if change_case {
+                    to_uppcase = true;
+                    to_lowcase = false;
+                }
+                out.push_str(&apply_case(
+                    loc.abday[dt.weekday()].clone(),
+                    to_uppcase,
+                    to_lowcase,
+                ));
+            }
+            'B' => {
+                if change_case {
+                    to_uppcase = true;
+                    to_lowcase = false;
+                }
+                out.push_str(&apply_case(
+                    loc.mon[(dt.month - 1) as usize].clone(),
+                    to_uppcase,
+                    to_lowcase,
+                ));
+            }
+            'b' | 'h' => {
+                if change_case {
+                    to_uppcase = true;
+                    to_lowcase = false;
+                }
+                out.push_str(&apply_case(
+                    loc.abmon[(dt.month - 1) as usize].clone(),
+                    to_uppcase,
+                    to_lowcase,
+                ));
+            }
+            'Z' => {
+                if change_case {
+                    to_uppcase = false;
+                    to_lowcase = true;
+                }
+                out.push_str(&apply_case(dt.tzname.clone(), to_uppcase, to_lowcase));
+            }
+            'z' => out.push_str(&format_zone_offset_colons(dt.utc_offset, colon_count)),
+            's' => out.push_str(&dt.epoch.to_string()),
+            'F' => out.push_str(&apply_case(
+                strftime_with_locale(dt, "%Y-%m-%d", loc),
+                to_uppcase,
+                to_lowcase,
+            )),
+            'D' => out.push_str(&apply_case(
+                strftime_with_locale(dt, "%m/%d/%y", loc),
+                to_uppcase,
+                to_lowcase,
+            )),
+            'T' => out.push_str(&apply_case(
+                strftime_with_locale(dt, "%H:%M:%S", loc),
+                to_uppcase,
+                to_lowcase,
+            )),
+            'R' => out.push_str(&apply_case(
+                strftime_with_locale(dt, "%H:%M", loc),
+                to_uppcase,
+                to_lowcase,
+            )),
+            'r' => {
+                let pat = if loc.t_fmt_ampm.is_empty() {
+                    "%I:%M:%S %p"
+                } else {
+                    loc.t_fmt_ampm.as_str()
+                };
+                out.push_str(&apply_case(
+                    strftime_with_locale(dt, pat, loc),
+                    to_uppcase,
+                    to_lowcase,
+                ));
+            }
+            'c' => out.push_str(&apply_case(
+                strftime_with_locale(dt, &loc.d_t_fmt, loc),
+                to_uppcase,
+                to_lowcase,
+            )),
+            'x' => out.push_str(&apply_case(
+                strftime_with_locale(dt, &loc.d_fmt, loc),
+                to_uppcase,
+                to_lowcase,
+            )),
+            'X' => out.push_str(&apply_case(
+                strftime_with_locale(dt, &loc.t_fmt, loc),
+                to_uppcase,
+                to_lowcase,
+            )),
+            'n' => out.push('\n'),
+            't' => out.push('\t'),
+            '%' => out.push('%'),
+            'U' => {
+                let jan1_wd = weekday_from_days(days_from_civil(dt.year, 1, 1));
+                let yd = dt.yearday() - 1;
+                out.push_str(&fmt_num((yd + jan1_wd) / 7, 2, '0'));
+            }
+            'W' => {
+                let jan1_wd = (weekday_from_days(days_from_civil(dt.year, 1, 1)) + 6) % 7;
+                let yd = dt.yearday() - 1;
+                out.push_str(&fmt_num((yd + jan1_wd) / 7, 2, '0'));
+            }
+            'V' | 'G' => {
+                let (gy, week) = iso_week(dt);
+                if c == 'V' {
+                    out.push_str(&fmt_num(week, 2, '0'));
+                } else {
+                    out.push_str(&fmt_num(gy, 4, '0'));
+                }
+            }
+            'g' => {
+                let (gy, _) = iso_week(dt);
+                out.push_str(&fmt_num(gy.rem_euclid(100), 2, '0'));
+            }
+            'u' => out.push_str(&(((dt.weekday() as i64 + 6) % 7) + 1).to_string()),
+            'w' => out.push_str(&(dt.weekday() as i64).to_string()),
+            _ => {
+                // GNU: an unknown conversion (e.g. %Q, %+) prints literally
+                out.push_str(&fmt[spec_start..char_end]);
+            }
         }
     }
     out
@@ -1314,8 +2098,8 @@ pub(crate) fn strftime(dt: &DateTime, fmt: &str) -> String {
 /// `-I<glue>` and `--iso-8601[=kind]` tokens out before the shared parse
 /// (argopt's OptSpec cannot express optional values; same rationale as
 /// mkfifo's --context). Stops at `--`.
-fn split_iso_tokens(args: &[OsString]) -> (Option<String>, Vec<OsString>) {
-    let mut kind: Option<String> = None;
+fn split_iso_tokens(args: &[OsString]) -> (Vec<Option<String>>, Vec<OsString>) {
+    let mut kinds: Vec<Option<String>> = Vec::new();
     let mut rest = Vec::new();
     let mut no_more_options = false;
     for a in args {
@@ -1328,22 +2112,74 @@ fn split_iso_tokens(args: &[OsString]) -> (Option<String>, Vec<OsString>) {
             }
             if let Some(glue) = text.strip_prefix("-I") {
                 if !glue.is_empty() {
-                    kind = Some(glue.to_string());
+                    kinds.push(Some(glue.to_string()));
                     continue;
                 }
             }
             if let Some(v) = text.strip_prefix("--iso-8601=") {
-                kind = Some(v.to_string());
+                kinds.push(Some(v.to_string()));
                 continue;
             }
             if text == "--iso-8601" {
-                kind = Some(String::new());
+                kinds.push(None);
                 continue;
             }
         }
         rest.push(a.clone());
     }
-    (kind, rest)
+    (kinds, rest)
+}
+
+fn argmatch_timespec<'a>(spec: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    for &c in candidates {
+        if spec == c {
+            return Some(c);
+        }
+    }
+    if spec.is_empty() {
+        return None;
+    }
+    let mut found: Option<&'a str> = None;
+    for &c in candidates {
+        if c.starts_with(spec) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(c);
+        }
+    }
+    found
+}
+
+fn parse_posix_clock(arg: &str) -> bool {
+    let digits = match arg.split_once('.') {
+        Some((head, ss)) => {
+            if ss.len() != 2 || !ss.bytes().all(|b| b.is_ascii_digit()) {
+                return false;
+            }
+            let sec: u32 = ss.parse().unwrap_or(99);
+            if sec > 60 {
+                return false;
+            }
+            head
+        }
+        None => arg,
+    };
+    if ![8, 10, 12].contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let mon: u32 = digits[0..2].parse().unwrap_or(0);
+    let day: u32 = digits[2..4].parse().unwrap_or(0);
+    let hour: u32 = digits[4..6].parse().unwrap_or(99);
+    let minute: u32 = digits[6..8].parse().unwrap_or(99);
+    if digits.len() == 12 {
+        let year: u32 = digits[8..12].parse().unwrap_or(0);
+        let century = year / 100;
+        if century != 19 && century != 20 {
+            return false;
+        }
+    }
+    (1..=12).contains(&mon) && (1..=31).contains(&day) && hour <= 23 && minute <= 59
 }
 
 fn now_epoch() -> i64 {
@@ -1353,14 +2189,23 @@ fn now_epoch() -> i64 {
         .unwrap_or(0)
 }
 
-fn offset_parts(off: i64) -> (char, i64, i64) {
-    let sign = if off < 0 { '-' } else { '+' };
-    let a = off.abs();
-    (sign, a / 3600, (a % 3600) / 60)
+fn system_time_to_epoch_ns(t: std::time::SystemTime) -> (i64, u32) {
+    match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => (d.as_secs() as i64, d.subsec_nanos()),
+        Err(e) => {
+            let d = e.duration();
+            let ns = d.subsec_nanos();
+            if ns == 0 {
+                (-(d.as_secs() as i64), 0)
+            } else {
+                (-(d.as_secs() as i64) - 1, 1_000_000_000 - ns)
+            }
+        }
+    }
 }
 
 pub fn date_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
-    let (iso_kind, args) = split_iso_tokens(args);
+    let (mut iso_tokens, args) = split_iso_tokens(args);
     let p = match argopt::parse("date", &args, OPTS, io, ctx, 1) {
         Ok(p) => p,
         Err(s) => return Ok(s),
@@ -1391,44 +2236,148 @@ pub fn date_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         });
     }
 
-    let use_utc = p.has("utc");
+    for ev in &p.events {
+        if ev.key == "iso-8601" {
+            iso_tokens.push(None);
+        }
+    }
+
+    let has_date = p.has("date");
+    let has_file = p.has("file");
+    let has_ref = p.has("reference");
+    let has_res = p.has("resolution");
+    let specified_date = has_date as u8 + has_file as u8 + has_ref as u8 + has_res as u8;
+
+    if specified_date > 1 {
+        let _ = writeln!(
+            io.stderr,
+            "date: the options to specify dates for printing are mutually exclusive"
+        );
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "date"));
+        return Ok(1);
+    }
+    if p.has("set") && specified_date > 0 {
+        let _ = writeln!(
+            io.stderr,
+            "date: the options to print and set the time may not be used together"
+        );
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "date"));
+        return Ok(1);
+    }
+
+    let use_utc = p.has("utc") || p.has("universal") || p.has("uct");
     let zone = effective_zone(use_utc, ctx.env);
 
-    // resolve the timestamp: -d / -r / now
-    let dt = if let Some(d) = p.value_of("date") {
-        match parse_date_string(d) {
-            Some(pd) => resolve_parsed(&pd, &zone, now_epoch()),
-            None => {
-                let _ = writeln!(io.stderr, "date: invalid date '{d}'");
+    let mut iso_format: Option<&'static str> = None;
+    if let Some(last_iso) = iso_tokens.last() {
+        let spec = last_iso.as_deref().unwrap_or("date");
+        const ISO_CANDS: [&str; 5] = ["hours", "minutes", "date", "seconds", "ns"];
+        match argmatch_timespec(spec, &ISO_CANDS) {
+            Some("date") => iso_format = Some("%Y-%m-%d"),
+            Some("hours") => iso_format = Some("%Y-%m-%dT%H%:z"),
+            Some("minutes") => iso_format = Some("%Y-%m-%dT%H:%M%:z"),
+            Some("seconds") => iso_format = Some("%Y-%m-%dT%H:%M:%S%:z"),
+            Some("ns") => iso_format = Some("%Y-%m-%dT%H:%M:%S,%N%:z"),
+            _ => {
+                let _ = writeln!(
+                    io.stderr,
+                    "date: invalid argument '{spec}' for '--iso-8601'"
+                );
+                let _ = writeln!(io.stderr, "Valid arguments are:");
+                for c in ISO_CANDS {
+                    let _ = writeln!(io.stderr, "  - '{c}'");
+                }
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "date"));
                 return Ok(1);
             }
         }
-    } else if let Some(r) = p.value_of("reference") {
-        let path = resolve(ctx, r);
-        match path.metadata().and_then(|m| m.modified()) {
-            Ok(t) => {
-                let epoch = t
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or_else(|_| {
-                        -(t.duration_since(std::time::UNIX_EPOCH)
-                            .err()
-                            .map(|e| e.duration().as_secs())
-                            .unwrap_or(0) as i64)
-                    });
-                let (off, name) = zone.at(epoch);
-                DateTime::from_epoch(epoch, off, name)
-            }
-            Err(_) => {
-                let _ = writeln!(io.stderr, "date: invalid date");
+    }
+
+    let rfc3339_count = p.events.iter().filter(|e| e.key == "rfc-3339").count();
+    let mut rfc3339_format: Option<&'static str> = None;
+    if rfc3339_count > 0 {
+        let spec = p.value_of("rfc-3339").unwrap_or("");
+        const RFC_CANDS: [&str; 3] = ["date", "seconds", "ns"];
+        match argmatch_timespec(spec, &RFC_CANDS) {
+            Some("date") => rfc3339_format = Some("%Y-%m-%d"),
+            Some("seconds") => rfc3339_format = Some("%Y-%m-%d %H:%M:%S%:z"),
+            Some("ns") => rfc3339_format = Some("%Y-%m-%d %H:%M:%S.%N%:z"),
+            _ => {
+                let _ = writeln!(
+                    io.stderr,
+                    "date: invalid argument '{spec}' for '--rfc-3339'"
+                );
+                let _ = writeln!(io.stderr, "Valid arguments are:");
+                for c in RFC_CANDS {
+                    let _ = writeln!(io.stderr, "  - '{c}'");
+                }
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "date"));
                 return Ok(1);
             }
         }
+    }
+
+    let rfc_email_count = p
+        .events
+        .iter()
+        .filter(|e| e.key == "rfc-email" || e.key == "rfc-2822" || e.key == "rfc-822")
+        .count();
+
+    let format_options = iso_tokens.len() + rfc3339_count + rfc_email_count;
+    if format_options > 1 {
+        let _ = writeln!(io.stderr, "date: multiple output formats specified");
+        return Ok(1);
+    }
+
+    let rfc_email = rfc_email_count > 0;
+    let mut format_opt: Option<String> = if let Some(f) = iso_format {
+        Some(f.to_string())
+    } else if let Some(f) = rfc3339_format {
+        Some(f.to_string())
+    } else if rfc_email {
+        Some("%a, %d %b %Y %H:%M:%S %z".to_string())
     } else {
-        let epoch = now_epoch();
-        let (off, name) = zone.at(epoch);
-        DateTime::from_epoch(epoch, off, name)
+        None
     };
+
+    let mut posix_date_operand: Option<String> = None;
+    if p.positionals.len() > 1 {
+        let extra = p.positionals[1].to_string_lossy();
+        let _ = writeln!(io.stderr, "date: extra operand '{extra}'");
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "date"));
+        return Ok(1);
+    } else if let Some(pos) = p.positionals.first() {
+        let op = pos.to_string_lossy().into_owned();
+        if let Some(fmt_body) = op.strip_prefix('+') {
+            if format_opt.is_some() {
+                let _ = writeln!(io.stderr, "date: multiple output formats specified");
+                return Ok(1);
+            }
+            format_opt = Some(fmt_body.to_string());
+        } else if specified_date > 0 || p.has("set") {
+            let _ = writeln!(
+                io.stderr,
+                "date: the argument '{op}' lacks a leading '+';\nwhen using an option to specify date(s), any non-option\nargument must be a format string beginning with '+'",
+            );
+            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "date"));
+            return Ok(1);
+        } else {
+            posix_date_operand = Some(op);
+        }
+    }
+
+    let loc = if rfc_email {
+        TimeLocale::c_locale()
+    } else {
+        TimeLocale::from_env(ctx.env)
+    };
+    let out_fmt = format_opt.unwrap_or_else(|| {
+        if has_res {
+            "%s.%N".to_string()
+        } else {
+            loc.date_fmt.clone()
+        }
+    });
 
     if p.has("set") {
         // honest boundary: the port never sets the clock; GNU on the gate
@@ -1440,181 +2389,100 @@ pub fn date_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(1);
     }
 
+    if let Some(op) = posix_date_operand {
+        if !parse_posix_clock(&op) {
+            let _ = writeln!(io.stderr, "date: invalid date '{op}'");
+            return Ok(1);
+        }
+        let _ = writeln!(
+            io.stderr,
+            "date: setting the system clock is not supported on Windows"
+        );
+        return Ok(1);
+    }
+
     // -f DATEFILE: one date per line (GNU shape)
     if let Some(file) = p.value_of("file") {
-        let path = resolve(ctx, file);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) => {
-                let reason = crate::fsutil::reason(&e);
-                let _ = writeln!(io.stderr, "date: {file}: {reason}");
+        let text = if file == "-" {
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut io.stdin, &mut buf)?;
+            buf
+        } else {
+            let path = resolve(ctx, file);
+            if path.is_dir() {
+                let _ = writeln!(
+                    io.stderr,
+                    "date: {}: read error: Is a directory",
+                    crate::fsutil::quotef(file)
+                );
                 return Ok(1);
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    let reason = crate::fsutil::reason(&e);
+                    let _ = writeln!(io.stderr, "date: {}: {reason}", crate::fsutil::quotef(file));
+                    return Ok(1);
+                }
             }
         };
         let mut failed = false;
-        for line in text.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            match parse_date_string(line.trim()) {
-                Some(pd) => {
-                    let d = resolve_parsed(&pd, &zone, now_epoch());
-                    let out = default_or_custom_line(&p, &d, &iso_kind, ctx)?;
-                    writeln!(io.stdout, "{out}")?;
-                }
-                None => {
-                    let _ = writeln!(io.stderr, "date: invalid date '{line}'");
-                    failed = true;
+        let trimmed_eof = text.strip_suffix('\n').unwrap_or(&text);
+        if !(text.is_empty()) {
+            for raw_line in trimmed_eof.split('\n') {
+                let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+                let parsed =
+                    parse_date_string(line).and_then(|pd| resolve_parsed(&pd, &zone, now_epoch()));
+                match parsed {
+                    Some(d) => {
+                        let out = strftime_with_locale(&d, &out_fmt, &loc);
+                        writeln!(io.stdout, "{out}")?;
+                    }
+                    None => {
+                        let _ = writeln!(io.stderr, "date: invalid date '{line}'");
+                        failed = true;
+                    }
                 }
             }
         }
         return Ok(if failed { 1 } else { 0 });
     }
 
-    // output format
-    let line = if let Some(fmt) = p.positionals.first() {
-        let f = fmt.to_string_lossy().into_owned();
-        if !f.starts_with('+') {
-            // probed: the non-+ operand diagnostic
-            let _ = writeln!(
-                io.stderr,
-                "date: the argument '{}' lacks a leading '+';\nwhen using an option to specify date(s), any non-option\nargument must be a format string beginning with '+'",
-                f
-            );
-            let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "date"));
-            return Ok(1);
-        }
-        strftime(&dt, &f[1..])
-    } else if let Some(kind) = p.value_of("rfc-3339") {
-        let (sign, oh, om) = offset_parts(dt.utc_offset);
-        match kind {
-            "date" => strftime(&dt, "%F"),
-            "seconds" => format!("{}{}{:02}:{:02}", strftime(&dt, "%F %T"), sign, oh, om),
-            "ns" => format!(
-                "{}.000000000{}{:02}:{:02}",
-                strftime(&dt, "%F %T"),
-                sign,
-                oh,
-                om
-            ),
-            _ => {
-                let _ = writeln!(
-                    io.stderr,
-                    "date: invalid argument '{kind}' for '--rfc-3339'"
-                );
+    // resolve the timestamp: -d / -r / --resolution / now
+    let dt = if let Some(d) = p.value_of("date") {
+        match parse_date_string(d).and_then(|pd| resolve_parsed(&pd, &zone, now_epoch())) {
+            Some(dt) => dt,
+            None => {
+                let _ = writeln!(io.stderr, "date: invalid date '{d}'");
                 return Ok(1);
             }
         }
-    } else {
-        let iso = if iso_kind.is_some() || p.has("iso-8601") {
-            match iso_kind.as_deref() {
-                None | Some("") => Some("date".to_string()),
-                Some(k) => Some(k.to_string()),
+    } else if let Some(r) = p.value_of("reference") {
+        let path = resolve(ctx, r);
+        match path.metadata().and_then(|m| m.modified()) {
+            Ok(t) => {
+                let (epoch, ns) = system_time_to_epoch_ns(t);
+                let (off, name) = zone.at(epoch);
+                DateTime::from_epoch_ns(epoch, off, name, ns)
             }
-        } else {
-            None
-        };
-        if let Some(kind) = iso {
-            let (sign, oh, om) = offset_parts(dt.utc_offset);
-            match kind.as_str() {
-                "date" => strftime(&dt, "%F"),
-                "hours" => format!(
-                    "{}T{}{}{:02}:00",
-                    strftime(&dt, "%F"),
-                    fmt2(dt.hour),
-                    sign,
-                    oh
-                ),
-                "minutes" => format!(
-                    "{}T{}:{}{}{:02}:{:02}",
-                    strftime(&dt, "%F"),
-                    fmt2(dt.hour),
-                    fmt2(dt.minute),
-                    sign,
-                    oh,
-                    om
-                ),
-                "seconds" => format!(
-                    "{}T{}:{}:{}{}{:02}:{:02}",
-                    strftime(&dt, "%F"),
-                    fmt2(dt.hour),
-                    fmt2(dt.minute),
-                    fmt2(dt.second),
-                    sign,
-                    oh,
-                    om
-                ),
-                "ns" => format!(
-                    "{}T{}:{}:{}.{:09}{}{:02}:{:02}",
-                    strftime(&dt, "%F"),
-                    fmt2(dt.hour),
-                    fmt2(dt.minute),
-                    fmt2(dt.second),
-                    0,
-                    sign,
-                    oh,
-                    om
-                ),
-                _ => strftime(&dt, "%F"),
+            Err(e) => {
+                let reason = crate::fsutil::reason(&e);
+                let _ = writeln!(io.stderr, "date: {}: {reason}", crate::fsutil::quotef(r));
+                return Ok(1);
             }
-        } else if p.has("rfc-email") || p.has("rfc-2822") {
-            let (sign, oh, om) = offset_parts(dt.utc_offset);
-            format!(
-                "{}, {} {} {} {}:{}:{} {}{:02}{:02}",
-                WEEKDAYS_SHORT[dt.weekday()],
-                fmt2(dt.day),
-                MONTHS_SHORT[(dt.month - 1) as usize],
-                dt.year,
-                fmt2(dt.hour),
-                fmt2(dt.minute),
-                fmt2(dt.second),
-                sign,
-                oh,
-                om
-            )
-        } else {
-            // probed default: `Thu Jan  2 03:04:05 UTC 2020`
-            format!(
-                "{} {} {:>2} {}:{}:{} {} {}",
-                WEEKDAYS_SHORT[dt.weekday()],
-                MONTHS_SHORT[(dt.month - 1) as usize],
-                dt.day,
-                fmt2(dt.hour),
-                fmt2(dt.minute),
-                fmt2(dt.second),
-                dt.tzname,
-                dt.year
-            )
         }
+    } else if has_res {
+        let (off, name) = zone.at(0);
+        DateTime::from_epoch_ns(0, off, name, 100)
+    } else {
+        let (epoch, ns) = system_time_to_epoch_ns(std::time::SystemTime::now());
+        let (off, name) = zone.at(epoch);
+        DateTime::from_epoch_ns(epoch, off, name, ns)
     };
+
+    let line = strftime_with_locale(&dt, &out_fmt, &loc);
     writeln!(io.stdout, "{line}")?;
     Ok(0)
-}
-
-/// -f FILE rows share the same format-selection logic.
-fn default_or_custom_line(
-    p: &argopt::Parsed,
-    d: &DateTime,
-    _iso: &Option<String>,
-    _ctx: &Ctx,
-) -> Result<String, std::io::Error> {
-    if let Some(fmt) = p.positionals.first() {
-        let f = fmt.to_string_lossy().into_owned();
-        if f.starts_with('+') {
-            return Ok(strftime(d, &f[1..]));
-        }
-    }
-    Ok(format!(
-        "{} {} {:>2} {}:{}:{} {} {}",
-        WEEKDAYS_SHORT[d.weekday()],
-        MONTHS_SHORT[(d.month - 1) as usize],
-        d.day,
-        fmt2(d.hour),
-        fmt2(d.minute),
-        fmt2(d.second),
-        d.tzname,
-        d.year
-    ))
 }
 
 #[cfg(test)]
@@ -1728,10 +2596,8 @@ mod tests {
     /// assertions are time-independent.
     fn fmt_at(s: &str) -> Option<String> {
         let p = parse_date_string(s)?;
-        Some(strftime(
-            &resolve_parsed(&p, &TimeZone::utc(), 1_577_934_245),
-            "%F_%T",
-        ))
+        let dt = resolve_parsed(&p, &TimeZone::utc(), 1_577_934_245)?;
+        Some(strftime(&dt, "%F_%T"))
     }
 
     #[test]
@@ -1911,5 +2777,127 @@ mod tests {
         // -s there — dt38 is a recorded note, not a strict row.
         let (r, _, _) = run(&["-s", "2020-01-02 03:04:05"]);
         assert_eq!(r, 1);
+    }
+
+    #[test]
+    fn corpus_regressions_fixed() {
+        // 12-hour AM/PM with and without space, midnight/noon, dotted P.M., invalid >12
+        assert_eq!(
+            tz("UTC", &["-d", "2026-01-02 03:04:05 PM", "+%F_%H:%M"]).1,
+            "2026-01-02_15:04\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-d", "2026-01-02 03:04:05PM", "+%H:%M"]).1,
+            "15:04\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-d", "2026-01-02 12:00:00 AM", "+%H:%M"]).1,
+            "00:00\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-d", "2026-01-02 12:00:00 PM", "+%H:%M"]).1,
+            "12:00\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-d", "2026-01-02 03:04:05 P.M.", "+%H:%M"]).1,
+            "15:04\n"
+        );
+        assert_eq!(tz("UTC", &["-d", "2026-01-02 13:04:05 PM", "+%H:%M"]).0, 1);
+
+        // slash date & word order
+        assert_eq!(
+            tz("UTC", &["-d", "2026/1/2 10:00", "+%F_%H:%M"]).1,
+            "2026-01-02_10:00\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-d", "10:00 2026-01-01", "+%F_%H:%M"]).1,
+            "2026-01-01_10:00\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-d", "10:00 PM 2026-01-01", "+%F_%H:%M"]).1,
+            "2026-01-01_22:00\n"
+        );
+
+        // summed relative months and leap year rollover
+        assert_eq!(
+            tz("UTC", &["-d", "2026-01-31 +1 month +1 month", "+%F"]).1,
+            "2026-03-31\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-d", "2024-02-29 +1 year", "+%F"]).1,
+            "2025-03-01\n"
+        );
+
+        // military J/j (local zone)
+        assert_eq!(tz("UTC", &["-u", "-d", "1024j", "+%H:%M"]).1, "10:24\n");
+        assert_eq!(tz("UTC", &["-u", "-d", "1024J", "+%H:%M"]).1, "10:24\n");
+        assert_eq!(
+            tz("EST5EDT", &["-d", "1024j", "+%H:%M %Z"]).1,
+            "10:24 EST\n"
+        );
+
+        // zone colons
+        assert_eq!(
+            tz("UTC", &["-u", "-d", "@0", "+%::z %:::z %:z"]).1,
+            "+00:00:00 +00 +00:00\n"
+        );
+        assert_eq!(
+            tz("XYZ+5:30", &["-d", "@0", "+%::z|%:::z|%:z"]).1,
+            "-05:30:00|-05:30|-05:30\n"
+        );
+
+        // format conflict
+        let (rc, _, err) = run(&["-R", "-Iseconds"]);
+        assert_eq!(rc, 1);
+        assert!(err.contains("multiple output formats specified"));
+        let (rc, _, err) = run(&["-R", "+%Y"]);
+        assert_eq!(rc, 1);
+        assert!(err.contains("multiple output formats specified"));
+
+        // resolution + format
+        assert_eq!(run(&["--resolution"]).1, "0.000000100\n");
+        assert_eq!(run(&["--resolution", "+%s"]).1, "0\n");
+
+        // iso prefix & nanoseconds rejected & -Ins comma
+        assert_eq!(
+            tz("UTC", &["-u", "-d", "@0", "-Isec"]).1,
+            "1970-01-01T00:00:00+00:00\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-u", "-d", "@0", "-Ins"]).1,
+            "1970-01-01T00:00:00,000000000+00:00\n"
+        );
+        let (rc, _, err) = run(&["-Inanoseconds"]);
+        assert_eq!(rc, 1);
+        assert!(err.contains("invalid argument 'nanoseconds' for '--iso-8601'"));
+        assert!(err.contains("  - 'hours'"));
+
+        // missing reference file quotes as bare name
+        let (rc, _, err) = run(&["-r", "nofile.txt", "+%s"]);
+        assert_eq!(rc, 1);
+        assert_eq!(err, "date: nofile.txt: No such file or directory\n");
+
+        // case flags & E/O & aliases
+        assert_eq!(
+            tz(
+                "UTC",
+                &["-u", "-d", "@0", "+%a|%#a|%^a|%p|%#p|%^p|%Z|%#Z|%^Z"]
+            )
+            .1,
+            "Thu|THU|THU|AM|am|AM|UTC|utc|UTC\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-u", "-d", "@0", "+%c|%#c|%^c|%r|%x|%q"]).1,
+            "Thu Jan  1 00:00:00 1970|Thu Jan  1 00:00:00 1970|THU JAN  1 00:00:00 1970|12:00:00 AM|01/01/70|1\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-u", "-d", "@0", "+%EY|%Oy|%Ec"]).1,
+            "1970|70|Thu Jan  1 00:00:00 1970\n"
+        );
+        assert_eq!(run(&["--uct", "-d", "@0", "+%s"]).1, "0\n");
+        assert_eq!(
+            run(&["--rfc-822", "-d", "@0"]).1,
+            run(&["-R", "-d", "@0"]).1
+        );
     }
 }

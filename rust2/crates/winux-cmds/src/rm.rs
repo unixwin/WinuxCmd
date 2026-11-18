@@ -942,9 +942,22 @@ fn api(ctx: &Ctx, operand: &str) -> PathBuf {
     PathBuf::from(fs_win::api_path(ctx, operand))
 }
 
+/// Win32 reason for a failed operand probe or delete. ERROR_INVALID_NAME
+/// (123) is the "this spelling cannot name a file" shape — `rm '*.txt'`,
+/// `rm 'a<b'` — where GNU's lstat/unlink reports ENOENT (probed 9.4:
+/// `rm '*.txt'` -> "cannot remove '*.txt': No such file or directory"),
+/// not EINVAL; the raw fallback would print "Invalid argument".
+fn operand_reason(code: u32) -> &'static str {
+    if code == 123 {
+        "No such file or directory"
+    } else {
+        fs_win::win32_reason(code)
+    }
+}
+
 fn io_reason(e: &std::io::Error) -> &'static str {
     match e.raw_os_error() {
-        Some(c) => fs_win::win32_reason(c as u32),
+        Some(c) => operand_reason(c as u32),
         None => crate::fsutil::reason(e),
     }
 }
@@ -1129,7 +1142,7 @@ fn remove_operand(name: &str, cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> Outcome {
                 if cfg.ignore_missing && nonexistent_code(code) {
                     return Outcome::Ok;
                 }
-                cannot_remove(io, ctx, name, fs_win::win32_reason(code));
+                cannot_remove(io, ctx, name, operand_reason(code));
                 return Outcome::Error;
             }
         }
@@ -1173,7 +1186,7 @@ fn remove_operand(name: &str, cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> Outcome {
                 if cfg.ignore_missing && nonexistent_code(code) {
                     return Outcome::Ok;
                 }
-                cannot_remove(io, ctx, name, fs_win::win32_reason(code));
+                cannot_remove(io, ctx, name, operand_reason(code));
                 return Outcome::Error;
             }
         },
