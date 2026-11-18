@@ -105,6 +105,15 @@ struct OwnershipInfo {
   std::string group_id;
 };
 
+// GNU splits fatal diagnostics into usage() failures — operand-count and
+// option errors, which end with "Try '<cmd> --help' ..." — and error()
+// failures (bad owner/group/spec, failed reference stat, -R
+// --dereference) which do not (probed WSL 9.4, src/chown.c:271-356).
+struct ConfigError {
+  std::string message;
+  bool usage_error = false;
+};
+
 auto is_numeric_id(const std::string& value) -> bool {
   return !value.empty() &&
          std::all_of(value.begin(), value.end(),
@@ -681,12 +690,12 @@ auto get_preserve_root_match(const std::string& input_path)
   // verbatim GetFullPathNameW("//") answers for an UNC-ish name — keeping
   // them verbatim let `chown -R --preserve-root X //` bypass the failsafe
   // and really walk the shell root (CR on #1249).  They hit the root match
-  // directly, printing the operand spelling alone like MSYS ("on '/'",
+  // directly, printing the collapsed spelling like MSYS/GNU ("on '/'",
   // "on '//'").  A spelling that lexically collapses onto the root fires
   // with the "(same as '/')" suffix, exactly like MSYS for "/e/..".
   if (!input_path.empty() &&
       input_path.find_first_not_of("/\\") == std::string::npos) {
-    return PreserveRootMatch{input_path, false};
+    return PreserveRootMatch{input_path == "//" ? "//" : "/", false};
   }
   if (collapses_onto_root(input_path)) {
     return PreserveRootMatch{input_path, true};
@@ -746,25 +755,88 @@ auto add_file_args(Config& cfg, std::span<const std::string_view> args)
   }
 }
 
-auto parse_owner_group_spec(const std::string& spec) -> OwnerGroupSpec {
-  OwnerGroupSpec parsed;
-  size_t colon_pos = spec.find(':');
-  if (colon_pos == std::string::npos && spec.contains('.')) {
-    if (lookup_account_type(spec).has_value()) {
-      parsed.owner = spec;
-      return parsed;
+// [GNU] lib/userspec.c parse_with_separator: each side of "[owner][:.]
+// [group]" must name a resolvable account or a bare numeric id; ':' inside
+// the group half stays literal.  An unresolvable owner followed by a
+// separator but no group text is "invalid spec" (the "u:" login-group
+// form), checked before the numeric fallback.
+enum class SpecError { none, invalid_user, invalid_group, invalid_spec };
+
+// Windows resolves "." to a local account where POSIX getpwnam/getgrnam
+// always fail; keep the GNU verdict or "chown .." would warn and succeed.
+auto spec_name_resolves(const std::string& name) -> bool {
+  return name != "." && lookup_account_type(name).has_value();
+}
+
+auto validate_spec_fields(const std::string& owner, const std::string& group,
+                          bool has_group) -> SpecError {
+  if (!owner.empty() && !spec_name_resolves(owner)) {
+    if (has_group && group.empty()) {
+      return SpecError::invalid_spec;
     }
-    parsed.warned_dot_separator = true;
-    colon_pos = spec.find('.');
+    if (!is_numeric_id(owner)) {
+      return SpecError::invalid_user;
+    }
   }
-  if (colon_pos != std::string::npos) {
-    parsed.owner = spec.substr(0, colon_pos);
-    parsed.group = spec.substr(colon_pos + 1);
+  if (has_group && !group.empty() && !spec_name_resolves(group) &&
+      !is_numeric_id(group)) {
+    return SpecError::invalid_group;
+  }
+  return SpecError::none;
+}
+
+auto spec_error_message(SpecError error, const std::string& raw_spec)
+    -> std::string {
+  switch (error) {
+    case SpecError::invalid_user:
+      return "invalid user: '" + raw_spec + "'";
+    case SpecError::invalid_group:
+      return "invalid group: '" + raw_spec + "'";
+    case SpecError::invalid_spec:
+      return "invalid spec: '" + raw_spec + "'";
+    default:
+      return {};
+  }
+}
+
+// [GNU] userspec.c parse_user_spec_warn: ':' is the separator.  A spec
+// without ':' that fails to resolve as a user is retried with '.' as the
+// (deprecated) separator — but only when that split parses cleanly, in
+// which case the caller owes the "'.' should be ':'" warning.  A failed
+// retry reports the ORIGINAL "invalid user" error with no warning.
+auto parse_owner_group_spec(const std::string& spec)
+    -> cp::Result<OwnerGroupSpec> {
+  OwnerGroupSpec parsed;
+  const size_t colon = spec.find(':');
+  if (colon != std::string::npos) {
+    parsed.owner = spec.substr(0, colon);
+    parsed.group = spec.substr(colon + 1);
     parsed.has_group = true;
   } else {
     parsed.owner = spec;
   }
-  return parsed;
+
+  const SpecError error =
+      validate_spec_fields(parsed.owner, parsed.group, parsed.has_group);
+  if (error == SpecError::none) {
+    return parsed;
+  }
+
+  if (colon == std::string::npos) {
+    if (const size_t dot = spec.find('.'); dot != std::string::npos) {
+      OwnerGroupSpec dotted;
+      dotted.owner = spec.substr(0, dot);
+      dotted.group = spec.substr(dot + 1);
+      dotted.has_group = true;
+      dotted.warned_dot_separator = true;
+      if (validate_spec_fields(dotted.owner, dotted.group,
+                               dotted.has_group) == SpecError::none) {
+        return dotted;
+      }
+    }
+  }
+
+  return std::unexpected(spec_error_message(error, spec));
 }
 
 auto emit_warning(const std::string& message) -> void {
@@ -773,37 +845,8 @@ auto emit_warning(const std::string& message) -> void {
   safeErrorPrint("\n");
 }
 
-auto validate_owner_group_spec(const OwnerGroupSpec& spec,
-                               const std::string& raw_spec)
-    -> cp::Result<void> {
-  if (!spec.owner.empty()) {
-    if (!is_numeric_id(spec.owner) &&
-        !lookup_account_type(spec.owner).has_value()) {
-      return std::unexpected("invalid user: '" + raw_spec + "'");
-    }
-  }
-
-  if (spec.has_group) {
-    if (!spec.group.empty()) {
-      if ((spec.group == ":" || spec.group == ".") ||
-          (!is_numeric_id(spec.group) &&
-           !lookup_account_type(spec.group).has_value())) {
-        return std::unexpected("invalid group: '" + raw_spec + "'");
-      }
-    }
-
-    if (is_numeric_id(spec.owner) &&
-        !win32_lookup_account(utf8_to_wstring(spec.owner)).has_value() &&
-        spec.group.empty() && raw_spec != spec.owner) {
-      return std::unexpected("invalid spec: '" + raw_spec + "'");
-    }
-  }
-
-  return {};
-}
-
 auto build_config(const CommandContext<CHOWN_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
+    -> std::expected<Config, ConfigError> {
   Config cfg;
   cfg.recursive =
       ctx.get<bool>("-R", false) || ctx.get<bool>("--recursive", false);
@@ -822,24 +865,40 @@ auto build_config(const CommandContext<CHOWN_OPTIONS.size()>& ctx)
                         ctx.get<bool>("--no-dereference", false)) &&
                        !ctx.get<bool>("--dereference", false);
 
+  // [GNU] chown.c:278-288 reports this through error(EXIT_FAILURE) — no
+  // "Try --help" line — and checks it before the operand count.
   if (cfg.recursive && ctx.get<bool>("--dereference", false) &&
       !cfg.traverse_cmdline && !cfg.traverse_all) {
-    return std::unexpected("-R --dereference requires either -H or -L");
+    return std::unexpected(
+        ConfigError{"-R --dereference requires either -H or -L"});
   }
   (void)ctx.get<bool>("-P", false);
   (void)ctx.get<bool>("--no-preserve-root", false);
 
+  // [GNU] --from is parsed inside the getopt loop (chown.c:245-253), so
+  // its spec errors fire before the operand-count check below.
   if (!cfg.from_spec.empty()) {
-    const auto from = parse_owner_group_spec(cfg.from_spec);
-    if (from.warned_dot_separator) {
-      emit_warning("'.' should be ':'");
+    auto from = parse_owner_group_spec(cfg.from_spec);
+    if (!from) {
+      return std::unexpected(ConfigError{from.error()});
     }
-    if (auto from_valid = validate_owner_group_spec(from, cfg.from_spec);
-        !from_valid) {
-      return std::unexpected(from_valid.error());
+    if (from->warned_dot_separator) {
+      emit_warning("'.' should be ':': '" + cfg.from_spec + "'");
     }
-    cfg.from_owner_group = from;
+    cfg.from_owner_group = *from;
     cfg.has_from_spec = true;
+  }
+
+  // [GNU] chown.c:295-302 checks the operand count before the reference
+  // stat and before the spec parse; only these count errors (and getopt
+  // failures) carry the "Try --help" line.
+  if (ctx.positionals.empty()) {
+    return std::unexpected(ConfigError{"missing operand", true});
+  }
+  if (!cfg.has_reference && ctx.positionals.size() < 2) {
+    return std::unexpected(ConfigError{
+        "missing operand after '" + std::string(ctx.positionals[0]) + "'",
+        true});
   }
 
   if (cfg.has_reference) {
@@ -848,8 +907,8 @@ auto build_config(const CommandContext<CHOWN_OPTIONS.size()>& ctx)
     std::wstring wref =
         utf8_to_wstring(native_path::normalize_api_operand(cfg.reference_file));
     if (GetFileAttributesW(wref.c_str()) == INVALID_FILE_ATTRIBUTES) {
-      return std::unexpected(
-          format_missing_reference_error(cfg.reference_file, GetLastError()));
+      return std::unexpected(ConfigError{
+          format_missing_reference_error(cfg.reference_file, GetLastError())});
     }
     const auto ref_sids = get_sids_for_path(wref);
     cfg.reference_owner_sid = ref_sids.owner;
@@ -871,35 +930,21 @@ auto build_config(const CommandContext<CHOWN_OPTIONS.size()>& ctx)
     add_file_args(cfg, std::span<const std::string_view>(
                            ctx.positionals.data(), ctx.positionals.size()));
   } else {
-    if (ctx.positionals.empty()) {
-      return std::unexpected("missing operand");
+    const std::string spec_text(ctx.positionals[0]);
+    auto parsed = parse_owner_group_spec(spec_text);
+    if (!parsed) {
+      return std::unexpected(ConfigError{parsed.error()});
     }
-
-    const auto parsed = parse_owner_group_spec(std::string(ctx.positionals[0]));
-    if (parsed.warned_dot_separator) {
-      emit_warning("'.' should be ':'");
+    if (parsed->warned_dot_separator) {
+      emit_warning("'.' should be ':': '" + spec_text + "'");
     }
-    cfg.owner = parsed.owner;
-    cfg.group = parsed.group;
-    cfg.has_group = parsed.has_group;
-
-    if (auto parsed_valid =
-            validate_owner_group_spec(parsed, std::string(ctx.positionals[0]));
-        !parsed_valid) {
-      return std::unexpected(parsed_valid.error());
-    }
+    cfg.owner = parsed->owner;
+    cfg.group = parsed->group;
+    cfg.has_group = parsed->has_group;
 
     add_file_args(
         cfg, std::span<const std::string_view>(ctx.positionals.data() + 1,
                                                ctx.positionals.size() - 1));
-  }
-
-  if (cfg.files.empty()) {
-    if (cfg.has_reference) {
-      return std::unexpected("missing file operand");
-    }
-    return std::unexpected("missing operand after '" +
-                           std::string(ctx.positionals[0]) + "'");
   }
 
   return cfg;
@@ -1177,7 +1222,9 @@ auto process_recursive(const std::string& path, const Config& cfg,
           continue;
         }
 
-        std::string subpath = path + "\\" + wstring_to_utf8(filename);
+        // [GNU] fts composes child names with '/'; the display spelling
+        // keeps it (Win32 accepts '/' in the folded API operand).
+        std::string subpath = path + "/" + wstring_to_utf8(filename);
         int sub_result = process_recursive(subpath, cfg, false);
         if (sub_result != 0) {
           exit_code = sub_result;
@@ -1211,10 +1258,13 @@ REGISTER_COMMAND(
   auto cfg_result = build_config(ctx);
   if (!cfg_result) {
     safeErrorPrint("chown: ");
-    safeErrorPrint(winux::i18n::translate_error(cfg_result.error()));
+    safeErrorPrint(
+        winux::i18n::translate_error(cfg_result.error().message));
     safeErrorPrint("\n");
-    safeErrorPrintLn(winux::i18n::format(
-        "common.try_help", "Try '{} --help' for more information.", "chown"));
+    if (cfg_result.error().usage_error) {
+      safeErrorPrintLn(winux::i18n::format(
+          "common.try_help", "Try '{} --help' for more information.", "chown"));
+    }
     return 1;
   }
 
