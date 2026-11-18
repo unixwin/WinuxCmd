@@ -913,22 +913,21 @@ TEST(tail, tail_zero_terminated_multi_file_headers) {
 }
 
 TEST(tail, tail_invalid_count_message_matches_gnu) {
-  // [GNU] quotearg is locale-shaped: LC_ALL=C prints 'xx', the UTF-8
-  // locale prints \u2018xx\u2019 (probed WSL 9.4, p-tail-quotes.sh). The
-  // rust2 port standardizes on the UTF-8-locale shape — the same curly
-  // quotes head.rs documents for this exact diagnostic — so the 1.x
-  // ASCII expectations are re-pinned, not "fixed".
+  // [GNU] quotearg is locale-shaped: LC_ALL=C prints 'xx', a UTF-8 locale
+  // prints the curly form. The differential oracle pins LC_ALL=C
+  // (runner.sh ORACLE_LOCALE) and the 1.x C++ tail emits that ASCII shape,
+  // so the diagnostics match the C-locale oracle byte for byte — the
+  // reverted UTF-8 re-pin broke regressions/110-class comparisons.
   Pipeline lines;
   lines.add(L"tail.exe", {L"-n", L"xx"});
   auto r = lines.run();
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_EQ_TEXT(r.stderr_text,
-                 "tail: invalid number of lines: \342\200\230xx\342\200\231\n");
+  EXPECT_EQ_TEXT(r.stderr_text, "tail: invalid number of lines: 'xx'\n");
 
   Pipeline bytes;
   bytes.add(L"tail.exe", {L"-c", L"x"});
   EXPECT_EQ_TEXT(bytes.run().stderr_text,
-                 "tail: invalid number of bytes: \342\200\230x\342\200\231\n");
+                 "tail: invalid number of bytes: 'x'\n");
 
   Pipeline overflow;
   overflow.add(L"tail.exe", {L"-c", L"-99999999999999999999"});
@@ -936,8 +935,8 @@ TEST(tail, tail_invalid_count_message_matches_gnu) {
   EXPECT_EQ(o.exit_code, 1);
   EXPECT_EQ_TEXT(
       o.stderr_text,
-      "tail: invalid number of bytes: \342\200\23099999999999999999999"
-      "\342\200\231: Value too large for defined data type\n");
+      "tail: invalid number of bytes: '99999999999999999999': Value too "
+      "large for defined data type\n");
 }
 
 // [#1212] fd 0 is text mode by default, so a pipe stopped at the first 0x1A

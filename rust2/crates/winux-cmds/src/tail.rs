@@ -215,7 +215,7 @@ fn parse_obsolete_option(args: &[OsString], io: &mut Io) -> Result<Option<Obsole
             } else {
                 ""
             };
-            let _ = writeln!(io.stderr, "tail: invalid number: ‘{s}’{errno}");
+            let _ = writeln!(io.stderr, "tail: invalid number: '{s}'{errno}");
             return Err(1);
         }
         x.value
@@ -490,7 +490,11 @@ fn follow_argmatch(v: &str) -> Result<bool, String> {
         (false, true, false) => Ok(false),
         (false, false, true) => Ok(true),
         _ => Err(format!(
-            "tail: {} argument \u{2018}{v}\u{2019} for \u{2018}--follow\u{2019}\nValid arguments are:\n  - \u{2018}descriptor\u{2019}\n  - \u{2018}name\u{2019}\nTry 'tail --help' for more information.",
+            // ASCII quotes: the differential oracle pins LC_ALL=C (runner.sh
+            // ORACLE_LOCALE), where GNU quote() renders ASCII — the same
+            // shape the 1.x C++ tail emits. regressions/110 pins this byte
+            // for byte.
+            "tail: {} argument '{v}' for '--follow'\nValid arguments are:\n  - 'descriptor'\n  - 'name'\nTry 'tail --help' for more information.",
             if d && n { "ambiguous" } else { "invalid" }
         )),
     }
@@ -794,7 +798,7 @@ pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMe
     // later token's parse-level diagnostic (unknown option, digit,
     // --help). The events pass below assigns state in the same order.
     let value_hook = |key: &str, v: &str, io: &mut Io, _ctx: &Ctx, _prog: &str| -> Option<u32> {
-        let q = |s: &str| format!("‘{s}’");
+        let q = |s: &str| format!("'{s}'");
         let errno_tail = |overflow: bool| {
             if overflow {
                 ": Value too large for defined data type"
@@ -884,7 +888,9 @@ pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMe
     let mut sleep_secs = 1.0f64;
     let mut max_unchanged: u128 = 5;
     let mut header_mode = HeaderMode::Multiple;
-    let q = |v: &str| format!("\u{2018}{v}\u{2019}");
+    // ASCII quotes, like the 1.x C++ tail and the LC_ALL=C differential
+    // oracle (GNU quote() renders curly only under a UTF-8 locale).
+    let q = |v: &str| format!("'{v}'");
     for ev in &p.events {
         match ev.key.as_str() {
             argopt::HELP | argopt::VERSION => break,
@@ -1523,7 +1529,7 @@ mod tests {
         let (s, _) = scan_follow(&os(&["--follow", "name"])).unwrap();
         assert!(s.forever && !s.by_name);
         assert!(scan_follow(&os(&["--follow=x"])).unwrap_err().starts_with(
-            "tail: invalid argument \u{2018}x\u{2019} for \u{2018}--follow\u{2019}\n"
+            "tail: invalid argument 'x' for '--follow'\n"
         ));
         assert!(scan_follow(&os(&["--follow="]))
             .unwrap_err()
@@ -1562,7 +1568,7 @@ mod tests {
         let (r, _, e) = run_in(&sc, &["-f", "-s", "x", "f"]);
         assert_eq!(
             (r, e.as_str()),
-            (1, "tail: invalid number of seconds: \u{2018}x\u{2019}\n")
+            (1, "tail: invalid number of seconds: 'x'\n")
         );
         let (r, _, e) = run_in(&sc, &["-f", "--pid=99999999999", "f"]);
         assert_eq!(r, 1);
