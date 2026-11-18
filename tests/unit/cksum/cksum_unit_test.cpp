@@ -771,4 +771,7 @@ TEST(cksum, cksum_crc32b_algorithm_rejected_issue1710) {
   EXPECT_TRUE(r.stderr_text.find("Valid arguments are:") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("'crc'") != std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("  - 'crc32b'") == std::string::npos);
+  // GNU's argmatch failure ends with emit_try_help (probed 9.4, LC_ALL=C).
+  EXPECT_TRUE(r.stderr_text.find("Try 'cksum --help' for more information.") !=
+              std::string::npos);
 }

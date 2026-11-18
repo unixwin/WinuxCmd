@@ -167,41 +167,14 @@ TEST(xargs, xargs_verbose) {
   EXPECT_TRUE(r.stderr_text.find("echo") != std::string::npos);
 }
 
-TEST(xargs, xargs_interactive_yes_runs_command) {
-  TempDir tmp;
-  tmp.write("args.txt", "alpha\n");
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"-p", L"-a", L"args.txt", L"cmd.exe", L"/C", L"echo"});
-  p.set_stdin("y\n");
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("alpha") != std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("cmd.exe") != std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("?...") != std::string::npos);
-}
-
-TEST(xargs, xargs_interactive_no_skips_command) {
-  TempDir tmp;
-  tmp.write("args.txt", "alpha\n");
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe",
-        {L"--interactive", L"-a", L"args.txt", L"cmd.exe", L"/C", L"echo"});
-  p.set_stdin("n\n");
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("cmd.exe") != std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("?...") != std::string::npos);
-}
-
+// [GNU] xargs -p reads the confirmation from /dev/tty, NOT from stdin
+// (findutils 4.9.0: `printf 'alpha\n' | xargs -p echo` prompts on the
+// controlling terminal and never consumes the piped line - probed WSL,
+// which blocks on /dev/tty). The 1.x tests fed "y"/"n" through piped
+// stdin, an invented contract, and deadlock a non-console harness. The
+// interactive surface has no oracle-testable path here (§6 terminal
+// metadata: console-ness is a driver-injected class), so the stdin-fed
+// prompt tests are retired rather than re-pinned to a hang.
 TEST(xargs, xargs_null_input_preserves_spaces_with_replacement) {
   TempDir tmp;
 
@@ -264,7 +237,11 @@ TEST(xargs, xargs_default_echo_replacement_uses_one_input_line_per_command) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "two words\nnext\n");
+  // [GNU] -I replaces {} in the command words; the default command is the
+  // bare word "echo" with no {}, so the item is NOT appended and each item
+  // still runs one echo with no operands (probe WSL findutils 4.9.0:
+  //   printf 'two words\nnext\n' | xargs -I{} -> two blank lines, rc 0).
+  EXPECT_EQ_TEXT(r.stdout_text, "\n\n");
 }
 
 TEST(xargs, xargs_replacement_ignores_blank_input_lines) {
@@ -412,7 +389,12 @@ TEST(xargs, xargs_input_items_are_literal_not_globs) {
   EXPECT_TRUE(r.stdout_text.find("one.txt two.txt") == std::string::npos);
 }
 
-TEST(xargs, xargs_command_template_args_expand_wildcards) {
+// [GNU] findutils 4.9.0 xargs never globs its command-template words: it
+// execs the utility directly, with no shell. Probe WSL:
+//   printf 'stdinarg\n' | xargs echo '*.txt' -> "*.txt stdinarg", rc 0
+// The 1.x applet expanded wildcards inside the template; retired in 2.0
+// (the §3 cp/wildcard precedent: programs receive shell-expanded operands).
+TEST(xargs, xargs_command_template_args_stay_literal) {
   TempDir tmp;
   tmp.write("one.txt", "1\n");
   tmp.write("two.txt", "2\n");
@@ -425,15 +407,12 @@ TEST(xargs, xargs_command_template_args_expand_wildcards) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("one.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("two.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("*.txt") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("*.txt") == std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("one.txt two.txt stdinarg") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("one.txt two.txt") == std::string::npos);
 }
 
-TEST(xargs, xargs_command_template_args_expand_char_class_wildcards) {
+TEST(xargs, xargs_command_template_char_class_stays_literal) {
   TempDir tmp;
   tmp.write("aa.txt", "1\n");
   tmp.write("ab.txt", "2\n");
@@ -446,15 +425,12 @@ TEST(xargs, xargs_command_template_args_expand_char_class_wildcards) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("aa.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("ab.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("a[ab].txt") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("a[ab].txt") == std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("aa.txt ab.txt stdinarg") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("aa.txt ab.txt") == std::string::npos);
 }
 
-TEST(xargs, xargs_command_template_args_expand_parent_segment_star_wildcards) {
+TEST(xargs, xargs_command_template_parent_segment_wildcards_stay_literal) {
   TempDir tmp;
   tmp.write("dir1\\one.txt", "1\n");
   tmp.write("dir2\\two.txt", "2\n");
@@ -467,30 +443,22 @@ TEST(xargs, xargs_command_template_args_expand_parent_segment_star_wildcards) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("dir1\\one.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("dir2\\two.txt") != std::string::npos);
+  EXPECT_TRUE(r.stdout_text.find("dir*\\*.txt") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("dir*\\*.txt") == std::string::npos);
-}
+  EXPECT_TRUE(r.stdout_text.find("dir1\\one.txt dir2\\two.txt") ==
+              std::string::npos);
 
-TEST(xargs,
-     xargs_command_template_args_expand_parent_segment_question_wildcards) {
-  TempDir tmp;
-  tmp.write("dir1\\one.txt", "1\n");
-  tmp.write("dir2\\two.txt", "2\n");
+  Pipeline q;
+  q.set_cwd(tmp.wpath());
+  q.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"dir?\\*.txt"});
+  q.set_stdin("stdinarg\n");
 
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"cmd.exe", L"/C", L"echo", L"dir?\\*.txt"});
-  p.set_stdin("stdinarg\n");
+  auto s = q.run();
 
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("dir1\\one.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("dir2\\two.txt") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("stdinarg") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("dir?\\*.txt") == std::string::npos);
+  EXPECT_EQ(s.exit_code, 0);
+  EXPECT_TRUE(s.stdout_text.find("dir?\\*.txt") != std::string::npos);
+  EXPECT_TRUE(s.stdout_text.find("dir1\\one.txt dir2\\two.txt") ==
+              std::string::npos);
 }
 
 TEST(xargs,
@@ -593,8 +561,15 @@ TEST(xargs, xargs_rejects_empty_short_delimiter) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("xargs: delimiter must not be empty") !=
-              std::string::npos);
+  // [GNU] findutils 4.9.0 diagnostics (probed WSL):
+  //   xargs: Invalid input delimiter specification : the delimiter must be
+  //   either a single character or an escape sequence starting with \.
+  EXPECT_NE(
+      r.stderr_text.find(
+          "xargs: Invalid input delimiter specification : the delimiter must "
+          "be either a single character or an escape sequence starting with "
+          "\\."),
+      std::string::npos);
 }
 
 TEST(xargs, xargs_rejects_empty_long_delimiter) {
@@ -609,11 +584,16 @@ TEST(xargs, xargs_rejects_empty_long_delimiter) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("xargs: delimiter must not be empty") !=
-              std::string::npos);
+  // [GNU] same long-option diagnostic as the short form (probed WSL).
+  EXPECT_NE(
+      r.stderr_text.find(
+          "xargs: Invalid input delimiter specification : the delimiter must "
+          "be either a single character or an escape sequence starting with "
+          "\\."),
+      std::string::npos);
 }
 
-TEST(xargs, xargs_rejects_incomplete_hex_delimiter_escape) {
+TEST(xargs, xargs_incomplete_hex_delimiter_escape_is_nul) {
   TempDir tmp;
 
   Pipeline p;
@@ -623,9 +603,13 @@ TEST(xargs, xargs_rejects_incomplete_hex_delimiter_escape) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("xargs: invalid hex delimiter escape") !=
-              std::string::npos);
+  // [GNU] an incomplete hex escape parses as NUL (xargs.c get_input_delimiter:
+  // '\x' with no digits is 0), so a newline-free input is one item. Probe
+  // WSL findutils 4.9.0: `printf alpha | xargs -d '\x' -n1 echo` -> "alpha",
+  // rc 0. The 1.x applet rejected the spelling.
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stderr_text.empty());
+  EXPECT_NE(r.stdout_text.find("alpha"), std::string::npos);
 }
 
 TEST(xargs, xargs_rejects_unknown_named_delimiter_escape) {
@@ -639,8 +623,13 @@ TEST(xargs, xargs_rejects_unknown_named_delimiter_escape) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("xargs: invalid delimiter escape") !=
-              std::string::npos);
+  // [GNU] probed WSL findutils 4.9.0:
+  //   xargs: Invalid escape sequence \q in input delimiter specification.
+  EXPECT_NE(
+      r.stderr_text.find(
+          "xargs: Invalid escape sequence \\q in input delimiter "
+          "specification."),
+      std::string::npos);
 }
 
 TEST(xargs, xargs_delimiter_escape_keeps_spaces_literal) {
@@ -895,10 +884,13 @@ TEST(xargs, xargs_conflict_max_args_then_max_lines_last_wins) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
+  // [GNU] probed WSL findutils 4.9.0 (-n3 then -L2):
+  //   xargs: warning: options --max-args and -L are mutually exclusive,
+  //   ignoring previous --max-args value
   EXPECT_EQ_TEXT(
       r.stderr_text,
-      "xargs: warning: options --max-args and --max-lines/-L/-l are mutually "
-      "exclusive, ignoring previous --max-args value\n");
+      "xargs: warning: options --max-args and -L are mutually exclusive, "
+      "ignoring previous --max-args value\n");
   EXPECT_TRUE(r.stdout_text.find("a b") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("c d") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("a b c") == std::string::npos);
@@ -916,9 +908,12 @@ TEST(xargs, xargs_conflict_replace_then_max_args_last_wins) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
+  // [GNU] probed WSL findutils 4.9.0 (-I{} then -n2):
+  //   xargs: warning: options --replace and --max-args/-n are mutually
+  //   exclusive, ignoring previous --replace value
   EXPECT_EQ_TEXT(
       r.stderr_text,
-      "xargs: warning: options --replace/-I/-i and --max-args/-n are "
+      "xargs: warning: options --replace and --max-args/-n are "
       "mutually exclusive, ignoring previous --replace value\n");
   EXPECT_TRUE(r.stdout_text.find("[{}] a b") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("[a]") == std::string::npos);
@@ -974,10 +969,13 @@ TEST(xargs, xargs_conflict_replace_then_max_lines_last_wins) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
+  // [GNU] probed WSL findutils 4.9.0 (-I{} then -L2):
+  //   xargs: warning: options --replace and -L are mutually exclusive,
+  //   ignoring previous --replace value
   EXPECT_EQ_TEXT(
       r.stderr_text,
-      "xargs: warning: options --replace/-I/-i and --max-lines/-L/-l are "
-      "mutually exclusive, ignoring previous --replace value\n");
+      "xargs: warning: options --replace and -L are mutually "
+      "exclusive, ignoring previous --replace value\n");
   EXPECT_TRUE(r.stdout_text.find("[{}] a b") != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("[a]") == std::string::npos);
 }
@@ -1023,11 +1021,18 @@ TEST(xargs, xargs_max_chars_above_windows_limit_is_clamped_with_warning) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("value for -s option is too large") !=
-              std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "Size of command buffer we are actually using: 32767") !=
-              std::string::npos);
+  // [GNU] a -s above the system maximum is a warning, not a usage error,
+  // and the run continues:
+  //   xargs: value 40000 for -s option should be <= <system max>
+  // (probe WSL: `xargs -s 999999999 --show-limits` -> same shape, rc 0).
+  // §6: the Windows command-line budget replaces GNU's ARG_MAX, so the
+  // number itself is platform-derived; pin the GNU frame, not 32767.
+  EXPECT_NE(r.stderr_text.find("xargs: value 40000 for -s option should be "
+                               "<= "),
+            std::string::npos);
+  EXPECT_NE(
+      r.stderr_text.find("Size of command buffer we are actually using: "),
+      std::string::npos);
 }
 
 TEST(xargs, xargs_eof_stops_reading_at_marker_line) {
@@ -1464,11 +1469,14 @@ TEST(xargs, xargs_replace_still_implies_exit_if_exceeded) {
   auto r = p.run();
 
   // #1323: the base (cmd.exe + /C + echo + template) already exceeds
-  // -s 12, so GNU reports cannot-fit.
+  // -s 12, so the run aborts. [GNU] probed WSL findutils 4.9.0:
+  //   printf 'alphalongstring\n' | xargs -I{} -s12 echo {}
+  //   -> xargs: argument line too long, rc 1
+  // ("cannot fit single argument" is the message for an oversized item
+  // inside a command that otherwise fits, not for a too-small base.)
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "cannot fit single argument within argument list size "
-                  "limit") != std::string::npos);
+  EXPECT_NE(r.stderr_text.find("xargs: argument line too long"),
+            std::string::npos);
 }
 
 // Explicit -x with -d still exits when a single item exceeds -s.
@@ -1559,44 +1567,6 @@ TEST(xargs, xargs_utility_help_is_not_intercepted) {
   EXPECT_TRUE(r.stdout_text.find("--help a") != std::string::npos);
 }
 
-TEST(xargs, xargs_interactive_stdin_exhausted_fails_loudly_1320) {
-  TempDir tmp;
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  // No -a: stdin is the item source and is fully consumed before the
-  // prompt, so there is no answer left to read.  GNU fails loudly here;
-  // the old code silently skipped with exit code 0.
-  p.add(L"xargs.exe", {L"-p", L"cmd.exe", L"/C", L"echo"});
-  p.set_stdin("alpha\n");
-
-  auto r = p.run();
-
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("Failed to read from stdin") !=
-              std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("?...") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
-}
-
-TEST(xargs, xargs_interactive_leading_blank_answer_refuses_1320) {
-  TempDir tmp;
-  tmp.write("args.txt", "alpha\n");
-
-  Pipeline p;
-  p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"-p", L"-a", L"args.txt", L"cmd.exe", L"/C", L"echo"});
-  p.set_stdin(" y\n");
-
-  auto r = p.run();
-
-  // Only the first character of the answer counts: a leading blank is a
-  // refusal, not a yes.
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("alpha") == std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("?...") != std::string::npos);
-}
-
 TEST(xargs, xargs_double_quoted_backslash_stays_literal_1321) {
   TempDir tmp;
 
@@ -1633,13 +1603,21 @@ TEST(xargs, xargs_replacement_backslash_continues_line_1321) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"-I", L"{}"});
+  // Exercise the item through an explicit echo template: with -I{} and no
+  // {} the default command runs as a bare "echo" and prints blank lines
+  // (GNU probe); the item content is only observable via the template.
+  // echo.exe (not cmd.exe) carries the item verbatim: cmd.exe would cut an
+  // embedded newline out of its own command line.
+  p.add(L"xargs.exe",
+        {L"-I", L"{}", ProjectPaths::exe(L"echo.exe").wstring(), L"[{}]"});
   p.set_stdin("foo\\\nbar\n");
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "foo\nbar\n");
+  // [GNU] a trailing backslash escapes the newline, so one item contains
+  // "foo\nbar" (probe WSL findutils 4.9.0 -> "[foo" / "bar]").
+  EXPECT_EQ_TEXT(r.stdout_text, "[foo\nbar]\n");
 }
 
 TEST(xargs, xargs_replacement_double_backslash_does_not_continue_1321) {
@@ -1647,13 +1625,16 @@ TEST(xargs, xargs_replacement_double_backslash_does_not_continue_1321) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.add(L"xargs.exe",
+        {L"-I", L"{}", ProjectPaths::exe(L"echo.exe").wstring(), L"[{}]"});
   p.set_stdin("foo\\\\\nbar\n");
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "foo\\\nbar\n");
+  // [GNU] "\\" is one literal backslash; the newline still splits items
+  // (probe WSL -> "[foo\]" / "[bar]").
+  EXPECT_EQ_TEXT(r.stdout_text, "[foo\\]\n[bar]\n");
 }
 
 TEST(xargs, xargs_replacement_empty_quotes_yield_empty_item_1321) {
@@ -1675,13 +1656,18 @@ TEST(xargs, xargs_replacement_strips_leading_blanks_keeps_trailing_1322) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"xargs.exe", {L"-I", L"{}"});
+  p.add(L"xargs.exe",
+        {L"-I", L"{}", ProjectPaths::exe(L"echo.exe").wstring(), L"[{}]"});
   p.set_stdin("  lead trail \n");
 
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "lead trail \n");
+  // [GNU] -I strips the leading blanks but keeps a trailing blank in the
+  // item (probe WSL findutils 4.9.0 -> "[lead trail ]"). The 1.x test read
+  // the item through the default echo, which GNU runs as a bare "echo"
+  // (blank line) because the item is not appended.
+  EXPECT_EQ_TEXT(r.stdout_text, "[lead trail ]\n");
 }
 
 TEST(xargs, xargs_verbose_quotes_special_args_1322) {
@@ -1770,12 +1756,16 @@ TEST(xargs, xargs_show_limits_prints_six_lines_and_runs_1322) {
               std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("POSIX smallest allowable upper limit") !=
               std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "Maximum length of command we could actually use") !=
+  EXPECT_TRUE(r.stderr_text.find("Maximum length of command we could actually "
+                                 "use") !=
               std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find(
-                  "Size of command buffer we are actually using: 32767") !=
-              std::string::npos);
+  // [GNU] the buffer line is "Size of command buffer we are actually
+  // using: <n>". The 1.x test pinned 32767 (a raw Windows constant); the
+  // wired command reports the §6 command-line budget it derives (30719 on
+  // this env), so pin the GNU frame instead of the platform number.
+  EXPECT_NE(
+      r.stderr_text.find("Size of command buffer we are actually using: "),
+      std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("Maximum parallelism") !=
               std::string::npos);
   // --show-limits suppresses nothing: the command still runs.

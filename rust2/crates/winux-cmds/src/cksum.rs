@@ -304,6 +304,7 @@ fn emit_record(
     bytes: &[u8],
     name: Option<&str>,
     untagged: bool,
+    binary: bool,
     raw: bool,
     base64: bool,
     end: LineEnd,
@@ -353,8 +354,9 @@ fn emit_record(
                 let enc = b64core::encode(&codec, &digest, 0);
                 let enc = String::from_utf8_lossy(&enc).into_owned();
                 if untagged {
+                    let marker = if binary { '*' } else { ' ' };
                     match name {
-                        Some(n) => format!("{enc}  {n}"),
+                        Some(n) => format!("{enc} {marker}{n}"),
                         None => enc,
                     }
                 } else {
@@ -366,8 +368,9 @@ fn emit_record(
             } else {
                 let hexd = digest::hex(&digest);
                 if untagged {
+                    let marker = if binary { '*' } else { ' ' };
                     match name {
-                        Some(n) => format!("{hexd}  {n}"),
+                        Some(n) => format!("{hexd} {marker}{n}"),
                         None => hexd,
                     }
                 } else {
@@ -397,6 +400,27 @@ fn invalid_algorithm_message(name: &str) -> String {
         m.push_str(&format!("\n  - '{a}'"));
     }
     m
+}
+
+/// Resolve GNU's sequential output-mode state: `-b`/`-t` are a last-wins
+/// pair, `--tag`/`--untagged` likewise, and `--tag` also forces binary mode
+/// (digest.c:main case TAG_OPTION `{ prefix_tag = true; binary = 1; }`).
+fn output_mode(p: &argopt::Parsed) -> (bool, Option<bool>) {
+    let mut prefix_tag = true; // cksum defaults to tagged output
+    let mut binary: Option<bool> = None; // GNU's `int binary = -1`
+    for key in &p.order {
+        match key.as_str() {
+            "binary" => binary = Some(true),
+            "text" => binary = Some(false),
+            "tag" => {
+                prefix_tag = true;
+                binary = Some(true);
+            }
+            "untagged" => prefix_tag = false,
+            _ => {}
+        }
+    }
+    (prefix_tag, binary)
 }
 
 pub fn cksum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
@@ -430,16 +454,23 @@ pub fn cksum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         });
     }
 
+    let explicit_algo = p.has("algorithm");
     let mut algo = Algo::Crc;
     if let Some(name) = p.value_of("algorithm") {
         match parse_algorithm(name) {
             Some(a) => algo = a,
             None => {
+                // GNU argmatch failure: the list, then emit_try_help. Probed
+                // 9.4 LC_ALL=C: `cksum -a crc32b` ends with
+                // "Try 'cksum --help' for more information." (rc 1).
                 let _ = writeln!(io.stderr, "cksum: {}", invalid_algorithm_message(name));
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cksum"));
                 return Ok(1);
             }
         }
     }
+
+    let mut bits = algorithm_bits(algo);
     if p.has("length") {
         // probed: -l is blake2b-only; the error precedes any file work
         if algo != Algo::Blake2b {
@@ -450,7 +481,7 @@ pub fn cksum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             return Ok(1);
         }
         match parse_bits(p.value_of("length").unwrap_or("")) {
-            Ok(bits) => return Ok(run_files(&p, io, ctx, algo, bits)),
+            Ok(parsed) => bits = if parsed == 0 { 512 } else { parsed },
             Err(msgs) => {
                 for m in msgs {
                     let _ = writeln!(io.stderr, "cksum: {m}");
@@ -459,7 +490,77 @@ pub fn cksum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
         }
     }
-    Ok(run_files(&p, io, ctx, algo, 512))
+
+    let (prefix_tag, binary) = output_mode(&p);
+    let fail = |io: &mut Io, msg: &str| -> u32 {
+        let _ = winux_core::usage_error(ctx, io, "cksum", msg);
+        1
+    };
+
+    // digest.c:main validation order: check/algorithm combinations, then the
+    // base64/raw pair, then the text/tagged conflict, then verification-only
+    // switches.
+    let do_check = p.has("check");
+    if do_check && explicit_algo && matches!(algo, Algo::Crc | Algo::Bsd | Algo::Sysv) {
+        return Ok(fail(
+            io,
+            "--check is not supported with --algorithm={bsd,sysv,crc}",
+        ));
+    }
+    if p.has("base64") && p.has("raw") {
+        return Ok(fail(io, "--base64 and --raw are mutually exclusive"));
+    }
+    if prefix_tag && binary == Some(false) {
+        return Ok(fail(io, "--text mode is only supported with --untagged"));
+    }
+    if do_check {
+        if p.has("zero") {
+            return Ok(fail(
+                io,
+                "the --zero option is not supported when verifying checksums",
+            ));
+        }
+        if binary.is_some() {
+            return Ok(fail(
+                io,
+                "the --binary and --text options are meaningless when verifying checksums",
+            ));
+        }
+    } else {
+        if p.has("ignore-missing") {
+            return Ok(fail(
+                io,
+                "the --ignore-missing option is meaningful only when verifying checksums",
+            ));
+        }
+        if p.has("status") {
+            return Ok(fail(
+                io,
+                "the --status option is meaningful only when verifying checksums",
+            ));
+        }
+        if p.has("warn") {
+            return Ok(fail(
+                io,
+                "the --warn option is meaningful only when verifying checksums",
+            ));
+        }
+        if p.has("quiet") {
+            return Ok(fail(
+                io,
+                "the --quiet option is meaningful only when verifying checksums",
+            ));
+        }
+        if p.has("strict") {
+            return Ok(fail(
+                io,
+                "the --strict option is meaningful only when verifying checksums",
+            ));
+        }
+    }
+
+    let binary_mode = binary.unwrap_or(false);
+    Ok(run_files(&p, io, ctx, algo, bits, prefix_tag, binary_mode))
 }
 
 /// -l parse: non-numeric/non-multiple-of-8/over-512 diagnostics, probed
@@ -490,8 +591,16 @@ fn parse_bits(raw: &str) -> Result<usize, Vec<String>> {
     }
 }
 
-fn run_files(p: &argopt::Parsed, io: &mut Io, ctx: &Ctx, algo: Algo, bits: usize) -> u32 {
-    let untagged = p.has("untagged");
+fn run_files(
+    p: &argopt::Parsed,
+    io: &mut Io,
+    ctx: &Ctx,
+    algo: Algo,
+    bits: usize,
+    prefix_tag: bool,
+    binary: bool,
+) -> u32 {
+    let untagged = !prefix_tag;
     let zero = p.has("zero");
     let raw = p.has("raw");
     let base64 = p.has("base64");
@@ -526,7 +635,9 @@ fn run_files(p: &argopt::Parsed, io: &mut Io, ctx: &Ctx, algo: Algo, bits: usize
         } else {
             None
         };
-        emit_record(io, algo, bits, &bytes, name, untagged, raw, base64, end);
+        emit_record(
+            io, algo, bits, &bytes, name, untagged, binary, raw, base64, end,
+        );
     }
     if failed {
         1
@@ -558,93 +669,312 @@ fn read_input(ctx: &Ctx, io: &mut Io, input: &str) -> Result<Vec<u8>, String> {
         })
 }
 
-// ---- check mode (probed w5-cksum4.sh / w5-cksum5.sh) ----
+// ---- check mode (GNU digest.c 9.4: valid_digits, bsd_split_3, split_3,
+// digest_check; probed 2026-11-17) ----
 
-struct CheckLine {
-    tag_bits: usize,
-    algo: Algo,
-    name: String,
-    digest: String,
-    base64: bool,
+#[derive(Clone, Copy, PartialEq)]
+enum DigestKind {
+    Hex,
+    Base64,
 }
 
-/// Parse `TAG (name) = digest` — hex (case-insensitive, probed) or
-/// base64 (sniffed, probed s16). Returns None for anything else.
-fn parse_check_line(line: &str) -> Option<CheckLine> {
-    let open = line.find(" (")?;
-    if open == 0 {
+struct CheckLine {
+    algo: Algo,
+    bits: usize,
+    name: String,
+    digest: String,
+    kind: DigestKind,
+}
+
+/// digest.c:algorithm_bits[] — the fixed width of each algorithm.  For
+/// blake2b the table entry is 512; `-l` applies to untagged lines and the
+/// `-BITS` suffix selects a width on a tagged line.
+fn algorithm_bits(algo: Algo) -> usize {
+    match algo {
+        Algo::Crc => 32,
+        Algo::Bsd | Algo::Sysv => 16,
+        Algo::Md5 => 128,
+        Algo::Sha1 => 160,
+        Algo::Sha224 => 224,
+        Algo::Sha256 => 256,
+        Algo::Sha384 => 384,
+        Algo::Sha512 => 512,
+        Algo::Blake2b => 512,
+    }
+}
+
+/// digest.c:algorithm_tags[] — the word printed in tagged output and used
+/// as DIGEST_TYPE_STRING in the --warn malformed-line diagnostic.
+fn algorithm_tag(algo: Algo) -> &'static str {
+    match algo {
+        Algo::Crc => "CRC",
+        Algo::Bsd => "BSD",
+        Algo::Sysv => "SYSV",
+        Algo::Md5 => "MD5",
+        Algo::Sha1 => "SHA1",
+        Algo::Sha224 => "SHA224",
+        Algo::Sha256 => "SHA256",
+        Algo::Sha384 => "SHA384",
+        Algo::Sha512 => "SHA512",
+        Algo::Blake2b => "BLAKE2b",
+    }
+}
+
+fn is_base64_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'+' || b == b'/'
+}
+
+/// digest.c:valid_digits — the digest text must be exactly the hex spelling
+/// (bits/4 characters) or exactly the padded base64 spelling
+/// (BASE64_LENGTH(bits/8), with bits%3 trailing '=').  A wrong length or
+/// padding makes the LINE malformed, not a mismatched digest: GNU 9.4
+/// rejects the 43-character base64 body wholesale (#1752 clear-text probe).
+fn valid_digest(text: &str, bits: usize) -> Option<DigestKind> {
+    if bits == 0 || bits % 8 != 0 {
         return None;
     }
-    let tag = &line[..open];
-    let after_paren = open + 2;
-    let name_end = line[after_paren..].find(')')? + after_paren;
-    let name = &line[after_paren..name_end];
-    let rest = &line[name_end + 1..];
-    let digest = rest.strip_prefix(" = ")?;
-    if name.is_empty() || digest.is_empty() {
-        return None;
-    }
-    // tag -> (algo, bits): SHA2xx fixed; BLAKE2b / BLAKE2b-<bits>
-    let (algo, bits) = if let Some(rest) = tag.strip_prefix("BLAKE2b") {
-        let b = if rest.is_empty() {
-            512
-        } else {
-            rest.strip_prefix('-')?.parse().ok()?
-        };
-        (Algo::Blake2b, b)
-    } else {
-        match tag {
-            "MD5" => (Algo::Md5, 128),
-            "SHA1" => (Algo::Sha1, 160),
-            "SHA224" => (Algo::Sha224, 224),
-            "SHA256" => (Algo::Sha256, 256),
-            "SHA384" => (Algo::Sha384, 384),
-            "SHA512" => (Algo::Sha512, 512),
-            _ => return None,
+    let bytes = text.as_bytes();
+    let b64_len = (bits / 8).div_ceil(3) * 4;
+    if bytes.len() == b64_len {
+        let pad = bits % 3;
+        let body = b64_len - pad;
+        if bytes[..body].iter().copied().all(is_base64_byte)
+            && bytes[body..].iter().all(|&b| b == b'=')
+        {
+            return Some(DigestKind::Base64);
         }
-    };
-    let base64 = !digest.bytes().all(|b| b.is_ascii_hexdigit());
+    }
+    if bytes.len() == bits / 4 && bytes.iter().all(u8::is_ascii_hexdigit) {
+        return Some(DigestKind::Hex);
+    }
+    None
+}
+
+/// digest.c:bsd_split_3 — `(name) = digest`; the LAST ')' ends the name
+/// (GNU allows ')' inside a file name), and blanks around '=' are skipped.
+fn split_bsd(rest: &str, algo: Algo, bits: usize) -> Option<CheckLine> {
+    let close = rest.rfind(')')?;
+    let name = &rest[..close];
+    let after = rest[close + 1..].trim_start_matches([' ', '\t']);
+    let digest = after.strip_prefix('=')?.trim_start_matches([' ', '\t']);
+    let kind = valid_digest(digest, bits)?;
     Some(CheckLine {
-        tag_bits: bits,
         algo,
+        bits,
         name: name.to_string(),
         digest: digest.to_string(),
-        base64,
+        kind,
     })
 }
 
-fn decode_digest(line: &CheckLine) -> Option<Vec<u8>> {
-    if line.base64 {
-        let codec = b64core::base64_codec();
-        b64core::decode(&codec, line.digest.as_bytes(), false).ok()
+/// digest.c:split_3 tagged branch: `TAG (name) = digest` (BSD) or
+/// `TAG(name) = digest` (OpenSSL), plus `TAG-<bits>` for blake2b.  The tag
+/// is case-sensitive; `-a` fixes which tag is accepted.
+fn parse_tagged(line: &str, algo: Algo, _configured_bits: usize) -> Option<CheckLine> {
+    let tag = algorithm_tag(algo);
+    let rest = line.strip_prefix(tag)?;
+    let mut bits = algorithm_bits(algo);
+    let rest = if let Some(after_dash) = rest.strip_prefix('-') {
+        let end = after_dash
+            .bytes()
+            .position(|b| !b.is_ascii_digit())
+            .unwrap_or(after_dash.len());
+        let (digits, tail) = after_dash.split_at(end);
+        if digits.is_empty() {
+            return None;
+        }
+        let length: usize = digits.parse().ok()?;
+        // digest.c:split_3 — 0 < length <= the algorithm's max and a
+        // multiple of 8; fixed-width digests therefore only admit their
+        // own width.
+        if length == 0 || length > algorithm_bits(algo) || length % 8 != 0 {
+            return None;
+        }
+        bits = length;
+        tail
     } else {
-        hex_decode(&line.digest)
+        rest
+    };
+    let rest = rest.strip_prefix(' ').unwrap_or(rest);
+    let inner = rest.strip_prefix('(')?;
+    split_bsd(inner, algo, bits)
+}
+
+/// digest.c:algorithm_from_tag — at most 7 characters (the longest tag is
+/// "BLAKE2b"), scanning stops at whitespace, '-' or '('.  The legacy
+/// bsd/sysv/crc tags are rejected: those outputs have no checkable tagged
+/// form (digest.c:split_3 `algo_tag <= crc`).
+fn algorithm_from_tag(line: &str) -> Option<Algo> {
+    let line = line.trim_start_matches([' ', '\t']);
+    let end = line
+        .find(|c: char| c.is_whitespace() || c == '-' || c == '(')
+        .unwrap_or(line.len());
+    if end > 7 {
+        return None;
+    }
+    match &line[..end] {
+        "MD5" => Some(Algo::Md5),
+        "SHA1" => Some(Algo::Sha1),
+        "SHA224" => Some(Algo::Sha224),
+        "SHA256" => Some(Algo::Sha256),
+        "SHA384" => Some(Algo::Sha384),
+        "SHA512" => Some(Algo::Sha512),
+        "BLAKE2b" => Some(Algo::Blake2b),
+        _ => None,
     }
 }
 
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+/// digest.c:split_3 non-tagged branch: `hex  name`, `hex *name`, and the
+/// single-space "BSD reversed" form.  Only a preceding `-a ALGO` makes this
+/// style legal (#1411 probe: without -a only tagged lines parse).
+fn parse_untagged(
+    line: &str,
+    algo: Algo,
+    bits: usize,
+    bsd_reversed: &mut i32,
+) -> Option<CheckLine> {
+    let line = line.strip_prefix('\\').unwrap_or(line);
+    let s = line.trim_start_matches([' ', '\t']);
+    // digest.c:MIN_DIGEST_LINE_LENGTH is 3 for cksum (the -l 8 shape).
+    if s.len() < 3 {
         return None;
     }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    let b = s.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        let hi = (b[i] as char).to_digit(16)?;
-        let lo = (b[i + 1] as char).to_digit(16)?;
-        out.push(((hi << 4) | lo) as u8);
-        i += 2;
+    let end = s
+        .bytes()
+        .position(|b| b == b' ' || b == b'\t')
+        .unwrap_or(s.len());
+    if end == s.len() {
+        return None;
     }
-    Some(out)
+    let digest = &s[..end];
+    // digest.c auto-detects a blake2b untagged digest width from the
+    // leading hex run; fixed-width algorithms use the selected width.
+    let bits = if algo == Algo::Blake2b {
+        let hex_count = digest.bytes().take_while(|b| b.is_ascii_hexdigit()).count();
+        if hex_count < 2 || !hex_count.is_multiple_of(2) || hex_count > 128 {
+            return None;
+        }
+        hex_count * 4
+    } else {
+        bits
+    };
+    let kind = valid_digest(digest, bits)?;
+    let marker_at = end + 1;
+    let marker = *s.as_bytes().get(marker_at)?;
+    let name_start = if s.len() - marker_at == 1 || (marker != b' ' && marker != b'*') {
+        // "bsd reversed": no marker column, and mixing styles is refused.
+        if *bsd_reversed == 0 {
+            return None;
+        }
+        *bsd_reversed = 1;
+        marker_at
+    } else if *bsd_reversed != 1 {
+        *bsd_reversed = 0;
+        marker_at + 1
+    } else {
+        marker_at
+    };
+    let name = s.get(name_start..)?;
+    Some(CheckLine {
+        algo,
+        bits,
+        name: name.to_string(),
+        digest: digest.to_string(),
+        kind,
+    })
+}
+
+/// One check line, or None when the line is improperly formatted.  `current`
+/// tracks DIGEST_TYPE_STRING for the --warn diagnostic: without `-a` each
+/// recognized tag selects the algorithm for the rest of the line/file.
+fn parse_check_line(
+    line: &str,
+    explicit: Option<Algo>,
+    current: &mut Algo,
+    configured_bits: usize,
+    bsd_reversed: &mut i32,
+) -> Option<CheckLine> {
+    let is_explicit = explicit.is_some();
+    let algo = match explicit {
+        Some(algo) => algo,
+        None => {
+            let algo = algorithm_from_tag(line)?;
+            *current = algo;
+            algo
+        }
+    };
+    if let Some(parsed) = parse_tagged(line, algo, configured_bits) {
+        return Some(parsed);
+    }
+    // digest.c:split_3 non-tagged branch: `hex  name` is legal only when
+    // -a selected the algorithm — an untagged line carries no tag for
+    // algorithm_from_tag to detect (probe p-cksum-check.sh: `-a md5 -c`
+    // verifies `hex  f` -> "f: OK"; bare `-c` rejects it).
+    if is_explicit {
+        if let Some(parsed) =
+            parse_untagged(line, algo, configured_bits, bsd_reversed)
+        {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
+fn digest_matches(line: &CheckLine, bytes: &[u8]) -> bool {
+    let computed = algo_digest(line.algo, bytes, line.bits);
+    match line.kind {
+        DigestKind::Hex => digest::hex(&computed).eq_ignore_ascii_case(&line.digest),
+        DigestKind::Base64 => {
+            let codec = b64core::base64_codec();
+            b64core::encode(&codec, &computed, 0) == line.digest.as_bytes()
+        }
+    }
+}
+
+/// digest_file's ENOENT distinction: only a missing file is ignorable
+/// under --ignore-missing (a permission error still fails).
+fn read_check_target(ctx: &Ctx, io: &mut Io, name: &str) -> Result<Vec<u8>, (String, bool)> {
+    match read_input(ctx, io, name) {
+        Ok(bytes) => Ok(bytes),
+        Err(reason) => {
+            let missing = reason == "No such file or directory";
+            Err((reason, missing))
+        }
+    }
 }
 
 fn check_files(p: &argopt::Parsed, io: &mut Io, ctx: &Ctx, algo: Algo, bits: usize) -> u32 {
-    let _ = (algo, bits);
-    let status = p.has("status");
-    let quiet = p.has("quiet");
-    let ignore_missing = p.has("ignore-missing");
-    let warn = p.has("warn");
-    let strict = p.has("strict");
+    let explicit = p.has("algorithm");
+    // GNU's four verification switches clear each other in argv order:
+    // --status sets warn=quiet=false, --warn sets status=quiet=false,
+    // --quiet sets status=warn=false (digest.c:main).
+    let mut status = false;
+    let mut quiet = false;
+    let mut warn = false;
+    let mut ignore_missing = false;
+    let mut strict = false;
+    for key in &p.order {
+        match key.as_str() {
+            "status" => {
+                status = true;
+                warn = false;
+                quiet = false;
+            }
+            "warn" => {
+                status = false;
+                warn = true;
+                quiet = false;
+            }
+            "quiet" => {
+                status = false;
+                warn = false;
+                quiet = true;
+            }
+            "ignore-missing" => ignore_missing = true,
+            "strict" => strict = true,
+            _ => {}
+        }
+    }
 
     let inputs: Vec<String> = if p.positionals.is_empty() {
         vec!["-".to_string()]
@@ -655,118 +985,134 @@ fn check_files(p: &argopt::Parsed, io: &mut Io, ctx: &Ctx, algo: Algo, bits: usi
             .collect()
     };
 
-    let mut failed = false;
+    let mut ok = true;
+    // digest.c:bsd_reversed is a file-scope static shared by all list files.
+    let mut bsd_reversed = -1i32;
     for list in &inputs {
         let text = match read_input(ctx, io, list) {
             Ok(b) => String::from_utf8_lossy(&b).into_owned(),
             Err(reason) => {
                 let _ = writeln!(io.stderr, "cksum: {}: {reason}", quotef(list));
-                failed = true;
+                ok = false;
                 continue;
             }
         };
-        let lines: Vec<&str> = text.lines().collect();
-        let parsed: Vec<CheckLine> = lines.iter().filter_map(|l| parse_check_line(l)).collect();
-        if parsed.is_empty() {
-            // probed: CRC-format and untagged lists are rejected wholesale
-            let _ = writeln!(
-                io.stderr,
-                "cksum: {}: no properly formatted checksum lines found",
-                quotef(list)
-            );
-            failed = true;
-            continue;
-        }
-        let mut bad_format: Vec<usize> = Vec::new();
-        for (idx, line) in lines.iter().enumerate() {
-            if parse_check_line(line).is_none() {
-                bad_format.push(idx + 1);
-            }
-        }
-        if warn {
-            for ln in &bad_format {
-                let _ = writeln!(
-                    io.stderr,
-                    "cksum: {}: {}: improperly formatted checksum line",
-                    quotef(list),
-                    ln
-                );
-            }
-        }
-        let mut verified = 0usize;
+        let mut current = if explicit { algo } else { Algo::Crc };
+        let mut proper = false;
+        let mut matched = false;
+        let mut misformatted = 0usize;
         let mut mismatches = 0usize;
         let mut unreadable = 0usize;
-        for line in &parsed {
-            let expected = decode_digest(line);
-            let actual = read_input(ctx, io, &line.name)
-                .ok()
-                .map(|bytes| algo_digest(line.algo, &bytes, line.tag_bits));
-            match (actual, expected) {
-                (Some(a), Some(e)) if a == e => {
-                    verified += 1;
-                    if !status && !quiet {
-                        let _ = writeln!(io.stdout, "{}: OK", line.name);
-                    }
+        for (idx, line) in text.lines().enumerate() {
+            // digest.c:digest_check ignores comment lines and empty lines;
+            // they are not "improperly formatted".
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parsed = parse_check_line(
+                line,
+                if explicit { Some(algo) } else { None },
+                &mut current,
+                bits,
+                &mut bsd_reversed,
+            );
+            let Some(cl) = parsed else {
+                misformatted += 1;
+                if warn {
+                    let _ = writeln!(
+                        io.stderr,
+                        "cksum: {}: {}: improperly formatted {} checksum line",
+                        quotef(list),
+                        idx + 1,
+                        algorithm_tag(current)
+                    );
                 }
-                (Some(_), _) => {
-                    mismatches += 1;
+                continue;
+            };
+            proper = true;
+            match read_check_target(ctx, io, &cl.name) {
+                Err((_, true)) if ignore_missing => {}
+                Err((reason, _)) => {
+                    unreadable += 1;
+                    let _ = writeln!(io.stderr, "cksum: {}: {reason}", quotef(&cl.name));
                     if !status {
-                        let _ = writeln!(io.stdout, "{}: FAILED", line.name);
+                        let _ = writeln!(io.stdout, "{}: FAILED open or read", cl.name);
                     }
                 }
-                (None, _) => {
-                    if !ignore_missing {
-                        unreadable += 1;
+                Ok(bytes) => {
+                    if digest_matches(&cl, &bytes) {
+                        matched = true;
+                        if !status && !quiet {
+                            let _ = writeln!(io.stdout, "{}: OK", cl.name);
+                        }
+                    } else {
+                        mismatches += 1;
                         if !status {
-                            // probed case 4: --status silences both streams
-                            let _ = writeln!(io.stdout, "{}: FAILED open or read", line.name);
-                            let _ = writeln!(
-                                io.stderr,
-                                "cksum: {}: No such file or directory",
-                                line.name
-                            );
+                            let _ = writeln!(io.stdout, "{}: FAILED", cl.name);
                         }
                     }
                 }
             }
         }
-        if !status && mismatches > 0 {
+
+        if !proper {
+            // Not gated on --status in GNU: an unusable list always names
+            // itself once.
             let _ = writeln!(
                 io.stderr,
-                "cksum: WARNING: {} computed checksum{} did NOT match",
-                mismatches,
-                if mismatches == 1 { "" } else { "s" }
+                "cksum: {}: no properly formatted checksum lines found",
+                quotef(list)
             );
+            ok = false;
+            continue;
         }
-        if !status && unreadable > 0 {
-            let _ = writeln!(
-                io.stderr,
-                "cksum: WARNING: {} listed file{} could not be read",
-                unreadable,
-                if unreadable == 1 { "" } else { "s" }
-            );
-        }
-        if mismatches > 0 || unreadable > 0 {
-            failed = true;
-        }
-        if verified == 0 && mismatches == 0 && ignore_missing {
-            // probed case 6: everything ignored -> no file was verified, rc 1
-            if !status {
+
+        if !status {
+            // digest.c:digest_check summary order: malformed, unreadable,
+            // mismatched; then the --ignore-missing "no file was verified"
+            // note.
+            if misformatted != 0 {
+                let _ = writeln!(
+                    io.stderr,
+                    "cksum: WARNING: {} line{} {} improperly formatted",
+                    misformatted,
+                    if misformatted == 1 { "" } else { "s" },
+                    if misformatted == 1 { "is" } else { "are" }
+                );
+            }
+            if unreadable != 0 {
+                let _ = writeln!(
+                    io.stderr,
+                    "cksum: WARNING: {} listed file{} could not be read",
+                    unreadable,
+                    if unreadable == 1 { "" } else { "s" }
+                );
+            }
+            if mismatches != 0 {
+                let _ = writeln!(
+                    io.stderr,
+                    "cksum: WARNING: {} computed checksum{} did NOT match",
+                    mismatches,
+                    if mismatches == 1 { "" } else { "s" }
+                );
+            }
+            if ignore_missing && !matched {
                 let _ = writeln!(io.stderr, "cksum: {}: no file was verified", quotef(list));
             }
-            failed = true;
         }
-        if !bad_format.is_empty() && strict {
-            failed = true;
+
+        let file_ok =
+            matched && mismatches == 0 && unreadable == 0 && (!strict || misformatted == 0);
+        if !file_ok {
+            ok = false;
         }
     }
-    if failed {
-        1
-    } else {
+    if ok {
         0
+    } else {
+        1
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1102,7 +1448,11 @@ mod tests {
         let (r, out, err) = run_in(&sc, &["--status", "-c", "m.lst"], "");
         assert_eq!(r, 1);
         assert!(out.is_empty());
-        assert!(err.is_empty());
+        // GNU 9.4 digest_file still reports the failed open on stderr under
+        // --status (probed 2026-11-17: `cksum --status -c m.lst` prints
+        // "cksum: gone: No such file or directory" and nothing else); the
+        // old assertion that --status silences both streams was 1.x drift.
+        assert_eq!(err, "cksum: gone: No such file or directory\n");
         make_list(
             &sc,
             "ok.lst",
@@ -1151,5 +1501,255 @@ mod tests {
         assert_eq!(r, 0);
         assert!(out.starts_with("cksum (GNU coreutils) 9.4\n"));
         assert!(out.ends_with("Written by Pádraig Brady and Q. Frank Xia.\n"));
+    }
+
+    // ---- 2026-11-17 parity probes (GNU coreutils 9.4, digest.c) ----
+
+    #[test]
+    fn check_malformed_summary_is_not_gated_on_warn() {
+        // GNU digest.c:1294-1307: with at least one properly formatted line,
+        // the "N line(s) are improperly formatted" summary prints unless
+        // --status; --warn only adds the per-line diagnostic.
+        let sc = ScratchCtx::new("cksum-malformed");
+        std::fs::write(sc.path("good.txt"), "hello").unwrap();
+        make_list(
+            &sc,
+            "mixed.lst",
+            "bad-line\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n",
+        );
+        let (r, out, err) = run_in(&sc, &["-c", "mixed.lst"], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "good.txt: OK\n");
+        assert_eq!(err, "cksum: WARNING: 1 line is improperly formatted\n");
+
+        let (r, out, err) = run_in(&sc, &["--quiet", "-c", "mixed.lst"], "");
+        assert_eq!(r, 0);
+        assert!(out.is_empty());
+        assert_eq!(err, "cksum: WARNING: 1 line is improperly formatted\n");
+
+        // --status suppresses the summary (and stays silent otherwise).
+        let (r, out, err) = run_in(&sc, &["--status", "-c", "mixed.lst"], "");
+        assert_eq!(r, 0);
+        assert!(out.is_empty());
+        assert!(err.is_empty());
+
+        // Plural form and the "summary still prints under --strict" rule.
+        make_list(
+            &sc,
+            "mixed2.lst",
+            "bad-line\nbad-two\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n",
+        );
+        let (r, out, err) = run_in(&sc, &["--strict", "-c", "mixed2.lst"], "");
+        assert_eq!(r, 1);
+        assert_eq!(out, "good.txt: OK\n");
+        assert_eq!(err, "cksum: WARNING: 2 lines are improperly formatted\n");
+
+        // Comment and empty lines are skipped, not counted as malformed.
+        make_list(
+            &sc,
+            "comments.lst",
+            "# note\n\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n",
+        );
+        let (r, out, err) = run_in(&sc, &["-c", "comments.lst"], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "good.txt: OK\n");
+        assert!(err.is_empty());
+    }
+
+    #[test]
+    fn check_warn_names_algorithm_in_force() {
+        // digest.c:1209 prints DIGEST_TYPE_STRING: CRC by default, the
+        // selected algorithm under -a.  With -a sha256 the MD5-tagged line is
+        // malformed too (split_3 only accepts the tag in force).
+        let sc = ScratchCtx::new("cksum-warn-tag");
+        std::fs::write(sc.path("good.txt"), "hello").unwrap();
+        make_list(
+            &sc,
+            "mixed.lst",
+            "bad-line\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n",
+        );
+        let (r, out, err) = run_in(&sc, &["--warn", "-c", "mixed.lst"], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "good.txt: OK\n");
+        assert_eq!(
+            err,
+            "cksum: mixed.lst: 1: improperly formatted CRC checksum line\n\
+             cksum: WARNING: 1 line is improperly formatted\n"
+        );
+
+        let (_, _, err) = run_in(&sc, &["--warn", "-a", "md5", "-c", "mixed.lst"], "");
+        assert!(err.contains("cksum: mixed.lst: 1: improperly formatted MD5 checksum line"));
+
+        let (r, out, err) = run_in(&sc, &["--warn", "-a", "sha256", "-c", "mixed.lst"], "");
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert_eq!(
+            err,
+            "cksum: mixed.lst: 1: improperly formatted SHA256 checksum line\n\
+             cksum: mixed.lst: 2: improperly formatted SHA256 checksum line\n\
+             cksum: mixed.lst: no properly formatted checksum lines found\n"
+        );
+    }
+
+
+    #[test]
+    fn check_base64_digest_validation_issue1752() {
+        // valid_digits: base64 must have exactly BASE64_LENGTH bytes with
+        // bits%3 trailing '='.  Wrong padding is malformed (#1752); a
+        // well-formed but wrong digest is a FAILED record.
+        let sc = ScratchCtx::new("cksum-b64-validate");
+        std::fs::write(sc.path("ck"), "hello").unwrap();
+        make_list(
+            &sc,
+            "ok.lst",
+            "SHA256 (ck) = LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=\n",
+        );
+        let (r, out, err) = run_in(&sc, &["-c", "ok.lst"], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "ck: OK\n");
+        assert!(err.is_empty());
+
+        make_list(
+            &sc,
+            "pad.lst",
+            "SHA256 (ck) = LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQX\n",
+        );
+        let (r, out, err) = run_in(&sc, &["-c", "pad.lst"], "");
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert_eq!(
+            err,
+            "cksum: pad.lst: no properly formatted checksum lines found\n"
+        );
+
+        make_list(
+            &sc,
+            "tamper.lst",
+            "SHA256 (ck) = XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX=\n",
+        );
+        let (r, out, err) = run_in(&sc, &["-c", "tamper.lst"], "");
+        assert_eq!(r, 1);
+        assert_eq!(out, "ck: FAILED\n");
+        assert!(err.contains("WARNING: 1 computed checksum did NOT match"));
+    }
+
+    #[test]
+    fn output_mode_last_wins_issue1362() {
+        // -b/-t are last-wins; --tag also forces binary mode; -t with the
+        // default tagged output is refused (digest.c:1416-1450,1520-1531).
+        let tag = "6137cde4893c59f76f005a8123d8e8e6";
+        let (r, out, _) = run3(&["-a", "md5", "-t", "-b"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, format!("MD5 (-) = {tag}\n"));
+
+        let (r, out, _) = run3(&["-a", "md5", "--untagged", "-t", "-b"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, format!("{tag} *-\n"));
+
+        let (r, out, _) = run3(&["-a", "md5", "--untagged", "-b", "-t"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, format!("{tag}  -\n"));
+
+        let (r, out, err) = run3(&["-a", "md5", "-b", "-t"], "data\n");
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert_eq!(
+            err,
+            "cksum: --text mode is only supported with --untagged\n\
+             Try 'cksum --help' for more information.\n"
+        );
+
+        // --tag leaves binary=1 behind, so a later --untagged prints '*'
+        // (probed `cksum -a md5 --tag --untagged f`).
+        let (r, out, _) = run3(&["-a", "md5", "--tag", "--untagged"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, format!("{tag} *-\n"));
+
+        let (r, out, _) = run3(&["-a", "md5", "--untagged", "--tag"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, format!("MD5 (-) = {tag}\n"));
+
+        // CRC ignores the marker, but -t still conflicts with tagged mode.
+        let (r, out, _) = run3(&["--untagged", "-t"], "data\n");
+        assert_eq!(r, 0);
+        assert_eq!(out, "2797087131 5\n");
+        let (r, _, err) = run3(&["-t"], "data\n");
+        assert_eq!(r, 1);
+        assert!(err.contains("--text mode is only supported with --untagged"));
+    }
+
+    #[test]
+    fn check_switch_order_matches_gnu() {
+        // --status/--warn/--quiet clear each other in argv order.
+        let sc = ScratchCtx::new("cksum-switch-order");
+        std::fs::write(sc.path("good.txt"), "hello").unwrap();
+        make_list(
+            &sc,
+            "mixed.lst",
+            "bad-line\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\n",
+        );
+        let (r, out, err) = run_in(&sc, &["--status", "--warn", "-c", "mixed.lst"], "");
+        assert_eq!(r, 0);
+        assert_eq!(out, "good.txt: OK\n");
+        assert!(err.contains("improperly formatted CRC checksum line"));
+
+        let (r, out, err) = run_in(&sc, &["--warn", "--status", "-c", "mixed.lst"], "");
+        assert_eq!(r, 0);
+        assert!(out.is_empty());
+        assert!(err.is_empty());
+    }
+
+    #[test]
+    fn verification_only_options_require_check() {
+        // digest.c:main rejects these switches without -c, with the same
+        // "Try ... --help" trailer argopt emits for option errors.
+        for (args, needle) in [
+            (
+                &["--warn"][..],
+                "the --warn option is meaningful only when verifying checksums",
+            ),
+            (
+                &["--quiet"][..],
+                "the --quiet option is meaningful only when verifying checksums",
+            ),
+            (
+                &["--status"][..],
+                "the --status option is meaningful only when verifying checksums",
+            ),
+            (
+                &["--strict"][..],
+                "the --strict option is meaningful only when verifying checksums",
+            ),
+            (
+                &["--ignore-missing"][..],
+                "the --ignore-missing option is meaningful only when verifying checksums",
+            ),
+        ] {
+            let (r, out, err) = run3(args, "");
+            assert_eq!(r, 1, "{args:?}");
+            assert!(out.is_empty());
+            assert!(err.contains(needle), "{err}");
+            assert!(err.contains("Try 'cksum --help' for more information."));
+        }
+
+        let sc = ScratchCtx::new("cksum-verify-errors");
+        std::fs::write(sc.path("f"), "data\n").unwrap();
+        make_list(&sc, "l.lst", "MD5 (f) = 6137cde4893c59f76f005a8123d8e8e6\n");
+        let (r, _, err) = run_in(&sc, &["-c", "-b", "l.lst"], "");
+        assert_eq!(r, 1);
+        assert!(err
+            .contains("the --binary and --text options are meaningless when verifying checksums"));
+        let (r, _, err) = run_in(&sc, &["-c", "-t", "l.lst"], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("--text mode is only supported with --untagged"));
+        let (r, _, err) = run_in(&sc, &["-c", "-z", "l.lst"], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("the --zero option is not supported when verifying checksums"));
+        let (r, _, err) = run_in(&sc, &["-a", "crc", "-c", "l.lst"], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("--check is not supported with --algorithm={bsd,sysv,crc}"));
+        let (r, _, err) = run3(&["--base64", "--raw", "f"], "");
+        assert_eq!(r, 1);
+        assert!(err.contains("--base64 and --raw are mutually exclusive"));
     }
 }

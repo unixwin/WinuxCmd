@@ -44,3 +44,9 @@ su41-rs-empty-source	strict	printf '' > empty.bin; printf '1\n2\n3\n' > f3.txt		
 su42-rs-one-byte-five	strict	printf 'x' > one.bin; printf '1\n2\n3\n4\n5\n' > f5.txt			--random-source=one.bin	f5.txt
 su43-rs-one-byte-six	strict	printf 'x' > one.bin; printf '1\n2\n3\n4\n5\n6\n' > f6.txt			--random-source=one.bin	f6.txt
 su44-rs-empty-head0	strict	printf '' > empty.bin; printf '1\n2\n3\n' > f3.txt			-n	0	--random-source=empty.bin	f3.txt
+su45-missing-input-quoted	strict				no such
+su46-output-is-dir	strict	mkdir odir			-o	odir	-i	1-2
+su47-random-source-is-dir	strict	mkdir sdir			--random-source=sdir	-i	1-2
+su48-missing-source-quoted	strict				--random-source=no such	-i	1-2
+su49-reservoir-eof	strict	pad=$(printf 'x%.0s' $(seq 1000)); for i in $(seq 1 9000); do printf 'L%04d-%s\n' "$i" "$pad"; done > big.txt; printf '0123456789abcdef0123456789abcdef' > short.bin			--random-source=short.bin	-n	3	big.txt
+su50-reservoir-sample	strict	pad=$(printf 'x%.0s' $(seq 1000)); for i in $(seq 1 9000); do printf 'L%04d-%s\n' "$i" "$pad"; done > big.txt; yes a | head -c 400000 > long.bin			--random-source=long.bin	-n	3	big.txt

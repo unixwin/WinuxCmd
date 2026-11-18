@@ -24,8 +24,14 @@
 //!   during it also dies with "'X': end of file" and prints NOTHING (probed:
 //!   an empty source fails on the first draw; a one-byte source drives a
 //!   5-line shuffle to completion but dies on 6 lines, because randint.c
-//!   recycles the byte's entropy). A missing source is
-//!   "X: No such file or directory".
+//!   recycles the byte's entropy). Open and read failures stay apart like
+//!   GNU randread.c:105: a missing source is "X: No such file or directory"
+//!   (quotef), a directory is "'X': read error: Is a directory".
+//! * Input operands follow shuf.c:530/280: an open failure is
+//!   "NAME: REASON" (quotef), while a directory opens on POSIX and fails in
+//!   the first read, so it prints "read error: Is a directory" with no name.
+//!   An -o open failure is "NAME: REASON" (shuf.c:578, quotef) and a write
+//!   failure is "write error: REASON".
 //! * The range splits on the FIRST '-'; both endpoints are non-negative
 //!   decimals (GNU xstrtoumax tolerates surrounding spaces where the C++
 //!   value model rejects them — win-classified rows); lo > hi is
@@ -217,7 +223,7 @@ const KECCAK_RC: [u64; 24] = [
     0x0000000000000088,
     0x0000000080008009,
     0x000000008000000A,
-    0x800000008000808B,
+    0x000000008000808B,
     0x800000000000008B,
     0x8000000000008089,
     0x8000000000008003,
@@ -720,6 +726,12 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         Deferred((u64, u64)),
         Lines(Vec<String>),
     }
+    // Size of the input FILE operand when it is a regular file (GNU
+    // input_size(): fstat on the reopened stdin minus the current offset).
+    // stdin has no cheap portable fstat here and the gate feeds it through a
+    // pipe, so the redirected-regular-file spelling is left on the read-all
+    // path (documented deviation).
+    let mut input_file_size: Option<u64> = None;
     let source = if echo_mode {
         Source::Lines(
             p.positionals
@@ -750,14 +762,52 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             .unwrap_or_else(|| "-".to_string());
         let bytes = if operand == "-" {
             let mut buf = Vec::new();
-            io.stdin.read_to_end(&mut buf)?;
-            buf
+            match io.stdin.read_to_end(&mut buf) {
+                Ok(_) => buf,
+                Err(e) => {
+                    // shuf.c:280 fread_file failure: "read error" + errno.
+                    let _ = writeln!(io.stderr, "shuf: read error: {}", fsutil::reason(&e));
+                    return Ok(1);
+                }
+            }
         } else {
             let full = fsutil::resolve(ctx, &operand);
-            match std::fs::read(&full) {
-                Ok(b) => b,
-                Err(_) => {
-                    let _ = writeln!(io.stderr, "shuf: {operand}: No such file or directory");
+            // GNU reopens the operand as stdin (shuf.c:530): a directory
+            // opens fine on POSIX and the failure only shows up in the
+            // first read, reported WITHOUT the operand name (shuf.c:280).
+            // Windows refuses to open a directory handle at all, so
+            // classify it here to keep GNU's split.
+            if std::fs::metadata(&full)
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+            {
+                let _ = writeln!(io.stderr, "shuf: read error: Is a directory");
+                return Ok(1);
+            }
+            match std::fs::File::open(&full) {
+                Ok(mut file) => {
+                    // usable_st_size(): only a regular file's size feeds
+                    // input_size(); directories were rejected above.
+                    input_file_size = std::fs::metadata(&full)
+                        .ok()
+                        .filter(|m| m.is_file())
+                        .map(|m| m.len());
+                    let mut buf = Vec::new();
+                    if let Err(e) = file.read_to_end(&mut buf) {
+                        let _ = writeln!(io.stderr, "shuf: read error: {}", fsutil::reason(&e));
+                        return Ok(1);
+                    }
+                    buf
+                }
+                Err(e) => {
+                    // shuf.c:530: error(EXIT_FAILURE, errno, "%s",
+                    // quotef(operand[0])).
+                    let _ = writeln!(
+                        io.stderr,
+                        "shuf: {}: {}",
+                        fsutil::quotef(&operand),
+                        fsutil::reason(&e)
+                    );
                     return Ok(1);
                 }
             }
@@ -786,13 +836,44 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     // The deterministic paths.
     if let Some(source_file) = &random_source {
         let full = fsutil::resolve(ctx, source_file);
-        let bytes = match std::fs::read(&full) {
-            Ok(b) => b,
-            Err(e) => {
-                // randread_new -> fopen_safer failure: "shuf: NAME: REASON"
-                // (the load path below reports read errors with quotes).
-                let _ = writeln!(io.stderr, "shuf: {source_file}: {}", fsutil::reason(&e));
-                return Ok(1);
+        // randread_new opens the source and randread() reads it; GNU keeps
+        // the two failures apart (randread.c:105 randread_error):
+        //   open  -> "shuf: NAME: REASON"          (shuf.c:556, quotef)
+        //   read  -> "shuf: 'NAME': read error: REASON" (quote)
+        // POSIX fopen succeeds on a directory, so that case belongs to the
+        // read half; Windows cannot open the handle, so classify it first.
+        let bytes = if std::fs::metadata(&full)
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+        {
+            let _ = writeln!(
+                io.stderr,
+                "shuf: '{source_file}': read error: Is a directory"
+            );
+            return Ok(1);
+        } else {
+            match std::fs::File::open(&full) {
+                Ok(mut file) => {
+                    let mut buf = Vec::new();
+                    if let Err(e) = file.read_to_end(&mut buf) {
+                        let _ = writeln!(
+                            io.stderr,
+                            "shuf: '{source_file}': read error: {}",
+                            fsutil::reason(&e)
+                        );
+                        return Ok(1);
+                    }
+                    buf
+                }
+                Err(e) => {
+                    let _ = writeln!(
+                        io.stderr,
+                        "shuf: {}: {}",
+                        fsutil::quotef(source_file),
+                        fsutil::reason(&e)
+                    );
+                    return Ok(1);
+                }
             }
         };
         let mut rng = GnuRandomSource::new(bytes);
@@ -834,27 +915,82 @@ pub fn shuf_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
             }
         } else {
-            let output_count = head_count
-                .map(|n| n.min(lines.len() as u64) as usize)
-                .unwrap_or(lines.len());
-            let mut lines = lines;
-            // GNU randperm_new runs BEFORE any output is written; a draw
-            // that needs another byte at EOF makes randread error out and
-            // exit, so nothing reaches stdout (probed: empty source on any
-            // line count, one byte on a 6-line input).
-            let mut swapped = Vec::new();
-            for idx in 0..output_count {
-                let offset = match rng.generate_at_most((lines.len() - idx - 1) as u64) {
-                    Ok(v) => v as usize,
-                    Err(()) => {
-                        let _ = writeln!(io.stderr, "shuf: '{source_file}': end of file");
-                        return Ok(1);
+            // GNU shuf.c:525: with -n over a large seekable input it avoids
+            // materializing every line and uses reservoir sampling instead
+            // (RESERVOIR_MIN_INPUT = 8192 * 1024; input_size() is the file
+            // operand's regular-file size). Every line past the first k costs
+            // one randint draw, so a bounded --random-source dies mid-sample
+            // with "'X': end of file" and nothing printed (gate su49).
+            let reservoir_mode = matches!(head_count, Some(n) if n != u64::MAX)
+                && input_file_size.map(|sz| sz > 8192 * 1024).unwrap_or(false);
+            if reservoir_mode {
+                // read_input_reservoir_sampling (shuf.c:172): fill the first
+                // k lines with no draws, then for every remaining line —
+                // including the one past EOF — draw randint_choose(s,
+                // n_lines + 1) BEFORE reading it; j < k stores the line at
+                // rsrv[j], otherwise it is discarded. The final draw at EOF
+                // is consumed but wasted.
+                let k = head_count.unwrap() as usize;
+                let fill = k.min(lines.len());
+                let mut reservoir: Vec<String> = lines[..fill].to_vec();
+                let mut idx = fill;
+                let mut n_lines = fill;
+                if lines.len() >= k {
+                    // The fill loop's last read succeeded (shuf.c:186 leaves
+                    // `line` non-null), so the fate loop always runs — even
+                    // when the input ended exactly at k lines, whose single
+                    // draw is then wasted on the EOF read.
+                    loop {
+                        let slot = match rng.generate_at_most(n_lines as u64) {
+                            Ok(v) => v as usize,
+                            Err(()) => {
+                                let _ = writeln!(io.stderr, "shuf: '{source_file}': end of file");
+                                return Ok(1);
+                            }
+                        };
+                        if idx >= lines.len() {
+                            break;
+                        }
+                        if slot < k {
+                            reservoir[slot] = lines[idx].clone();
+                        }
+                        idx += 1;
+                        n_lines += 1;
                     }
-                };
-                lines.swap(idx, idx + offset);
-                swapped.push(lines[idx].clone());
+                }
+                // main (shuf.c:567) still randperm_new()s the reservoir:
+                // ahead_lines == n_lines == MIN(k, lines read), a full
+                // Fisher-Yates of the reservoir on top of the sampling
+                // draws. A draw that hits EOF still prints nothing.
+                let n_res = reservoir.len();
+                if let Err(()) = rng.shuffle_prefix(&mut reservoir, n_res) {
+                    let _ = writeln!(io.stderr, "shuf: '{source_file}': end of file");
+                    return Ok(1);
+                }
+                output = reservoir;
+            } else {
+                let output_count = head_count
+                    .map(|n| n.min(lines.len() as u64) as usize)
+                    .unwrap_or(lines.len());
+                let mut lines = lines;
+                // GNU randperm_new runs BEFORE any output is written; a draw
+                // that needs another byte at EOF makes randread error out and
+                // exit, so nothing reaches stdout (probed: empty source on any
+                // line count, one byte on a 6-line input).
+                let mut swapped = Vec::new();
+                for idx in 0..output_count {
+                    let offset = match rng.generate_at_most((lines.len() - idx - 1) as u64) {
+                        Ok(v) => v as usize,
+                        Err(()) => {
+                            let _ = writeln!(io.stderr, "shuf: '{source_file}': end of file");
+                            return Ok(1);
+                        }
+                    };
+                    lines.swap(idx, idx + offset);
+                    swapped.push(lines[idx].clone());
+                }
+                output = swapped;
             }
-            output = swapped;
         }
         return emit_output(output_file.as_deref(), &output, zero_terminated, io, ctx);
     }
@@ -962,13 +1098,34 @@ fn emit_output(
     match output_file {
         Some(file) => {
             let full = fsutil::resolve(ctx, file);
-            match std::fs::write(&full, &bytes) {
-                Ok(()) => Ok(0),
-                Err(_) => {
-                    let _ = writeln!(io.stderr, "shuf: {file}: No such file or directory");
-                    Ok(1)
-                }
+            // shuf.c:578 freopen failure: error(EXIT_FAILURE, errno, "%s",
+            // quotef(outfile)). A directory opens on POSIX and fails at the
+            // first write; Windows rejects the handle at open.
+            if std::fs::metadata(&full)
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+            {
+                let _ = writeln!(io.stderr, "shuf: {}: Is a directory", fsutil::quotef(file));
+                return Ok(1);
             }
+            let mut out = match std::fs::File::create(&full) {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = writeln!(
+                        io.stderr,
+                        "shuf: {}: {}",
+                        fsutil::quotef(file),
+                        fsutil::reason(&e)
+                    );
+                    return Ok(1);
+                }
+            };
+            if let Err(e) = out.write_all(&bytes) {
+                // write_permuted_output -> write_error(): "write error".
+                let _ = writeln!(io.stderr, "shuf: write error: {}", fsutil::reason(&e));
+                return Ok(1);
+            }
+            Ok(0)
         }
         None => {
             io.stdout.write_all(&bytes)?;
@@ -995,10 +1152,20 @@ mod tests {
     }
 
     fn run(setup: &[(&str, &str)], stdin: &str, args: &[&str]) -> Run {
+        run_with(
+            |sc| {
+                for (name, content) in setup {
+                    std::fs::write(sc.path(name), content).unwrap();
+                }
+            },
+            stdin,
+            args,
+        )
+    }
+
+    fn run_with<F: FnOnce(&ScratchCtx)>(prepare: F, stdin: &str, args: &[&str]) -> Run {
         let sc = ScratchCtx::new("shuf");
-        for (name, content) in setup {
-            std::fs::write(sc.path(name), content).unwrap();
-        }
+        prepare(&sc);
         let mut io = MemIo::new(stdin);
         let ctx = sc.ctx();
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
@@ -1263,6 +1430,56 @@ mod tests {
         let mut sorted: Vec<&str> = r.out.lines().collect();
         sorted.sort_unstable();
         assert_eq!(sorted, ["1", "2", "3"]);
+    }
+
+    #[test]
+    fn input_output_source_diagnostics() {
+        // GNU 9.4 probes (2026-11-17, WSL /tmp/shufprobe1.sh + probe3.sh);
+        // input/output operands use quotef (bare unless the name needs
+        // shell escaping), directories surface from the READ side.
+        let r = run(&[], "", &["nosuch.txt"]);
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.err, "shuf: nosuch.txt: No such file or directory\n");
+
+        let r = run(&[], "", &["no such"]);
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.err, "shuf: 'no such': No such file or directory\n");
+
+        let r = run_with(
+            |sc| std::fs::create_dir(sc.path("indir")).unwrap(),
+            "",
+            &["indir"],
+        );
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.err, "shuf: read error: Is a directory\n");
+
+        // Output open failure: quotef + errno (shuf.c:578).
+        let r = run(&[], "", &["-o", "nodir/out", "-i", "1-2"]);
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.err, "shuf: nodir/out: No such file or directory\n");
+
+        // Output path is a directory: GNU opens it and fails on the write,
+        // reporting "Is a directory" (quotef names the path).
+        let r = run_with(
+            |sc| std::fs::create_dir(sc.path("odir")).unwrap(),
+            "",
+            &["-o", "odir", "-i", "1-2"],
+        );
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.err, "shuf: odir: Is a directory\n");
+
+        // --random-source: open failure quotef, directory = read failure.
+        let r = run(&[], "", &["--random-source=no such", "-i", "1-2"]);
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.err, "shuf: 'no such': No such file or directory\n");
+
+        let r = run_with(
+            |sc| std::fs::create_dir(sc.path("sdir")).unwrap(),
+            "",
+            &["--random-source=sdir", "-i", "1-2"],
+        );
+        assert_eq!(r.rc, 1);
+        assert_eq!(r.err, "shuf: 'sdir': read error: Is a directory\n");
     }
 
     #[test]

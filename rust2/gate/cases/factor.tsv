@@ -23,7 +23,7 @@ fa20-leading-space	strict				 12
 fa21-plus	strict				+12
 fa22-leading-zero	strict				010
 fa23-leading-tab	strict					12
-fa24-beyond-u64	note				18446744073709551616
+fa24-beyond-u64	strict				18446744073709551616
 fa25-exponents	strict				-h	12
 fa26-exponents-long	strict				--exponents	8
 fa27-exponents-prime	strict				-h	7
@@ -40,4 +40,9 @@ fa37-bogus-long	exit				--bogus	12
 fa38-stdin-multi-space	strict			6 10 15
 fa39-stdin-mixed-junk	strict			6 x 10
 fa40-stdin-padded	strict			   6    10   
-fa41-stdin-beyond-u64	note			18446744073709551616
+fa41-stdin-beyond-u64	strict			18446744073709551616
+fa42-beyond-u64-semiprime	strict				18446744073709551617
+fa43-beyond-u64-composite	strict				99999999999999999999999
+fa44-exponents-abbrev	strict				--expo	8
+fa45-e-alias	win				-e	8
+fa46-beyond-u64-exponents	strict				-h	18446744073709551616

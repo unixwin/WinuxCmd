@@ -2268,6 +2268,81 @@ tail_rows = [
      ["-z", "-n", "2", "-f", "--pid=2147483647", "f"]),
     ("tl71-partial-last-line", "strict", "printf 'a\\nb' > p", "", "", ["-n", "1", "p"]),
     ("tl72-dir-header-no-follow", "strict", "mkdir d; " + HEAD_TAIL_FILE, "", "", ["d", "f"]),
+    # WP-I option-order pins (#1811). The TSV carried these rows without
+    # the generator (that lane edited the TSV directly); backfilled here
+    # so regenerating the table is lossless.
+    ("tl73-cn-lines-win", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-c", "5", "-n", "1", "f"]),
+    ("tl74-nc-bytes-win", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "1", "-c", "5", "f"]),
+    ("tl75-nc-lines-win", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "2", "-c", "3", "f"]),
+    ("tl76-cn-lines-win2", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-c", "3", "-n", "2", "f"]),
+    ("tl77-fromstart-sticky", "strict", "printf 'abcdefg' > b", "", "", ["-n", "+3", "-c", "2", "b"]),
+    ("tl78-fromstart-then-lines", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-c", "+3", "-n", "2", "f"]),
+    ("tl79-plus-sticky-clear", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "+2", "-n", "1", "f"]),
+    ("tl80-n1-then-plus2", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "1", "-n", "+2", "f"]),
+    ("tl81-obsolete-c", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "", ["-3c", "f"]),
+    ("tl82-obsolete-b", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "", ["-3b", "f"]),
+    ("tl83-obsolete-l", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "", ["-3l", "f"]),
+    ("tl84-obsolete-dashdash", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-5", "--", "f"]),
+    ("tl85-obsolete-plus", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "", ["+2", "f"]),
+    ("tl86-invalid-context", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-5", "-c", "3", "f"]),
+    ("tl87-invalid-context2", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f; printf 'x\\n' > g", "", "",
+     ["-5", "f", "g"]),
+    ("tl88-obsolete-overflow", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-99999999999999999999", "f"]),
+    ("tl89-obsolete-scale-overflow", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-9999999999999999999b", "f"]),
+    ("tl90-count-eoverflow", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "9999999999999999999b", "f"]),
+    ("tl91-count-max-ok", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-c", "18446744073709551615", "f"]),
+    ("tl92-count-overflow", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-c", "18446744073709551616", "f"]),
+    ("tl93-invalid-before-help", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "x", "--help"]),
+    ("tl94-help-before-invalid", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["--help", "-n", "x"]),
+    ("tl95-invalid-before-digit", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "x", "-2", "f"]),
+    ("tl96-invalid-before-bogus", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "x", "--bogus", "f"]),
+    ("tl97-pid-order-first", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["--pid=x", "-n", "1", "f"]),
+    ("tl98-lines-before-pid", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "x", "--pid=1", "f"]),
+    ("tl99-qv-last-wins", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-q", "-v", "f", "f"]),
+    ("tl100-vq-last-wins", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-v", "-q", "f", "f"]),
+    # 1.x follow-diagnostic extensions retired: coreutils 9.4
+    # tail.c:237 long_options[] has neither --debug nor --use-polling
+    # (probed WSL 9.4: unrecognized option, rc 1).
+    ("tl101-debug-retired", "strict", HEAD_TAIL_FILE, "", "", ["--debug", "-n", "1", "f"]),
+    ("tl102-use-polling-retired", "strict", HEAD_TAIL_FILE, "", "",
+     ["--use-polling", "-n", "1", "f"]),
+    # follow mode is ASSIGNED in argv order (tail.c:2185-2193): -F sets
+    # name+retry, a later --follow=descriptor re-selects descriptor.
+    ("tl103-F-then-follow-descriptor", "strict", HEAD_TAIL_FILE, "", "",
+     ["-F", "--follow=descriptor", "--pid=2147483647", "f"]),
+    ("tl104-follow-descriptor-then-F", "strict", HEAD_TAIL_FILE, "", "",
+     ["--follow=descriptor", "-F", "--pid=2147483647", "f"]),
+    # descriptor-mode --retry on a file that never appears: GNU keeps the
+    # initial-open failure as the run status (tail.c main's `ok`).
+    ("tl105-f-retry-missing-only", "strict", "", "", "",
+     ["-f", "--retry", "--pid=2147483647", "missing"]),
+    # GNU tail never globs: '*.txt' stays a literal operand and fails
+    # with cannot-open (probed WSL 9.4, p-tail-glob.sh).
+    ("tl106-wildcard-literal", "strict",
+     "printf 'l1\nl2\nl3\n' > file1.txt; printf 'l4\nl5\nl6\n' > file2.txt",
+     "LC_ALL=C", "", ["-n", "1", "*.txt"]),
 ]
 
 cut_rows = [
@@ -3130,9 +3205,8 @@ factor_rows = [
     ("fa22-leading-zero", "strict", "", "", "", ["010"]),
     ("fa23-leading-tab", "strict", "", "", "", ["\t12"]),
     # beyond u64::MAX: GNU factors it via GMP (rc 0, big-int output); the
-    # rust2 subset rejects with rc 1 — the documented deviation, so this
-    # row is record-only (`note`), never gating.
-    ("fa24-beyond-u64", "note", "", "", "", ["18446744073709551616"]),
+    # rust2 BigUint path must match byte-for-byte, so this row gates.
+    ("fa24-beyond-u64", "strict", "", "", "", ["18446744073709551616"]),
     ("fa25-exponents", "strict", "", "", "", ["-h", "12"]),
     ("fa26-exponents-long", "strict", "", "", "", ["--exponents", "8"]),
     ("fa27-exponents-prime", "strict", "", "", "", ["-h", "7"]),
@@ -3147,6 +3221,23 @@ factor_rows = [
      ["--exponents=8", "12"]),
     ("fa36-bogus-short", "exit", "", "", "", ["-q", "12"]),
     ("fa37-bogus-long", "exit", "", "", "", ["--bogus", "12"]),
+    # A5: factor.c readtoken delim is "\n\t " (several tokens per line).
+    ("fa38-stdin-multi-space", "strict", "", "", "6 10 15", []),
+    ("fa39-stdin-mixed-junk", "strict", "", "", "6 x 10", []),
+    ("fa40-stdin-padded", "strict", "", "", "   6    10   ", []),
+    # A5 promoted to strict with the BigUint path (GNU/GMP shape).
+    ("fa41-stdin-beyond-u64", "strict", "", "", "18446744073709551616", []),
+    # Arbitrary-precision operands (GNU 9.4 probes, 2026-11-17).
+    ("fa42-beyond-u64-semiprime", "strict", "", "", "",
+     ["18446744073709551617"]),
+    ("fa43-beyond-u64-composite", "strict", "", "", "",
+     ["99999999999999999999999"]),
+    # GNU getopt_long abbreviation of --exponents.
+    ("fa44-exponents-abbrev", "strict", "", "", "", ["--expo", "8"]),
+    # 1.x documented -e alias (GNU has no -e; the shipped help keeps it).
+    ("fa45-e-alias", "win", "", "", "", ["-e", "8"]),
+    ("fa46-beyond-u64-exponents", "strict", "", "", "",
+     ["-h", "18446744073709551616"]),
 ]
 
 # `arch` — value rows are win (the machine name is platform-inherent);
@@ -3326,6 +3417,57 @@ sort_rows = [
     ("so82-version", "strict", "", "LC_ALL=C", "", ["--version"]),
     ("so83-unknown-opt", "strict", "", "LC_ALL=C", "", ["--bogus"]),
     ("so84-stdin-ignored-flag", "strict", "", "LC_ALL=C", "zz", ["--parallel=2"]),
+    ("so85-files0-basic", "strict",
+     "printf 'c\\na\\n' > a.txt; printf 'b\\nd\\n' > b.txt; "
+     "printf 'a.txt\\0b.txt\\0' > l.bin", "LC_ALL=C", "", ["--files0-from", "l.bin"]),
+    ("so86-files0-empty", "strict", "printf '' > l.bin", "LC_ALL=C", "", ["--files0-from", "l.bin"]),
+    ("so87-files0-zero-name", "strict", "printf '\\0' > l.bin", "LC_ALL=C", "",
+     ["--files0-from", "l.bin"]),
+    ("so88-files0-dash-name", "strict", "printf -- '-\\0' > l.bin", "LC_ALL=C", "",
+     ["--files0-from", "l.bin"]),
+    ("so89-files0-with-operand", "strict",
+     "printf 'a\\n' > a.txt; printf 'a.txt\\0' > l.bin", "LC_ALL=C", "",
+     ["--files0-from", "l.bin", "a.txt"]),
+    ("so90-files0-missing-list", "strict", "", "LC_ALL=C", "", ["--files0-from", "nosuch.bin"]),
+    ("so91-files0-tail-no-nul", "strict",
+     "printf 'c\\na\\n' > a.txt; printf 'b\\nd\\n' > b.txt; "
+     "printf 'a.txt\\0b.txt' > l.bin", "LC_ALL=C", "", ["--files0-from", "l.bin"]),
+    ("so92-files0-mid-zero-name", "strict",
+     "printf 'c\\na\\n' > a.txt; printf 'a.txt\\0\\0a.txt\\0' > l.bin", "LC_ALL=C", "",
+     ["--files0-from", "l.bin"]),
+    ("so93-files0-repeat-last-wins", "strict",
+     "printf 'c\\na\\n' > a.txt; printf 'b\\nd\\n' > b.txt; "
+     "printf 'a.txt\\0' > l1.bin; printf 'b.txt\\0' > l2.bin", "LC_ALL=C", "",
+     ["--files0-from", "l1.bin", "--files0-from", "l2.bin"]),
+    ("so94-random-source-order", "strict",
+     "printf 'fixed random source\\n' > seed.bin; "
+     "printf 'alpha 1\\nbravo 1\\nalpha 2\\ncharlie 1\\nbravo 2\\n' > r.txt",
+     "LC_ALL=C", "", ["-R", "--random-source=seed.bin", "-k1,1", "r.txt"]),
+    ("so95-random-source-reverse", "strict",
+     "printf 'fixed random source\\n' > seed.bin; "
+     "printf 'alpha\\nbravo\\ncharlie\\ndelta\\necho\\nfoxtrot\\n' > r2.txt",
+     "LC_ALL=C", "", ["--random-sort", "--random-source", "seed.bin", "-r", "r2.txt"]),
+    ("so96-random-source-short", "strict",
+     "printf '0123456789abcde' > s15.bin; printf 'a\\nb\\n' > r.txt", "LC_ALL=C", "",
+     ["-R", "--random-source=s15.bin", "r.txt"]),
+    ("so97-random-source-dir", "strict",
+     "mkdir sd; printf 'a\\nb\\n' > r.txt", "LC_ALL=C", "",
+     ["-R", "--random-source=sd", "r.txt"]),
+    ("so98-random-source-duplicate", "strict",
+     "printf '0123456789abcdef' > s16.bin; printf '0123456789abcdeX' > s16b.bin; "
+     "printf 'a\\nb\\n' > r.txt", "LC_ALL=C", "",
+     ["-R", "--random-source=s16.bin", "--random-source=s16b.bin", "r.txt"]),
+    ("so99-batch-size-too-large", "strict", "", "LC_ALL=C", "", ["--batch-size=99999"]),
+    ("so100-buffer-size-iec", "strict", "printf 'b\\na\\n' > b.txt", "LC_ALL=C", "",
+     ["--buffer-size=2MiB", "b.txt"]),
+    ("so101-buffer-size-bad", "strict", "", "LC_ALL=C", "", ["--buffer-size=bad"]),
+    ("so102-compress-program-empty", "strict", "printf 'b\\na\\n' > b.txt", "LC_ALL=C", "",
+     ["--compress-program=", "b.txt"]),
+    ("so103-temporary-directory-unused", "strict", "printf 'b\\na\\n' > b.txt", "LC_ALL=C", "",
+     ["--temporary-directory=missing", "b.txt"]),
+    # --debug annotation is still a tracked gap (no GNU shape yet); keep the
+    # record-only row until the annotation port lands.
+    ("so76-debug-annotation", "note", "printf 'b\\na\\n' > sdg", "LC_ALL=C", "", ["--debug", "sdg"]),
 ]
 
 CSPLIT_F = "printf 'a\\nb\\n--\\nc\\nd\\n--\\ne\\n' > f.txt"
@@ -3668,6 +3810,11 @@ csplit_rows = [
     ("cs32-crlf-bytes", "strict", "printf 'x\\r\\n--\\r\\ny\\r\\n' > w.txt", "", "",
      ["w.txt", "/--/"]),
     ("cs33-short-h-rejected", "strict", "", "", "", ["-h"]),
+    # GNU csplit opens FILE verbatim: '*.txt' is not a glob (9.4 probe:
+    # "cannot open '*.txt' for reading: No such file or directory", rc 1).
+    ("cs34-wildcard-literal", "strict",
+     "printf 'line1\\nseparator\\n' > a.txt; printf 'line2\\nseparator\\n' > b.txt",
+     "", "", ["*.txt", "/separator/"]),
 ]
 
 
@@ -4124,6 +4271,76 @@ cksum_rows = [
     ("ck46-check-base64-ok", "strict",
      "printf '123456789' > ck9; printf 'SHA256 (ck9) = FeKw08M4keuw8e9gnsQZQgwg4yDOlMZfvIwzEkSOsiU=\\n' > b64.lst", "", "",
      ["-c", "b64.lst"]),
+    ("ck47-md5-tagged", "strict", "printf 'abc' > f", "", "", ["-a", "md5", "f"]),
+    ("ck48-sha1-tagged", "strict", "printf 'abc' > f", "", "", ["-a", "sha1", "f"]),
+    ("ck49-md5-untagged", "strict", "printf 'abc' > f", "", "",
+     ["-a", "md5", "--untagged", "f"]),
+    ("ck50-check-md5-ok", "strict",
+     "printf 'abc' > f; printf 'MD5 (f) = 900150983cd24fb0d6963f7d28e17f72\\n' > m.lst", "", "",
+     ["-c", "m.lst"]),
+    ("ck51-check-sha1-ok", "strict",
+     "printf 'abc' > f; printf 'SHA1 (f) = a9993e364706816aba3e25717850c26c9cd0d89d\\n' > s.lst", "", "",
+     ["-c", "s.lst"]),
+    ("ck52-check-md5-failed", "strict",
+     "printf 'abc' > f; printf 'MD5 (f) = 00000000000000000000000000000000\\n' > b.lst", "", "",
+     ["-c", "b.lst"]),
+    ("ck53-check-md5-lower-tag", "strict",
+     "printf 'abc' > f; printf 'md5 (f) = 900150983cd24fb0d6963f7d28e17f72\\n' > l.lst", "", "",
+     ["-c", "l.lst"]),
+    ("ck54-md5-base64", "strict", "printf 'abc' > f", "", "",
+     ["-a", "md5", "--base64", "f"]),
+    # ---- 2026-11-17 parity lane (GNU digest.c 9.4 probes) ----
+    # #1752/#1362/#1411: check malformed summaries, base64 digest validation,
+    # text/binary and tag/untagged last-wins, untagged check lines under -a.
+    ("ck55-check-malformed-default", "strict",
+     "printf 'hello' > good.txt; printf 'bad-line\\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\\n' > mixed.lst", "", "",
+     ["-c", "mixed.lst"]),
+    ("ck56-check-malformed-warn", "strict",
+     "printf 'hello' > good.txt; printf 'bad-line\\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\\n' > mixed.lst", "", "",
+     ["--warn", "-c", "mixed.lst"]),
+    ("ck57-check-malformed-strict", "strict",
+     "printf 'hello' > good.txt; printf 'bad-line\\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\\n' > mixed.lst", "", "",
+     ["--strict", "-c", "mixed.lst"]),
+    ("ck58-check-malformed-status", "strict",
+     "printf 'hello' > good.txt; printf 'bad-line\\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\\n' > mixed.lst", "", "",
+     ["--status", "-c", "mixed.lst"]),
+    ("ck59-check-malformed-plural", "strict",
+     "printf 'hello' > good.txt; printf 'bad-line\\nbad-two\\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\\n' > mixed2.lst", "", "",
+     ["--strict", "-c", "mixed2.lst"]),
+    ("ck60-check-comments-empty", "strict",
+     "printf 'hello' > good.txt; printf '# note\\n\\nMD5 (good.txt) = 5d41402abc4b2a76b9719d911017c592\\n' > comments.lst", "", "",
+     ["-c", "comments.lst"]),
+    ("ck61-check-base64-bad-padding", "strict",
+     "printf 'hello' > good.txt; printf 'SHA256 (good.txt) = LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQX\\n' > pad.lst", "", "",
+     ["-c", "pad.lst"]),
+    ("ck62-check-base64-tamper", "strict",
+     "printf 'hello' > good.txt; printf 'SHA256 (good.txt) = XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX=\\n' > tamper.lst", "", "",
+     ["-c", "tamper.lst"]),
+    ("ck65-text-binary-last-wins-tagged", "strict", "printf 'data\\n' > f", "", "",
+     ["-a", "md5", "-t", "-b", "f"]),
+    ("ck66-text-binary-last-wins-untagged", "strict", "printf 'data\\n' > f", "", "",
+     ["-a", "md5", "--untagged", "-t", "-b", "f"]),
+    ("ck67-binary-text-last-wins-untagged", "strict", "printf 'data\\n' > f", "", "",
+     ["-a", "md5", "--untagged", "-b", "-t", "f"]),
+    ("ck68-text-tagged-conflict", "strict", "printf 'data\\n' > f", "", "",
+     ["-a", "md5", "-b", "-t", "f"]),
+    ("ck69-tag-untagged-last-wins", "strict", "printf 'data\\n' > f", "", "",
+     ["-a", "md5", "--tag", "--untagged", "f"]),
+    ("ck70-untagged-tag-last-wins", "strict", "printf 'data\\n' > f", "", "",
+     ["-a", "md5", "--untagged", "--tag", "f"]),
+    ("ck71-crc-text-tagged-conflict", "strict", "printf 'data\\n' > f", "", "",
+     ["-t", "f"]),
+    ("ck72-crc-untagged-text", "strict", "printf 'data\\n' > f", "", "",
+     ["--untagged", "-t", "f"]),
+    ("ck78-warn-without-check", "strict", "printf 'data\\n' > f", "", "", ["--warn", "f"]),
+    ("ck79-check-binary-error", "strict",
+     "printf 'data\\n' > f; printf 'MD5 (f) = 6137cde4893c59f76f005a8123d8e8e6\\n' > l.lst", "", "",
+     ["-c", "-b", "l.lst"]),
+    ("ck80-check-crc-algo-error", "strict",
+     "printf 'data\\n' > f; printf 'MD5 (f) = 6137cde4893c59f76f005a8123d8e8e6\\n' > l.lst", "", "",
+     ["-a", "crc", "-c", "l.lst"]),
+    ("ck81-base64-raw-conflict", "strict", "printf 'data\\n' > f", "", "",
+     ["--base64", "--raw", "f"]),
 ]
 
 chgrp_rows = [

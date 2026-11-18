@@ -512,6 +512,21 @@ mod tests {
         let (r, _, e) = run(&["badmode", "f"], &sc);
         assert_eq!(r, 1);
         assert!(e.contains("invalid mode: 'badmode'"));
+        // ... and before any file-access diagnostic: GNU validates the mode
+        // up front (chmod.c:662-667 before process_files at :685). Probe:
+        //   chmod u+gr missing.txt -> invalid mode, never cannot access.
+        let (r, _, e) = run(&["u+gr", "missingfile"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("invalid mode: 'u+gr'"), "{e}");
+        assert!(!e.contains("cannot access"), "{e}");
+        // A copy letter mixed with another perm char is invalid (probe:
+        // u+ug / g+ur rc 1); the copy-alone forms stay valid.
+        for bad in ["u+ug", "g+ur"] {
+            let (r, _, e) = run(&[bad, "f"], &sc);
+            assert_eq!(r, 1, "{bad}");
+            assert!(e.contains(&format!("invalid mode: '{bad}'")), "{e}");
+        }
+        assert_eq!(run(&["u+g", "f"], &sc).0, 0);
         // GNU wording has the colon (verified)
         let (r, _, e) = run(&["077777", "f"], &sc);
         assert_eq!(r, 1);

@@ -215,7 +215,7 @@ fn parse_obsolete_option(args: &[OsString], io: &mut Io) -> Result<Option<Obsole
             } else {
                 ""
             };
-            let _ = writeln!(io.stderr, "tail: invalid number: ‘{s}’{errno}");
+            let _ = writeln!(io.stderr, "tail: invalid number: '{s}'{errno}");
             return Err(1);
         }
         x.value
@@ -490,7 +490,11 @@ fn follow_argmatch(v: &str) -> Result<bool, String> {
         (false, true, false) => Ok(false),
         (false, false, true) => Ok(true),
         _ => Err(format!(
-            "tail: {} argument \u{2018}{v}\u{2019} for \u{2018}--follow\u{2019}\nValid arguments are:\n  - \u{2018}descriptor\u{2019}\n  - \u{2018}name\u{2019}\nTry 'tail --help' for more information.",
+            // ASCII quotes: the differential oracle pins LC_ALL=C (runner.sh
+            // ORACLE_LOCALE), where GNU quote() renders ASCII — the same
+            // shape the 1.x C++ tail emits. regressions/110 pins this byte
+            // for byte.
+            "tail: {} argument '{v}' for '--follow'\nValid arguments are:\n  - 'descriptor'\n  - 'name'\nTry 'tail --help' for more information.",
             if d && n { "ambiguous" } else { "invalid" }
         )),
     }
@@ -794,7 +798,7 @@ pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMe
     // later token's parse-level diagnostic (unknown option, digit,
     // --help). The events pass below assigns state in the same order.
     let value_hook = |key: &str, v: &str, io: &mut Io, _ctx: &Ctx, _prog: &str| -> Option<u32> {
-        let q = |s: &str| format!("‘{s}’");
+        let q = |s: &str| format!("'{s}'");
         let errno_tail = |overflow: bool| {
             if overflow {
                 ": Value too large for defined data type"
@@ -884,7 +888,9 @@ pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMe
     let mut sleep_secs = 1.0f64;
     let mut max_unchanged: u128 = 5;
     let mut header_mode = HeaderMode::Multiple;
-    let q = |v: &str| format!("\u{2018}{v}\u{2019}");
+    // ASCII quotes, like the 1.x C++ tail and the LC_ALL=C differential
+    // oracle (GNU quote() renders curly only under a UTF-8 locale).
+    let q = |v: &str| format!("'{v}'");
     for ev in &p.events {
         match ev.key.as_str() {
             argopt::HELP | argopt::VERSION => break,
@@ -1038,10 +1044,26 @@ pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMe
     let files: Vec<String> = if p.positionals.is_empty() {
         vec!["-".to_string()]
     } else {
-        p.positionals
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
+        // 1.x expanded operands via utils/wildcard.cppm; GNU tail never
+        // globs — the surrounding shell does — so expansion happens only
+        // under the direct-invocation contract WINUX_SHELL_GLOB=native
+        // (the mv/ls/sort shape); unmatched patterns and literal existing
+        // paths stay literal through crate::glob.
+        let native_glob = winux_core::win32_env_get(ctx.env, "WINUX_SHELL_GLOB")
+            .map(|v| v.to_string_lossy() == "native")
+            .unwrap_or(false);
+        let mut files = Vec::new();
+        for a in &p.positionals {
+            let arg = a.to_string_lossy().into_owned();
+            if native_glob && crate::glob::contains_wildcard(&arg) {
+                if let Some(matches) = crate::glob::glob_expand_in(ctx, &arg) {
+                    files.extend(matches);
+                    continue;
+                }
+            }
+            files.push(arg);
+        }
+        files
     };
     let found_hyphen = files.iter().any(|f| f == "-");
     // when following by name there must be a name
@@ -1081,9 +1103,15 @@ pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMe
     let mut specs: Vec<Spec> = Vec::new();
     for file in &files {
         let mut spec = Spec::new(file);
-        if file == "-" {
+        // "-" and the /dev/stdin family all drain the real fd 0. Opening
+        // the latter through resolve() folds the operand onto CONIN$ and
+        // tail blocks on the console instead of reading the piped stdin
+        // (probed: `tail -n 2 /dev/stdin < f` timed out, rc 124 vs GNU 0).
+        // The C++ 1.x tail routes them the same way; the header keeps the
+        // operand spelling only for the non-'-' forms, matching GNU.
+        if file == "-" || winux_core::path::pseudo_device_std_fd(file) == Some(0) {
             headers
-                .write_initial(io.stdout, "standard input")
+                .write_initial(io.stdout, if file == "-" { "standard input" } else { file })
                 .map_err(CmdError::Io)?;
             let mut buf = Vec::new();
             if io.stdin.read_to_end(&mut buf).is_err() {
@@ -1388,6 +1416,15 @@ mod tests {
         let owned: Vec<OsString> = ["-v", "-"].iter().map(Into::into).collect();
         tail_cmd(&owned, &mut io.split(), &ctx).unwrap();
         assert_eq!(io.out(), "==> standard input <==\n");
+        // The /dev/stdin family drains fd 0 like '-', keeping the operand
+        // spelling in the header (GNU 9.4: `tail -v -n 2 /dev/stdin < f`).
+        for operand in ["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"] {
+            let mut io = MemIo::new("a\nb\n");
+            let owned: Vec<OsString> = ["-v", "-n", "1", operand].iter().map(Into::into).collect();
+            let r = tail_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            assert_eq!(r, 0);
+            assert_eq!(io.out(), format!("==> {operand} <==\nb\n"));
+        }
     }
 
     #[test]
@@ -1507,7 +1544,7 @@ mod tests {
         let (s, _) = scan_follow(&os(&["--follow", "name"])).unwrap();
         assert!(s.forever && !s.by_name);
         assert!(scan_follow(&os(&["--follow=x"])).unwrap_err().starts_with(
-            "tail: invalid argument \u{2018}x\u{2019} for \u{2018}--follow\u{2019}\n"
+            "tail: invalid argument 'x' for '--follow'\n"
         ));
         assert!(scan_follow(&os(&["--follow="]))
             .unwrap_err()
@@ -1546,7 +1583,7 @@ mod tests {
         let (r, _, e) = run_in(&sc, &["-f", "-s", "x", "f"]);
         assert_eq!(
             (r, e.as_str()),
-            (1, "tail: invalid number of seconds: \u{2018}x\u{2019}\n")
+            (1, "tail: invalid number of seconds: 'x'\n")
         );
         let (r, _, e) = run_in(&sc, &["-f", "--pid=99999999999", "f"]);
         assert_eq!(r, 1);
@@ -1567,6 +1604,57 @@ mod tests {
     }
 
     const DEAD: &str = "--pid=2147483647";
+
+    #[test]
+    fn follow_mode_last_occurrence_wins() {
+        // tail.c:2185-2193: every -f/--follow/-F ASSIGNS follow_mode.
+        // -F also sets reopen_inaccessible_files; the warning shape is
+        // the GNU-observable proof of the final mode (probed WSL 9.4).
+        let sc = ScratchCtx::new("tail-lastwins");
+        std::fs::write(sc.path("f"), "a\n").unwrap();
+        let (r, o, e) = run_in(&sc, &["-F", "--follow=descriptor", DEAD, "f"]);
+        assert_eq!((r, o.as_str()), (0, "a\n"));
+        assert_eq!(
+            e,
+            "tail: warning: --retry only effective for the initial open\n"
+        );
+        let (r, o, e) = run_in(&sc, &["--follow=descriptor", "-F", DEAD, "f"]);
+        assert_eq!((r, o.as_str(), e.as_str()), (0, "a\n", ""));
+    }
+
+    #[test]
+    fn desc_retry_missing_only_keeps_initial_open_status() {
+        // GNU: -f --retry (descriptor mode) on an initially missing name
+        // keeps trying, but the run's status is the initial-open failure
+        // (tail.c's polling fallback returns tail_file's `ok`). Probed
+        // WSL 9.4: rc 1, warning + cannot-open on stderr.
+        let sc = ScratchCtx::new("tail-retry-missing");
+        let (r, o, e) = run_in(&sc, &["-f", "--retry", DEAD, "missing"]);
+        assert_eq!((r, o.as_str()), (1, ""));
+        assert_eq!(
+            e,
+            "tail: warning: --retry only effective for the initial open\n\
+             tail: cannot open 'missing' for reading: No such file or directory\n"
+        );
+    }
+
+    #[test]
+    fn retired_1x_follow_extensions_are_unrecognized() {
+        // coreutils 9.4 tail.c:237 long_options[] has neither --debug
+        // nor --use-polling; the 1.x follow-diagnostic switches are
+        // retired. Probed WSL 9.4 (LC_ALL=C.UTF-8): rc 1, stderr only,
+        // ASCII quotes in the getopt diagnostic.
+        for opt in ["--debug", "--use-polling"] {
+            let (r, out, err) = run(&[opt, "-n", "1"], "x\n");
+            assert_eq!(r, 1, "{opt}");
+            assert!(out.is_empty(), "{opt}");
+            assert_eq!(
+                err,
+                format!("tail: unrecognized option '{opt}'\nTry 'tail --help' for more information.\n"),
+                "{opt}"
+            );
+        }
+    }
 
     #[test]
     fn follow_with_dead_writer_terminates_like_gnu() {

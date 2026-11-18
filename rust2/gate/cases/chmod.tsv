@@ -64,3 +64,7 @@ cm59-mode-triple-clause	strict	touch f			u=r,g=w,o=x	f
 cm60-dash-X-dir	strict	mkdir d			-X	d
 cm61-recursive-multi-clause	exit	mkdir -p d/s			-R	u=rwx,go=rx	d
 cm62-symbolic-restrictive	exit	touch f			a-rwx	f
+cm63-copy-mixed-copy	strict	touch f			u+ug	f
+cm64-copy-mixed-rwx	strict	touch f			g+ur	f
+cm65-copy-alone	strict	touch f			u+g	f
+cm66-invalid-before-file	strict				u+gr	missingfile
