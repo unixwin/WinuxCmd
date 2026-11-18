@@ -627,7 +627,9 @@ auto run_fifo_writer(TempDir& tmp, const std::string& input, int& rc,
     w.set_cwd(tmp.wpath());
     w.set_stdin(input);
     w.add(L"tee.exe", {L"f"});
-    rc = w.run().exit_code;
+    auto r = w.run();
+    rc = r.exit_code;
+    if (!r.stderr_text.empty()) error = "writer stderr: " + r.stderr_text;
   } catch (const std::exception& e) {
     error = e.what();
   }
@@ -785,6 +787,16 @@ TEST(head, head_fifo_operand_all_but_last_line_issue1442) {
   auto r = h.run();
   writer.join();
 
+  TEST_LOG("writer rc", std::to_string(writer_rc));
+  TEST_LOG("writer err", writer_error);
+  TEST_LOG("head stderr", r.stderr_text);
+  TEST_LOG("marker after", std::filesystem::exists(tmp.path / "f") ? "yes" : "no");
+  {
+    std::ifstream m(tmp.path / "f", std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(m)),
+                        std::istreambuf_iterator<char>());
+    TEST_LOG("marker content", content);
+  }
   EXPECT_TRUE(writer_error.empty());
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "l1\nl2\n");

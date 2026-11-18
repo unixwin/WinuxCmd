@@ -7,14 +7,26 @@
 //! multiplier suffix (b 512, kB 1000, K 1024, MB/M 1024^2, ... R/Q; the
 //! probed `-n 1b` / `-c 1b` rows cover the b suffix). `-n -0` / `-c -0`
 //! print everything (all but last 0, probed). A malformed count dies with
-//! `invalid number of lines|bytes: '<arg>'` (curly quotes, rc 1).
+//! `invalid number of lines|bytes: '<arg>'` (ASCII quotes — the LC_ALL=C
+//! shape the differential oracle pins and the 1.x C++ emits; rc 1).
 //!
-//! Records are lines, or NUL-delimited chunks with -z. Inputs are read
-//! whole (the -K form needs the tail anyway); files are processed
-//! sequentially with the header written before each (probed: first header
-//! has no leading blank, later headers are preceded by a blank line;
-//! `-` prints `standard input`). Headers appear when more than one input
-//! is read or -v is given; -q never prints them.
+//! Records are lines, or NUL-delimited chunks with -z. Inputs are STREAMED
+//! the way head.c does it: `head_lines`/`copy_fd` (src/head.c:789/206) read
+//! BUFSIZ at a time and stop as soon as the requested record/byte count is
+//! satisfied, so a live pipeline is left to EPIPE instead of being drained
+//! to EOF (#1442, /dev/zero, `yes | head`). The `-K` forms buffer only the
+//! last K records/bytes (`elide_tail_{lines,bytes}_pipe`, src/head.c:501/265)
+//! and emit everything before that window as it arrives. Files are
+//! processed sequentially with the header written before each (probed:
+//! first header has no leading blank, later headers are preceded by a blank
+//! line; `-` prints `standard input`). Headers appear when more than one
+//! input is read or -v is given; -q never prints them.
+//!
+//! Operand wildcards expand over the named directory (the 1.x
+//! `glob_expand` direct-invocation contract, crate::glob): a Windows shell
+//! does not expand `*.txt` before the applet sees it, while a POSIX shell
+//! does, so the applet reproduces the POSIX result (GNU head.c itself
+//! receives expanded operands and opens a literal `*.txt` for reading).
 //!
 //! Errors (rc 1, later files still processed): a failed open reports
 //! `cannot open 'X' for reading: <reason>` (straight quotes, probed); a
@@ -28,6 +40,9 @@ use crate::argopt::{self, OptSpec};
 use crate::fsutil::{gnu_open_reason, resolve};
 use crate::gnuhelp;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
+
+/// glibc's `BUFSIZ`, the chunk size head.c's read loops use.
+const BUFSIZ: usize = 8192;
 
 const OPTS: &[OptSpec] = &[
     OptSpec {
@@ -63,7 +78,7 @@ const OPTS: &[OptSpec] = &[
 ];
 
 /// The parsed `[+-]NUM[suffix]` count argument.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) enum Count {
     /// print the first K records
     First(u128),
@@ -268,44 +283,178 @@ pub(crate) fn record_bounds(input: &[u8], delim: u8, bytes_mode: bool) -> Vec<us
     bounds
 }
 
-/// Emit `all but the last k` records.
-fn emit_elide(
-    input: &[u8],
-    k: u128,
-    delim: u8,
-    bytes_mode: bool,
-    out: &mut dyn Write,
-) -> std::io::Result<()> {
-    if k == 0 {
-        return out.write_all(input);
-    }
-    let bounds = record_bounds(input, delim, bytes_mode);
-    let count = bounds.len() as u128;
-    if count <= k {
-        return Ok(()); // everything is elided
-    }
-    let end = bounds[(count - k - 1) as usize];
-    out.write_all(&input[..end])
+/// Which side of the copy failed, so the caller can print head.c's
+/// `error reading` vs `error writing 'standard output'` frame.
+#[derive(Debug)]
+enum CopyError {
+    Read(std::io::Error),
+    Write(std::io::Error),
 }
 
-/// Emit the first `k` records. `k == 0` prints nothing.
-fn emit_first(
-    input: &[u8],
-    k: u128,
+fn read_chunk(r: &mut dyn Read, buf: &mut [u8]) -> Result<usize, CopyError> {
+    r.read(buf).map_err(CopyError::Read)
+}
+
+fn write_chunk(out: &mut dyn Write, bytes: &[u8]) -> Result<(), CopyError> {
+    out.write_all(bytes).map_err(CopyError::Write)
+}
+
+/// Copy at most `n_bytes` bytes (head.c:copy_fd, src/head.c:206). Stops at
+/// EOF without a diagnostic: head_bytes only fails on READ_ERROR, and
+/// COPY_FD_UNEXPECTED_EOF is ignored. `n_bytes == u128::MAX` is the
+/// "essentially unlimited" sentinel, not reachable from the count grammar.
+fn copy_bytes(r: &mut dyn Read, mut n_bytes: u128, out: &mut dyn Write) -> Result<(), CopyError> {
+    let mut buf = [0u8; BUFSIZ];
+    while n_bytes > 0 {
+        let want = std::cmp::min(n_bytes, BUFSIZ as u128) as usize;
+        let n = read_chunk(r, &mut buf[..want])?;
+        if n == 0 {
+            break;
+        }
+        write_chunk(out, &buf[..n])?;
+        n_bytes -= n as u128;
+    }
+    Ok(())
+}
+
+/// Copy until EOF (the `-K 0` / `-n -0` shape: nothing is elided).
+fn copy_all(r: &mut dyn Read, out: &mut dyn Write) -> Result<(), CopyError> {
+    let mut buf = [0u8; BUFSIZ];
+    loop {
+        let n = read_chunk(r, &mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        write_chunk(out, &buf[..n])?;
+    }
+}
+
+/// Emit the first `lines` records (head.c:head_lines, src/head.c:789):
+/// read a BUFSIZ chunk, write it up to and including the record that
+/// completes the count, and return without touching the rest of the
+/// stream. `lines == 0` prints nothing.
+fn head_lines_stream(
+    r: &mut dyn Read,
+    mut lines: u128,
     delim: u8,
-    bytes_mode: bool,
     out: &mut dyn Write,
-) -> std::io::Result<()> {
+) -> Result<(), CopyError> {
+    let mut buf = [0u8; BUFSIZ];
+    while lines > 0 {
+        let n = read_chunk(r, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let mut to_write = n;
+        for (i, &b) in buf[..n].iter().enumerate() {
+            if b == delim {
+                lines -= 1;
+                if lines == 0 {
+                    to_write = i + 1;
+                    break;
+                }
+            }
+        }
+        write_chunk(out, &buf[..to_write])?;
+        if lines == 0 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Emit all but the last `k` bytes. The last `k` bytes live in `buf`; each
+/// read flushes the prefix that can no longer be part of the tail
+/// (head.c:elide_tail_bytes_pipe, src/head.c:265, one-buffer shape).
+fn elide_bytes_stream(r: &mut dyn Read, k: u128, out: &mut dyn Write) -> Result<(), CopyError> {
     if k == 0 {
+        return copy_all(r, out);
+    }
+    // head.c:843-844: `n_units == UINTMAX_MAX` means "essentially
+    // unlimited" — print nothing and never read the input.
+    if k == u64::MAX as u128 {
         return Ok(());
     }
-    let bounds = record_bounds(input, delim, bytes_mode);
-    let count = bounds.len() as u128;
-    if count < k {
-        return out.write_all(input);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut start = 0usize;
+    loop {
+        let mut chunk = [0u8; BUFSIZ];
+        let n = read_chunk(r, &mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        let live = (buf.len() - start) as u128;
+        if live > k {
+            // live - k <= n (the previous iteration left at most k bytes),
+            // so this always fits in the chunk just read.
+            let emit = (live - k) as usize;
+            write_chunk(out, &buf[start..start + emit])?;
+            start += emit;
+        }
+        // Reclaim the flushed prefix without moving the retained tail on
+        // every read.
+        if start > 1 << 20 && start * 2 > buf.len() {
+            buf.drain(..start);
+            start = 0;
+        }
     }
-    let end = bounds[(k - 1) as usize];
-    out.write_all(&input[..end])
+    Ok(())
+}
+
+/// Emit all but the last `k` records. Complete records are queued; once the
+/// queue holds more than `k`, the oldest is written out. An unterminated
+/// trailing fragment counts as a record (head.c:elide_tail_lines_pipe,
+/// src/head.c:501: `if (last->nbytes && last->buffer[...] != line_end)`).
+fn elide_lines_stream(
+    r: &mut dyn Read,
+    k: u128,
+    delim: u8,
+    out: &mut dyn Write,
+) -> Result<(), CopyError> {
+    if k == 0 {
+        return copy_all(r, out);
+    }
+    if k == u64::MAX as u128 {
+        return Ok(());
+    }
+    let mut queue: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
+    let mut partial: Vec<u8> = Vec::new();
+    let mut push = |rec: Vec<u8>, queue: &mut std::collections::VecDeque<Vec<u8>>| {
+        queue.push_back(rec);
+        if queue.len() as u128 > k {
+            queue.pop_front()
+        } else {
+            None
+        }
+    };
+    let mut buf = [0u8; BUFSIZ];
+    loop {
+        let n = read_chunk(r, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let mut start = 0usize;
+        for (i, &b) in buf[..n].iter().enumerate() {
+            if b == delim {
+                let mut rec = std::mem::take(&mut partial);
+                rec.extend_from_slice(&buf[start..=i]);
+                if let Some(front) = push(rec, &mut queue) {
+                    write_chunk(out, &front)?;
+                }
+                start = i + 1;
+            }
+        }
+        if start < n {
+            partial.extend_from_slice(&buf[start..n]);
+        }
+    }
+    if !partial.is_empty() {
+        if let Some(front) = push(partial, &mut queue) {
+            write_chunk(out, &front)?;
+        }
+    }
+    Ok(())
 }
 
 // `--help` body verbatim from `env head --help` under WSL coreutils 9.4,
@@ -348,15 +497,15 @@ pub(crate) enum HeaderMode {
 
 /// head.c's "invalid number of lines|bytes" diagnostic; `post` is the
 /// count string as xdectoumax saw it (after head's own '-' elide strip).
+/// ASCII quotes: the differential oracle pins LC_ALL=C (runner.sh
+/// ORACLE_LOCALE), where GNU quote() renders ASCII — the same shape the
+/// 1.x C++ head emits; regressions/108 pins this byte for byte.
 fn invalid_count(io: &mut Io, word: &str, post: &str, e: &CountVal) {
     let errno = match e {
         CountVal::Overflow => ": Value too large for defined data type",
         CountVal::Invalid => "",
     };
-    let _ = writeln!(
-        io.stderr,
-        "head: invalid number of {word}: ‘{post}’{errno}"
-    );
+    let _ = writeln!(io.stderr, "head: invalid number of {word}: '{post}'{errno}");
 }
 
 pub fn head_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
@@ -418,7 +567,12 @@ pub fn head_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             match xdectoumax_count(&n_string) {
                 Ok(v) => n_units = v,
                 Err(e) => {
-                    invalid_count(io, if count_lines { "lines" } else { "bytes" }, &n_string, &e);
+                    invalid_count(
+                        io,
+                        if count_lines { "lines" } else { "bytes" },
+                        &n_string,
+                        &e,
+                    );
                     return Ok(1);
                 }
             }
@@ -537,6 +691,16 @@ pub fn head_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         });
     }
 
+    // head.c:1077-1081 (v9.4): byte elision is bounded by OFF_T_MAX;
+    // xdectoumax's uintmax range would otherwise accept a magnitude such as
+    // 2^64-1, where the elision silently does nothing. Probed WSL 9.4:
+    // `head -c -18446744073709551615` -> "invalid number of bytes:
+    // '18446744073709551615': Value too large for defined data type", rc 1.
+    if !count_lines && elide_from_end && n_units > i64::MAX as u128 {
+        invalid_count(io, "bytes", &n_units.to_string(), &CountVal::Overflow);
+        return Ok(1);
+    }
+
     let count = if elide_from_end {
         Count::Elide(n_units)
     } else {
@@ -545,14 +709,25 @@ pub fn head_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let bytes_mode = !count_lines;
     let delim: u8 = if line_end_nul { 0 } else { b'\n' };
 
-    let files: Vec<String> = if p.positionals.is_empty() {
-        vec!["-".to_string()]
-    } else {
-        p.positionals
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
-    };
+    // Direct-invocation wildcard contract (1.x glob_expand): expand each
+    // operand, keeping an unmatched pattern literal so the open diagnostic
+    // names exactly what the user typed.
+    let mut files: Vec<String> = Vec::new();
+    for a in &p.positionals {
+        let s = a.to_string_lossy().into_owned();
+        if crate::glob::contains_wildcard(&s) {
+            if let Some(expanded) = crate::glob::glob_expand_in(ctx, &s) {
+                let mut sorted = expanded;
+                sorted.sort();
+                files.extend(sorted);
+                continue;
+            }
+        }
+        files.push(s);
+    }
+    if files.is_empty() {
+        files.push("-".to_string());
+    }
     let print_headers = match header_mode {
         HeaderMode::Always => true,
         HeaderMode::Never => false,
@@ -562,43 +737,23 @@ pub fn head_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut first_header = true;
     let mut failed = false;
     for file in &files {
-        let bytes = if file == "-" {
-            let mut buf = Vec::new();
-            match io.stdin.read_to_end(&mut buf) {
-                Ok(_) => buf,
-                Err(_) => {
-                    let _ = writeln!(
-                        io.stderr,
-                        "head: error reading 'standard input': Is a directory"
-                    );
-                    failed = true;
-                    continue;
-                }
-            }
-        } else {
+        // GNU head_file opens the operand first and only then lets head()
+        // write the header, so a failed open prints no header (ctest
+        // head_multi_file_skips_header_for_missing_file).
+        //
+        // "-" and the /dev/stdin family all read the real fd 0 (#1452; the
+        // 1.x C++ head routes them the same way, src/commands/head.cpp).
+        // Without this a /dev/stdin operand resolves through
+        // resolve_pseudo_device to CONIN$ and head blocks on the console
+        // rather than draining the piped stdin:
+        // regressions/71-head-dev-stdin-pipe timed out (rc 124) in the
+        // differential baseline. GNU keeps the operand spelling in the
+        // header, so only the reader changes.
+        let reads_stdin = file == "-" || winux_core::path::pseudo_device_std_fd(file) == Some(0);
+        let mut reader: Option<Box<dyn Read>> = None;
+        if !reads_stdin {
             match crate::fsutil::open_read_operand(ctx, file) {
-                Ok(mut f) => {
-                    let mut buf = Vec::new();
-                    match f.read_to_end(&mut buf) {
-                        Ok(_) => buf,
-                        Err(_) => {
-                            // POSIX head opens the operand then reads it: a
-                            // directory dies at the read (probed via stdin;
-                            // Windows fails the open, so probe metadata)
-                            let reason = if std::fs::metadata(resolve(ctx, file))
-                                .map(|m| m.is_dir())
-                                .unwrap_or(false)
-                            {
-                                "Is a directory".to_string()
-                            } else {
-                                "read error".to_string()
-                            };
-                            let _ = writeln!(io.stderr, "head: error reading '{file}': {reason}");
-                            failed = true;
-                            continue;
-                        }
-                    }
-                }
+                Ok(r) => reader = Some(r),
                 Err(e) => {
                     if std::fs::metadata(resolve(ctx, file))
                         .map(|m| m.is_dir())
@@ -606,19 +761,19 @@ pub fn head_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     {
                         // POSIX opens the directory then dies at the read
                         let _ = writeln!(io.stderr, "head: error reading '{file}': Is a directory");
-                        failed = true;
-                        continue;
+                    } else {
+                        let reason = gnu_open_reason(ctx, file, &e, false);
+                        let _ = writeln!(
+                            io.stderr,
+                            "head: cannot open '{file}' for reading: {reason}"
+                        );
                     }
-                    let reason = gnu_open_reason(ctx, file, &e, false);
-                    let _ = writeln!(
-                        io.stderr,
-                        "head: cannot open '{file}' for reading: {reason}"
-                    );
                     failed = true;
                     continue;
                 }
             }
-        };
+        }
+
         if print_headers {
             if first_header {
                 first_header = false;
@@ -632,16 +787,69 @@ pub fn head_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             };
             let _ = writeln!(io.stdout, "==> {name} <==");
         }
-        let r = match count {
-            Count::First(k) => emit_first(&bytes, k, delim, bytes_mode, io.stdout),
-            Count::Elide(k) => emit_elide(&bytes, k, delim, bytes_mode, io.stdout),
+
+        // Read the operand as a stream and stop the moment the count is
+        // satisfied. Nothing is slurped, so /dev/zero, a fifo behind the
+        // #1038 marker and a live `yes |` pipeline all terminate at the
+        // requested record (#1442; head.c head_file -> head -> head_lines/
+        // copy_fd, src/head.c:864/826/789/206).
+        let result = match reader.as_mut() {
+            None => stream_records(&mut *io.stdin, count, delim, bytes_mode, io.stdout),
+            Some(r) => stream_records(r.as_mut(), count, delim, bytes_mode, io.stdout),
         };
-        if r.is_err() {
-            let _ = writeln!(io.stderr, "head: write error");
-            failed = true;
+        match result {
+            Ok(()) => {}
+            Err(CopyError::Read(e)) => {
+                // POSIX head opens the operand then reads it: a directory
+                // dies at the read (Windows fails the open, so the Err arm
+                // above also probes metadata). Any other reason is GNU's
+                // strerror text.
+                let reason = if file != "-"
+                    && std::fs::metadata(resolve(ctx, file))
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false)
+                {
+                    "Is a directory".to_string()
+                } else {
+                    crate::fsutil::reason(&e).to_string()
+                };
+                let name = if file == "-" {
+                    "standard input"
+                } else {
+                    file.as_str()
+                };
+                let _ = writeln!(io.stderr, "head: error reading '{name}': {reason}");
+                failed = true;
+            }
+            Err(CopyError::Write(e)) => {
+                // head.c:xwrite_stdout (src/head.c:188) fails the whole run
+                // on the first output error.
+                let _ = writeln!(
+                    io.stderr,
+                    "head: error writing 'standard output': {}",
+                    crate::fsutil::reason(&e)
+                );
+                return Ok(1);
+            }
         }
     }
     Ok(if failed { 1 } else { 0 })
+}
+
+/// head.c:head's dispatch (src/head.c:826) over the four count shapes.
+fn stream_records(
+    r: &mut dyn Read,
+    count: Count,
+    delim: u8,
+    bytes_mode: bool,
+    out: &mut dyn Write,
+) -> Result<(), CopyError> {
+    match count {
+        Count::First(k) if bytes_mode => copy_bytes(r, k, out),
+        Count::First(k) => head_lines_stream(r, k, delim, out),
+        Count::Elide(k) if bytes_mode => elide_bytes_stream(r, k, out),
+        Count::Elide(k) => elide_lines_stream(r, k, delim, out),
+    }
 }
 
 #[cfg(test)]
@@ -833,6 +1041,15 @@ mod tests {
         let owned: Vec<OsString> = ["-v", "-"].iter().map(Into::into).collect();
         head_cmd(&owned, &mut io.split(), &ctx).unwrap();
         assert_eq!(io.out(), "==> standard input <==\nx\n");
+        // The /dev/stdin family reads fd 0 like '-', but GNU keeps the
+        // operand spelling in the header (regressions/71-head-dev-stdin-pipe).
+        for operand in ["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"] {
+            let mut io = MemIo::new("y\n");
+            let owned: Vec<OsString> = ["-v", operand].iter().map(Into::into).collect();
+            head_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            assert_eq!(io.out(), format!("==> {operand} <==\ny\n"));
+            assert_eq!(io.err(), "");
+        }
         let mut io = MemIo::new("");
         let owned: Vec<OsString> = ["f1"].iter().map(Into::into).collect();
         head_cmd(&owned, &mut io.split(), &ctx).unwrap();
@@ -869,5 +1086,130 @@ mod tests {
         assert_eq!(r, 0);
         assert_eq!(io.out(), "==> f2 <==\nb\n\n==> standard input <==\ns\n");
         assert_eq!(run(&["--bogus"], "x\n").0, 1);
+    }
+
+    /// A reader that returns at most `max` bytes per call and counts the
+    /// calls, so a test can prove head stopped instead of draining to EOF.
+    struct Trickle {
+        data: Vec<u8>,
+        pos: usize,
+        max: usize,
+        reads: usize,
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            let want = buf.len().min(self.max).min(self.data.len() - self.pos);
+            buf[..want].copy_from_slice(&self.data[self.pos..self.pos + want]);
+            self.pos += want;
+            Ok(want)
+        }
+    }
+
+    #[test]
+    fn stream_stops_at_the_requested_record_live_pipeline() {
+        // head.c:head_lines: a live producer must see the reader stop after
+        // the Nth delimiter, not wait for EOF (the `yes | head -n 3` shape).
+        let data = b"pipeline\npipeline\npipeline\npipeline\n".to_vec();
+        let mut r = Trickle {
+            data,
+            pos: 0,
+            max: 9,
+            reads: 0,
+        };
+        let mut out = Vec::new();
+        stream_records(&mut r, Count::First(3), b'\n', false, &mut out).unwrap();
+        assert_eq!(out, b"pipeline\npipeline\npipeline\n");
+        // Three 9-byte chunks suffice; reading to EOF would need five.
+        assert_eq!(r.reads, 3);
+    }
+
+    #[test]
+    fn stream_stops_at_the_requested_byte_count() {
+        // copy_fd stops at N bytes; /dev/zero never reaches EOF.
+        let data = vec![0u8; 64];
+        let mut r = Trickle {
+            data,
+            pos: 0,
+            max: 4,
+            reads: 0,
+        };
+        let mut out = Vec::new();
+        stream_records(&mut r, Count::First(8), b'\n', true, &mut out).unwrap();
+        assert_eq!(out, vec![0u8; 8]);
+        assert_eq!(r.reads, 2);
+    }
+
+    #[test]
+    fn dev_zero_streams_the_requested_prefix() {
+        // niubash#993 §5: the synthesized device is an infinite reader; the
+        // byte count must end the read (ctest head_c_dev_zero_yields_nul_bytes).
+        let (r, out, err) = run(&["-c", "4", "/dev/zero"], "");
+        assert_eq!(r, 0);
+        assert!(err.is_empty());
+        assert_eq!(out.as_bytes(), &[0u8; 4]);
+        let (r, out, _) = run(&["-c", "0", "/dev/urandom"], "");
+        assert_eq!(r, 0);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn elide_counts_an_unterminated_trailing_fragment_as_a_record() {
+        // head.c:elide_tail_lines_pipe: the incomplete last line counts, so
+        // `head -n -1` drops it and keeps the rest (probed WSL 9.4).
+        assert_eq!(run(&["-n", "-1"], "a\nb").1, "a\n");
+        assert_eq!(run(&["-n", "-2"], "l1\nl2\nl3\nl4").1, "l1\nl2\n");
+        assert_eq!(run(&["-n", "-1"], "a").1, "");
+        assert_eq!(run(&["-n", "-1"], "a\nb\nc\n").1, "a\nb\n");
+        assert_eq!(run(&["-z", "-n", "-1"], "a\0b").1, "a\0");
+        // UINTMAX_MAX elides everything without reading (head.c:843).
+        let (r, out, err) = run(&["-n", "-18446744073709551615"], "a\nb\n");
+        assert_eq!(r, 0);
+        assert!(err.is_empty());
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn elide_bytes_window_and_short_input() {
+        // head.c:elide_tail_bytes_pipe: keep only the last K bytes.
+        assert_eq!(run(&["-c", "-1"], "abcdef").1, "abcde");
+        assert_eq!(run(&["-c", "-3"], "abcdefgh").1, "abcde");
+        assert_eq!(run(&["-c", "-4"], "abc").1, "");
+        assert_eq!(run(&["-c", "-0"], "a\nb").1, "a\nb");
+        // head.c:1077-1081 (v9.4): -c -K is bounded by OFF_T_MAX.
+        let (r, out, err) = run(&["-c", "-18446744073709551615"], "a\n");
+        assert_eq!(r, 1);
+        assert!(out.is_empty());
+        assert!(err.contains("invalid number of bytes"));
+        assert!(err.contains("Value too large for defined data type"));
+    }
+
+    #[test]
+    fn wildcard_operands_expand_over_the_directory() {
+        // The 1.x glob contract (crate::glob): Windows shells do not expand
+        // before the applet, so head does it; unmatched patterns stay
+        // literal and reach the open diagnostic.
+        let sc = ScratchCtx::new("head-glob");
+        std::fs::write(sc.path("file2.txt"), "line4\nline5\n").unwrap();
+        std::fs::write(sc.path("file1.txt"), "line1\nline2\n").unwrap();
+        std::fs::write(sc.path("other.log"), "log1\n").unwrap();
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = ["-n", "1", "*.txt"].iter().map(Into::into).collect();
+        let r = head_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        // Sorted like the POSIX shell's expansion, and *.log is excluded.
+        assert_eq!(
+            io.out(),
+            "==> file1.txt <==\nline1\n\n==> file2.txt <==\nline4\n"
+        );
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = ["*.nomatch"].iter().map(Into::into).collect();
+        let r = head_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert!(io
+            .err()
+            .contains("head: cannot open '*.nomatch' for reading:"));
     }
 }

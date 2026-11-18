@@ -49,3 +49,11 @@ hd46-vq-last-wins	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-v	-q	f	f
 hd47-count-overflow	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	18446744073709551616	f
 hd48-suffix-K	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	K	f
 hd49-trailing-space	strict	printf 'h1\nh2\nh3\nh4\nh5\n' > f			-n	3 	f
+hd50-elide-incomplete-line	strict	printf 'a\nb' > f			-n	-1	f
+hd51-elide-incomplete-lines	strict	printf 'l1\nl2\nl3\nl4' > f			-n	-2	f
+hd52-c-elide-short	strict			abc	-c	-4
+hd53-c-dev-zero	strict				-c	8	/dev/zero
+hd54-wildcard	win	printf 'line1\nline2\nline3\n' > file1.txt; printf 'line4\nline5\nline6\n' > file2.txt; printf 'log1\nlog2\n' > other.log			-n	1	*.txt
+hd55-c-elide-off-max	strict				-c	-18446744073709551615
+hd56-z-elide-incomplete	strict	printf 'a\0b' > f			-z	-n	-1	f
+hd57-n-elide-only-fragment	strict	printf 'a' > f			-n	-1	f
