@@ -425,6 +425,17 @@ fn usage_fail(ctx: &Ctx, io: &mut Io, msg: &str) -> u32 {
     2
 }
 
+/// GNU error(SORT_FAILURE, 0, ...) shape: message only, no usage tail.
+/// sort.c has no emit_try_help on these paths — the option-conflict,
+/// output-file, tab, random/compress-source, field-spec and count errors
+/// are all plain error() calls (sort.c:4119 4128 4178 4502 4575 4581 4608
+/// 4613 4597), while only getopt-level failures carry the Try line.
+/// Byte-pinned by the differential oracle, regressions/51-sort-empty-tab.
+fn plain_err(_ctx: &Ctx, io: &mut Io, msg: &str) -> u32 {
+    let _ = writeln!(io.stderr, "sort: {msg}");
+    2
+}
+
 // ---------------------------------------------------------------------
 // parse_field_count port (xstrtoumax base 10, no suffixes)
 // ---------------------------------------------------------------------
@@ -463,7 +474,7 @@ fn parse_field_count(s: &str) -> Option<(usize, &str)> {
 }
 
 fn bad_field_spec(ctx: &Ctx, io: &mut Io, spec: &str, msg: &str) -> u32 {
-    usage_fail(
+    plain_err(
         ctx,
         io,
         &format!("{}: invalid field specification {}", msg, sq(spec)),
@@ -471,7 +482,7 @@ fn bad_field_spec(ctx: &Ctx, io: &mut Io, spec: &str, msg: &str) -> u32 {
 }
 
 fn invalid_count(ctx: &Ctx, io: &mut Io, msg: &str, string: &str) -> u32 {
-    usage_fail(
+    plain_err(
         ctx,
         io,
         &format!("{}: invalid count at start of {}", msg, sq(string)),
@@ -922,7 +933,7 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         } else {
             'o'
         };
-        return Ok(usage_fail(
+        return Ok(plain_err(
             ctx,
             io,
             &format!("options '-{} --debug' are incompatible", x),
@@ -1315,7 +1326,9 @@ fn apply_short_flag(
             None
         }
         'c' | 'C' => set_check_mode(ctx, io, cfg, c),
-        _ => opt_err(ctx, io, &argopt::invalid_option(ctx, &c.to_string())),
+        // getopt-level: GNU's unknown-option path carries the Try line
+        // (emit_try_help), unlike the plain error() diagnostics.
+        _ => Some(usage_fail(ctx, io, &argopt::invalid_option(ctx, &c.to_string()))),
     }
 }
 
@@ -1347,7 +1360,7 @@ fn apply_short_value(
 }
 
 fn opt_err(ctx: &Ctx, io: &mut Io, msg: &str) -> Option<u32> {
-    Some(usage_fail(ctx, io, msg))
+    Some(plain_err(ctx, io, msg))
 }
 
 fn set_check_mode(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg, c: char) -> Option<u32> {
