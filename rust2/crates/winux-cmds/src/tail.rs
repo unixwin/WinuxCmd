@@ -1103,9 +1103,15 @@ pub fn tail_with_meta(args: &[OsString], io: &mut Io, ctx: &Ctx, stdin: &StdinMe
     let mut specs: Vec<Spec> = Vec::new();
     for file in &files {
         let mut spec = Spec::new(file);
-        if file == "-" {
+        // "-" and the /dev/stdin family all drain the real fd 0. Opening
+        // the latter through resolve() folds the operand onto CONIN$ and
+        // tail blocks on the console instead of reading the piped stdin
+        // (probed: `tail -n 2 /dev/stdin < f` timed out, rc 124 vs GNU 0).
+        // The C++ 1.x tail routes them the same way; the header keeps the
+        // operand spelling only for the non-'-' forms, matching GNU.
+        if file == "-" || winux_core::path::pseudo_device_std_fd(file) == Some(0) {
             headers
-                .write_initial(io.stdout, "standard input")
+                .write_initial(io.stdout, if file == "-" { "standard input" } else { file })
                 .map_err(CmdError::Io)?;
             let mut buf = Vec::new();
             if io.stdin.read_to_end(&mut buf).is_err() {
@@ -1410,6 +1416,15 @@ mod tests {
         let owned: Vec<OsString> = ["-v", "-"].iter().map(Into::into).collect();
         tail_cmd(&owned, &mut io.split(), &ctx).unwrap();
         assert_eq!(io.out(), "==> standard input <==\n");
+        // The /dev/stdin family drains fd 0 like '-', keeping the operand
+        // spelling in the header (GNU 9.4: `tail -v -n 2 /dev/stdin < f`).
+        for operand in ["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"] {
+            let mut io = MemIo::new("a\nb\n");
+            let owned: Vec<OsString> = ["-v", "-n", "1", operand].iter().map(Into::into).collect();
+            let r = tail_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            assert_eq!(r, 0);
+            assert_eq!(io.out(), format!("==> {operand} <==\nb\n"));
+        }
     }
 
     #[test]
