@@ -460,7 +460,11 @@ pub fn cksum_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         match parse_algorithm(name) {
             Some(a) => algo = a,
             None => {
+                // GNU argmatch failure: the list, then emit_try_help. Probed
+                // 9.4 LC_ALL=C: `cksum -a crc32b` ends with
+                // "Try 'cksum --help' for more information." (rc 1).
                 let _ = writeln!(io.stderr, "cksum: {}", invalid_algorithm_message(name));
+                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "cksum"));
                 return Ok(1);
             }
         }
