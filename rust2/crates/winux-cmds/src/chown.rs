@@ -24,18 +24,22 @@
 //!   honest no-op (rc 0), matching the root-oracle's rc.
 //! * `--from=SPEC` filters by current owner/group SID (named parts);
 //!   numeric parts cannot match on Windows (documented) — non-matching
-//!   operands are skipped silently, exactly like GNU.
+//!   operands skip the change, and `-v` still prints the retained line
+//!   (GNU chown-core.c:401-405, :493-519; probe `--from=:daemon -v f`).
 //! * `--reference=RFILE` copies owner+group SIDs from RFILE; a missing
 //!   reference is `failed to get attributes of 'x': ...` rc 1 (verified);
 //!   with `--reference` every positional is a file operand (verified:
 //!   `chown root --reference=f g` reports `cannot access 'root'`).
 //!
 //! `-v`/`-c` wording (verified against the oracle): owner(+group) change
-//! `changed ownership of 'f' from A:B to C:D`; group-only change
-//! `changed group of 'f' from A to B`; no change `ownership of 'f'
-//! retained as A:B` (owner-only specs show `as A`); a no-op spec shows
-//! bare `ownership of 'f' retained`. `-f` suppresses diagnostics.
-//! `-R` walks preorder and refuses filesystem roots like chmod
+//! `changed ownership of 'f' from A:B to C:D`; group-only change also uses
+//! the ownership noun (`chown :g`: `changed ownership ... to :g`, from
+//! chown.c:342-345); no change `ownership of 'f' retained as A:B`
+//! (owner-only specs show `as A`; a no-op spec shows bare `retained`).
+//! A failed change with `-v` prints `failed to change ownership of 'f'
+//! from A to B` on stdout (chown-core.c:176-191) beside the stderr
+//! diagnosis; `-f` suppresses only the diagnosis. `-R` walks preorder and
+//! refuses filesystem roots like chmod
 //! (`it is dangerous to operate recursively on '/'`).
 //!
 //! Danger surface: tests only touch ScratchCtx temp files owned by the
@@ -500,7 +504,9 @@ fn resolve_part(name: &str) -> Option<Part> {
     if is_numeric(name) {
         return Some(Part::Numeric(name.to_string()));
     }
-    lookup_account(name).map(|(sid, full)| Part::Sid(sid, full))
+    // Display the account spelling as input (GNU prints getpwnam's
+    // pw_name, which is unqualified); the SID drives the real change.
+    lookup_account(name).map(|(sid, _full)| Part::Sid(sid, name.to_string()))
 }
 
 /// Split `owner:group` per GNU parse_owner_group:
@@ -537,45 +543,72 @@ fn split_spec(spec: &str) -> Option<(String, Option<String>)> {
 /// `dot` reports that the deprecated form was used so the caller emits
 /// `chown: warning: '.' should be ':': '<spec>'` once per dot spec.
 fn parse_spec(ctx: &Ctx, spec: &str) -> Result<(Spec, bool), String> {
-    let dot_form = !spec.contains(':') && spec.contains('.');
-    let (owner_s, group_s) = if dot_form {
-        let (o, g) = spec.split_once('.').expect("dot_form implies a dot");
-        if g.contains('.') {
-            return Err(tr!(
-                ctx,
-                "command.chown.error.invalid_user",
-                "invalid user: {spec}",
-                spec = winux_core::q(spec)
+    // GNU userspec.c:257-275: with no colon but a dot, FIRST try the whole
+    // spec as a login name; only if that fails retry with '.' as the
+    // separator. If the retry also fails, the whole-spec error wins — so
+    // `1001.` is `invalid user: '1001.'` (the dot retry's invalid-spec is
+    // discarded), while `root.` reaches the login-group branch and warns.
+    if !spec.contains(':') && spec.contains('.') {
+        if let Some(owner) = resolve_part(spec) {
+            return Ok((
+                Spec {
+                    owner,
+                    group: Part::Absent,
+                    colon: false,
+                    noop: false,
+                    dot: false,
+                },
+                false,
             ));
         }
-        (o.to_string(), Some(g.to_string()))
-    } else {
-        match split_spec(spec) {
-            // more than one colon: upstream classifies by the GROUP side
-            // (probed f6 `1:1:2` -> invalid group, whole spec)
-            None => return Err(format!("invalid group: {}", winux_core::q(spec))),
-            Some(pg) => pg,
+        let (o, g) = spec.split_once('.').expect("dot form implies a dot");
+        if !g.contains('.') {
+            if let Ok(mut parsed) = parse_parts(ctx, spec, o, Some(g)) {
+                parsed.dot = true;
+                return Ok((parsed, true));
+            }
         }
-    };
-    let colon = group_s.is_some();
-    if owner_s.is_empty() && group_s.as_ref().map(|g| g.is_empty()).unwrap_or(true) && colon {
-        // bare ":" — no-change no-op
-        return Ok((
-            Spec {
-                owner: Part::Absent,
-                group: Part::Absent,
-                colon,
-                noop: true,
-                dot: dot_form,
-            },
-            dot_form,
+        return Err(tr!(
+            ctx,
+            "command.chown.error.invalid_user",
+            "invalid user: {spec}",
+            spec = winux_core::q(spec)
         ));
+    }
+    let (owner_s, group_s) = match split_spec(spec) {
+        // more than one colon: upstream classifies by the GROUP side
+        // (probed f6 `1:1:2` -> invalid group, whole spec)
+        None => return Err(format!("invalid group: {}", winux_core::q(spec))),
+        Some(pg) => pg,
+    };
+    Ok((parse_parts(ctx, spec, &owner_s, group_s.as_deref())?, false))
+}
+
+/// Body of the spec grammar once the separator has been chosen. `spec` is
+/// the whole user-typed word, used in every diagnostic (GNU prints the
+/// whole spec for invalid groups, probed f6).
+fn parse_parts(
+    ctx: &Ctx,
+    spec: &str,
+    owner_s: &str,
+    group_s: Option<&str>,
+) -> Result<Spec, String> {
+    let colon = group_s.is_some();
+    if owner_s.is_empty() && group_s.map(|g| g.is_empty()).unwrap_or(true) && colon {
+        // bare ":" — no-change no-op
+        return Ok(Spec {
+            owner: Part::Absent,
+            group: Part::Absent,
+            colon,
+            noop: true,
+            dot: false,
+        });
     }
     // GNU validates user first, then group (verified error order)
     let owner = if owner_s.is_empty() {
         Part::Absent
     } else {
-        match resolve_part(&owner_s) {
+        match resolve_part(owner_s) {
             Some(p) => p,
             None => return Err(format!("invalid user: {}", winux_core::q(spec))),
         }
@@ -583,8 +616,8 @@ fn parse_spec(ctx: &Ctx, spec: &str) -> Result<(Spec, bool), String> {
     // trailing colon: owner + login group. Numeric owners have no login
     // group even on POSIX -> invalid spec (verified `1234:`); named owners
     // resolve (verified `root:`); on Windows the group part is skipped.
-    if colon && matches!(&group_s, Some(g) if g.is_empty()) && !owner_s.is_empty() {
-        if is_numeric(&owner_s) {
+    if colon && matches!(group_s, Some(g) if g.is_empty()) && !owner_s.is_empty() {
+        if is_numeric(owner_s) {
             return Err(tr!(
                 ctx,
                 "command.chown.error.invalid_spec",
@@ -592,18 +625,15 @@ fn parse_spec(ctx: &Ctx, spec: &str) -> Result<(Spec, bool), String> {
                 spec = winux_core::q(spec)
             ));
         }
-        return Ok((
-            Spec {
-                owner,
-                group: Part::Absent,
-                colon,
-                noop: false,
-                dot: dot_form,
-            },
-            dot_form,
-        ));
+        return Ok(Spec {
+            owner,
+            group: Part::Absent,
+            colon,
+            noop: false,
+            dot: false,
+        });
     }
-    let group = match group_s.as_deref() {
+    let group = match group_s {
         None => Part::Absent,
         Some("") => Part::Absent,
         Some(g) => match resolve_part(g) {
@@ -612,19 +642,34 @@ fn parse_spec(ctx: &Ctx, spec: &str) -> Result<(Spec, bool), String> {
             None => return Err(format!("invalid group: {}", winux_core::q(spec))),
         },
     };
-    Ok((
-        Spec {
-            owner,
-            group,
-            colon,
-            noop: false,
-            dot: dot_form,
-        },
-        dot_form,
-    ))
+    Ok(Spec {
+        owner,
+        group,
+        colon,
+        noop: false,
+        dot: false,
+    })
 }
 
 // -------------------------------------------------------------- driver
+
+/// `from <old> to <new>` fields in GNU's describe_change shape: a colon
+/// spec names old owner:group and the requested owner:group; an owner-only
+/// spec names just the owner on both sides (probed 9.4).
+fn change_fields(old_owner: &str, old_group: &str, spec: &Spec) -> (String, String) {
+    if spec.colon {
+        (
+            format!("{old_owner}:{old_group}"),
+            format!(
+                "{}:{}",
+                display_part(&spec.owner),
+                display_part(&spec.group)
+            ),
+        )
+    } else {
+        (old_owner.to_string(), display_part(&spec.owner))
+    }
+}
 
 struct ChState<'i, 'o, 'c, 'e> {
     verbose: bool,
@@ -638,11 +683,15 @@ struct ChState<'i, 'o, 'c, 'e> {
 }
 
 impl ChState<'_, '_, '_, '_> {
-    /// GNU describe_change shapes (verified):
+    /// GNU describe_change shapes (probed coreutils 9.4, src/chown-core.c:
+    /// 153-207 with chown.c:342-345 forcing the "ownership" noun for a
+    /// group-only spec):
     /// * owner(+group) change: `changed ownership of 'f' from A:B to C:D`
-    /// * group-only change:    `changed group of 'f' from A to B`
-    /// * retained:             `ownership of 'f' retained as A:B`
-    ///   (owner-only specs show `as A`; a no-op spec shows bare `retained`)
+    ///   (owner-only spec: `from A to C`; group-only: `from A:B to :G`)
+    /// * retained: `ownership of 'f' retained as A:B` (owner-only spec:
+    ///   `as A`; a no-op spec shows bare `retained`). The old values are
+    ///   printed, never the requested spec — the `--from` mismatch probe
+    ///   `--from=:daemon -v daemon f` answers `retained as root`.
     /// `enabled` is `-v`, or `-c` restricted to the changed branch.
     #[allow(clippy::too_many_arguments)]
     fn describe(
@@ -658,35 +707,14 @@ impl ChState<'_, '_, '_, '_> {
             return;
         }
         if changed {
-            if matches!(spec.owner, Part::Absent) && !matches!(spec.group, Part::Absent) {
-                let _ = writeln!(
-                    *self.io.stdout,
-                    "changed group of {} from {} to {}",
-                    winux_core::q(name),
-                    old_group,
-                    display_part(&spec.group)
-                );
-            } else {
-                let (oldf, newf) = if spec.colon {
-                    (
-                        format!("{old_owner}:{old_group}"),
-                        format!(
-                            "{}:{}",
-                            display_part(&spec.owner),
-                            display_part(&spec.group)
-                        ),
-                    )
-                } else {
-                    (old_owner.to_string(), display_part(&spec.owner))
-                };
-                let _ = writeln!(
-                    *self.io.stdout,
-                    "changed ownership of {} from {} to {}",
-                    winux_core::q(name),
-                    oldf,
-                    newf
-                );
-            }
+            let (oldf, newf) = change_fields(old_owner, old_group, spec);
+            let _ = writeln!(
+                *self.io.stdout,
+                "changed ownership of {} from {} to {}",
+                winux_core::q(name),
+                oldf,
+                newf
+            );
         } else if spec.noop {
             let _ = writeln!(
                 *self.io.stdout,
@@ -699,28 +727,44 @@ impl ChState<'_, '_, '_, '_> {
                 "ownership of {} retained",
                 winux_core::q(name)
             );
-        } else if matches!(spec.owner, Part::Absent) {
-            // group-only spec retained (upstream describe_change; probed
-            // f8 `:1`: "group of 'f' retained as <group>")
+        } else if spec.colon {
+            // The retained line names what the file still has (old owner and
+            // old group), not the requested spec (chown-core.c:193-196).
             let _ = writeln!(
                 *self.io.stdout,
-                "group of {} retained as {}",
+                "ownership of {} retained as {}:{}",
                 winux_core::q(name),
+                old_owner,
                 old_group
             );
         } else {
-            let shown = if spec.colon {
-                format!("{old_owner}:{old_group}")
-            } else if !matches!(spec.owner, Part::Absent) {
-                display_part(&spec.owner)
-            } else {
-                format!(":{old_group}")
-            };
             let _ = writeln!(
                 *self.io.stdout,
                 "ownership of {} retained as {}",
                 winux_core::q(name),
-                shown
+                old_owner
+            );
+        }
+    }
+
+    /// `-v` failure line: GNU prints it on stdout next to the stderr
+    /// diagnosis (chown-core.c:176-191, CH_FAILED). `-c` stays silent
+    /// because no change happened (probed immutable-file case).
+    fn describe_failed(&mut self, name: &str, old_owner: &str, old_group: &str, spec: &Spec) {
+        if spec.noop || (matches!(spec.owner, Part::Absent) && matches!(spec.group, Part::Absent)) {
+            let _ = writeln!(
+                *self.io.stdout,
+                "failed to change ownership of {}",
+                winux_core::q(name)
+            );
+        } else {
+            let (oldf, newf) = change_fields(old_owner, old_group, spec);
+            let _ = writeln!(
+                *self.io.stdout,
+                "failed to change ownership of {} from {} to {}",
+                winux_core::q(name),
+                oldf,
+                newf
             );
         }
     }
@@ -743,44 +787,6 @@ impl ChState<'_, '_, '_, '_> {
             self.failed = true;
             return;
         }
-        // --from filter: compare current owner/group SIDs; non-matching
-        // operands are skipped silently (GNU skips before any message).
-        if let Some(from) = &self.from {
-            let (cur_owner, cur_group) = match get_owner_group(path) {
-                Ok(x) => x,
-                Err(_) => {
-                    if !self.quiet {
-                        let _ = writeln!(
-                            self.io.stderr,
-                            "chown: {}: {}",
-                            tr!(
-                                self.ctx,
-                                "command.chown.error.cannot_access",
-                                "cannot access {file}",
-                                file = winux_core::q(name)
-                            ),
-                            "No such file or directory"
-                        );
-                    }
-                    self.failed = true;
-                    return;
-                }
-            };
-            let owner_match = match &from.owner {
-                Part::Absent => true,
-                // numeric from-parts cannot be compared on Windows
-                Part::Numeric(_) => false,
-                Part::Sid(sid, _) => sids_equal(Some(sid), cur_owner.as_ref()),
-            };
-            let group_match = match &from.group {
-                Part::Absent => true,
-                Part::Numeric(_) => false,
-                Part::Sid(sid, _) => sids_equal(Some(sid), cur_group.as_ref()),
-            };
-            if !(owner_match && group_match) {
-                return;
-            }
-        }
         let (old_owner, old_group) = match get_owner_group(path) {
             Ok(x) => x,
             Err(_) => (None, None),
@@ -793,6 +799,35 @@ impl ChState<'_, '_, '_, '_> {
             .as_ref()
             .and_then(|s| lookup_sid_name(s))
             .unwrap_or_else(|| "?".to_string());
+
+        // --from filter: compare current owner/group SIDs. A mismatch skips
+        // the change but -v still reports what the file retains (GNU
+        // chown-core.c:401-405 then :493-519 with CH_NO_CHANGE_REQUESTED;
+        // probe `--from=:daemon -v daemon f` -> "retained as root").
+        if let Some(from) = &self.from {
+            let owner_match = match &from.owner {
+                Part::Absent => true,
+                // numeric from-parts cannot be compared on Windows
+                Part::Numeric(_) => false,
+                Part::Sid(sid, _) => sids_equal(Some(sid), old_owner.as_ref()),
+            };
+            let group_match = match &from.group {
+                Part::Absent => true,
+                Part::Numeric(_) => false,
+                Part::Sid(sid, _) => sids_equal(Some(sid), old_group.as_ref()),
+            };
+            if !(owner_match && group_match) {
+                self.describe(
+                    name,
+                    false,
+                    &old_owner_name,
+                    &old_group_name,
+                    spec,
+                    self.verbose,
+                );
+                return;
+            }
+        }
 
         // what the OS can do with this spec
         let new_owner = match &spec.owner {
@@ -843,6 +878,9 @@ impl ChState<'_, '_, '_, '_> {
                 }
             }
             Err(_) => {
+                if self.verbose {
+                    self.describe_failed(name, &old_owner_name, &old_group_name, spec);
+                }
                 if !self.quiet {
                     // Upstream chown.c error() shape: `changing
                     // ownership of 'f'` / `changing group of 'f'`, then the
@@ -1278,6 +1316,15 @@ mod tests {
         let (r, _, e) = run(&["1234:", "f"], &sc);
         assert_eq!(r, 1);
         assert!(e.contains("invalid spec: '1234:'"));
+        // dot form: GNU tries the whole word as a login name FIRST, so a
+        // failed dot retry keeps that error. `1001.` -> invalid user
+        // (probed 9.4; the retry's invalid-spec is discarded).
+        let (r, _, e) = run(&["1001.", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("invalid user: '1001.'"), "{e}");
+        let (r, _, e) = run(&["nosuchu.nosuchg", "f"], &sc);
+        assert_eq!(r, 1);
+        assert!(e.contains("invalid user: 'nosuchu.nosuchg'"), "{e}");
         // an invalid spec never touches the file
         // (validated above; the file remains unchanged)
     }
@@ -1343,11 +1390,11 @@ mod tests {
             assert!(e.contains("changing group of 'f'"));
             assert!(e.contains("Operation not permitted"));
         }
-        // group-only -v wording (changed group of 'x' from A to B)
+        // group-only -v wording keeps the ownership noun (chown.c:342-345)
         let (r, out, _) = run(&["-v", ":Users", "f"], &sc);
         assert_eq!(r, 0);
         assert!(
-            out.contains("changed group of") || out.contains("retained"),
+            out.contains("changed ownership of 'f'") || out.contains("ownership of 'f' retained"),
             "out: {out}"
         );
     }
@@ -1375,11 +1422,13 @@ mod tests {
         };
         let (r, out, _) = run(&["-v", "--from", other, "1234", "f"], &sc);
         assert_eq!(r, 0);
-        assert!(out.is_empty(), "out: {out}");
+        // GNU prints the retained line even when --from skips the change
+        // (probe `--from=:daemon -v root f` -> "retained as root").
+        assert!(out.contains("ownership of 'f' retained"), "out: {out}");
         // numeric from-parts cannot match on Windows (documented)
         let (r, out, _) = run(&["-v", "--from", "0", "1234", "f"], &sc);
         assert_eq!(r, 0);
-        assert!(out.is_empty());
+        assert!(out.contains("ownership of 'f' retained"), "out: {out}");
     }
 
     #[test]
@@ -1511,10 +1560,14 @@ mod tests {
         assert_eq!(r, 1);
         assert!(e.contains("chown: invalid group: '1:1:2'"), "{e}");
         assert!(!e.contains("Try 'chown --help'"));
-        // group-only retained wording (probed f8 shape)
+        // group-only retained wording uses the ownership noun in 9.4
+        // (probe `chown -v :root f` -> "ownership of 'f' retained as
+        // root:root"); chown.c:342-345 forces the ownership noun for a
+        // group-only spec.
         let (r, out, _) = run(&["-v", ":5678", "f"], &sc);
         assert_eq!(r, 0);
-        assert!(out.contains("group of 'f' retained as"), "{out}");
+        assert!(out.contains("ownership of 'f' retained as"), "{out}");
+        assert!(!out.contains("group of 'f' retained"), "{out}");
     }
 
     #[test]

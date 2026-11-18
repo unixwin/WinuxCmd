@@ -50,3 +50,9 @@ cw43-h-with-R	exit	mkdir d; touch d/x			-hR	0	d
 cw44-from-dot-spec	strict	touch f			--from=0.0	0	f
 cw47-ref-makes-spec-operand	strict	touch f; touch rf			--reference=rf	0	f
 cw48-dot-named-spec	win	touch f			root.root	f
+cw49-dot-trailing-numeric	strict	touch f			1001.	f
+# [note] owner/group names are SID-qualified on Windows (§6 ownership), so
+# the GNU "retained as root" text is platform-bound; the ctest pins it.
+cw50-from-nomatch-verbose	exit	touch f			--from=1	-v	0	f
+# [note] group-only -v keeps the ownership noun; the account name differs.
+cw51-group-only-verbose	note	touch f			-v	:5678	f
