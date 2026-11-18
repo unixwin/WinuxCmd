@@ -32,12 +32,15 @@ pub fn split_slashes(p: &str) -> Vec<&str> {
 /// GNU quotef-style quoting for stderr diagnostics: quote with `'...'`
 /// when the name is empty or contains characters outside the safe set
 /// (`missing.txt` stays bare, `*.txt` and the empty name print as
-/// `'*.txt'` / `''` — probed GNU 9.4, WSL + MSYS).
+/// `'*.txt'` / `''` — probed GNU 9.4, WSL + MSYS). gnulib quotearg
+/// (quotearg.c, shell_escape_quoting_style) treats `~` as shell-special
+/// only at index 0 (tilde expansion), so `~` at any later index — the
+/// RUNNER~1 8.3-short-name shape — stays bare.
 pub fn quotef(name: &str) -> String {
     let safe = !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_.-/:@%^+,".contains(&b));
+        && name.bytes().enumerate().all(|(i, b)| {
+            b.is_ascii_alphanumeric() || b"_.-/:@%^+,".contains(&b) || (b == b'~' && i != 0)
+        });
     if safe {
         name.to_string()
     } else {

@@ -808,7 +808,10 @@ TEST(
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"ls.exe", {L"-l", L"-H", L"--dereference-command-line-symlinks-to-dir",
+  // [GNU] ls 9.4 registers only the singular spelling
+  // (--dereference-command-line-symlink-to-dir); the plural form is
+  // rejected as an unrecognized option (probed WSL).
+  p.add(L"ls.exe", {L"-l", L"-H", L"--dereference-command-line-symlink-to-dir",
                     L"link.txt"});
 
   auto r = p.run();
@@ -1078,8 +1081,11 @@ TEST(ls,
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
+  // [GNU] ls 9.4 registers only the singular spelling
+  // (--dereference-command-line-symlink-to-dir); the plural form is
+  // rejected as an unrecognized option (probed WSL).
   p.add(L"ls.exe",
-        {L"-l", L"--dereference-command-line-symlinks-to-dir", L"dirlink"});
+        {L"-l", L"--dereference-command-line-symlink-to-dir", L"dirlink"});
 
   auto r = p.run();
 
