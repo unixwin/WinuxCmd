@@ -102,7 +102,7 @@ TEST(csplit, csplit_quiet_and_elide_empty_files) {
 }
 
 // [GNU] csplit opens the operand as spelled; '*.txt' is not a glob. Probe
-// WSL 9.4: `csplit '*.txt' '/separator/'` ->
+// WSL coreutils 9.4: `csplit '*.txt' '/separator/'` ->
 //   csplit: cannot open '*.txt' for reading: No such file or directory
 //   (rc 1)
 // The 1.x applet glob-expanded inside the command and then rejected an
@@ -124,6 +124,7 @@ TEST(csplit, csplit_wildcard_operand_stays_literal) {
       r.stderr_text.find("csplit: cannot open '*.txt' for reading: No such "
                          "file or directory"),
       std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path / "xx00"));
 }
 
 TEST(csplit, csplit_missing_input_reports_help_hint) {
