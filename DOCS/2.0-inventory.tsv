@@ -43,14 +43,14 @@ expr	527	win32-console	static-mutable	none	audited:notes	unit+differential:5	2	c
 factor	211	mixed(iostream+win32-console)	none	none	audited:clean	unit+differential:1	3	rust-ready	deferred(#1488)	rust2-ready	#1488 (wave3 gate green; wiring pending)
 false	50	none	none	none	audited:clean	unit+differential:2	1	wired	rust2-wired	rust2	#1488 (wave1 wired; GATE-REPORT.md)
 file	791	win32-console	none	none	audited:notes	unit+differential:2	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
-find	5578	mixed(crt-stdio+iostream+win32-console)	static-mutable	none	audited:deviates	unit+differential:6	4	wired	rust2-wired	rust2	#1634 (library); 792c31f4 (#1696 wire); #1633/#1658 (help/version)
+find	5578	mixed(crt-stdio+iostream+win32-console)	static-mutable	none	audited:deviates	unit+differential:6	4	c++-only	deferred(#1634)	rust2-inflight	#1634 (library PR); #1633/#1658 (help/version)
 fmt	1101	mixed(iostream+win32-console)	none	none	audited:notes	unit	3	wired	rust2-wired	rust2	#1488 (wave3a wired; GATE-REPORT.md)
 fold	377	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:3	3	wired	rust2-wired	rust2	#1488 (wave3a wired; GATE-REPORT.md)
 free	396	win32-console	none	none	audited:deviates	unit	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 getconf	183	win32-console	none	none	audited:notes	unit+differential:1	2	wired	rust2-wired	rust2	#1488 (wave2a wired; GATE-REPORT.md)
 getfacl	212	win32-console	none	none	audited:deviates	unit	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 getopt	594	win32-console	none	none	audited:deviates	unit+differential:2	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
-grep	3096	mixed(crt-stdio+iostream+win32-console+win32-direct)	static-mutable	none	audited:deviates	unit+differential:15	4	wired	rust2-wired	rust2	#1660 (library); 0eb0d28c (#1660 wire); -P face exempt: DOCS/2.0-regex-engine-decision.md
+grep	3096	mixed(crt-stdio+iostream+win32-console+win32-direct)	static-mutable	none	audited:deviates	unit+differential:15	4	c++-only	deferred(#1660)	rust2-inflight	#1660 (wire PR); -P face exempt: DOCS/2.0-regex-engine-decision.md
 groups	173	win32-console	none	none	audited:notes	unit	2	rust-ready	deferred(#1488)	rust2-ready	#1488 (wave2 gate green; wiring pending)
 head	967	mixed(iostream+win32-console+win32-direct)	none	none	audited:notes	unit+differential:4	3	rust-ready	deferred(#1488)	rust2-ready	#1488 (wave3 gate green; wiring pending)
 hexdump	1198	mixed(iostream+win32-console)	none	none	audited:deviates	unit+differential:12	3	c++-only	deferred(#1488)	c++-1.x	#1488 (wave3)
@@ -71,7 +71,7 @@ locate	472	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates
 logger	561	mixed(iostream+win32-console)	none	none	audited:deviates	unit	4	c++-only	deferred(#1488)	c++-1.x	#1488 (wave4)
 logname	63	win32-console	none	none	audited:notes	unit	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 look	279	mixed(win32-console+win32-direct)	none	none	audited:notes	unit+differential:4	4	c++-only	deferred(#1488)	c++-1.x	#1488 (wave4)
-ls	4513	mixed(crt-stdio+win32-console+win32-direct)	static-mutable,errno,global-buf	none	audited:notes	unit+differential:5	3	wired	rust2-wired	rust2	#1762 (library 3025942c); f87be22e (wire)
+ls	4513	mixed(crt-stdio+win32-console+win32-direct)	static-mutable,errno,global-buf	none	audited:notes	unit+differential:5	3	c++-only	deferred(#1488)	c++-1.x	#1639-#1646; #1488
 lsattr	205	win32-console	none	none	audited:deviates	unit	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 lsof	969	win32-console	none	none	audited:deviates	unit	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 man	296	win32-console	none	none	audited:notes	unit	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
@@ -84,7 +84,7 @@ mkpasswd	160	win32-console	none	none	audited:notes	unit	2	c++-only	deferred(#148
 mktemp	639	win32-console	thread_local,static-mutable	none	audited:clean	unit+differential:8	2	wired	rust2-wired	rust2	#1488 (wave-W3 wire; rust2 mktemp.rs)
 more	789	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:7	4	c++-only	deferred(#1488)	c++-1.x	#1488 (wave4)
 mpicalc	584	mixed(iostream+win32-console)	static-mutable	none	audited:notes	unit	3	c++-only	deferred(#1488)	c++-1.x	#1488 (wave3)
-mv	1304	mixed(crt-stdio+iostream+win32-console)	none	none	audited:clean	unit+differential:12	3	wired	rust2-wired	rust2	#1649; a0cfcd74 (#1773 wire reland)
+mv	1304	mixed(crt-stdio+iostream+win32-console)	none	none	audited:clean	unit+differential:12	3	c++-only	deferred(#1488)	c++-1.x	#1649; #1488
 namei	373	win32-console	none	none	audited:deviates	unit+differential:2	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 nice	217	win32-console	none	TerminateProcess	audited:clean	unit+differential:5	3	wired	rust2-wired	rust2	#1488 (wave-W3 wire; rust2 nice.rs)
 nl	572	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:2	3	c++-only	deferred(#1488)	c++-1.x	#1488 (wave3)
@@ -112,11 +112,11 @@ regtool	327	win32-console	none	none	no-oracle(doc-audited)	unit	2	c++-only	defer
 renice	161	win32-console	none	none	audited:notes	unit+differential:2	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 reset	143	win32-console	none	none	audited:notes	unit	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 rev	166	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:notes	unit+differential:5	3	wired	rust2-wired	rust2	#1488 (wave6 wired; GATE-REPORT.md)
-rm	1072	mixed(iostream+win32-console+win32-direct)	none	none	audited:clean	unit+differential:3	3	wired	rust2-wired	rust2	#1751 (library 38e68352); f14bc603 (wire)
+rm	1072	mixed(iostream+win32-console+win32-direct)	none	none	audited:clean	unit+differential:3	3	c++-only	deferred(#1488)	c++-1.x	#1650; #1672; #1488
 rmdir	266	win32-console	none	none	audited:clean	unit+differential:3	1	wired	rust2-wired	rust2	#1488 (wave1 wired; GATE-REPORT.md)
 runcon	113	win32-console	none	none	audited:notes	unit	2	rust-ready	deferred(#1488)	rust2-ready	#1488 (wave2 gate green; wiring pending)
 sdiff	827	mixed(crt-stdio+iostream+win32-console+win32-direct)	static-mutable,locale/setmode	none	audited:notes	unit+differential:29	3	c++-only	deferred(#1488)	c++-1.x	#1488 (wave3)
-sed	2802	mixed(iostream+win32-console+win32-direct)	errno	none	audited:deviates	unit+differential:5	4	wired	rust2-wired	rust2	#1635 (library); f36f306f (#1690 wire)
+sed	2802	mixed(iostream+win32-console+win32-direct)	errno	none	audited:deviates	unit+differential:5	4	c++-only	deferred(#1635)	rust2-inflight	#1635 (library PR)
 seq	764	mixed(crt-stdio+win32-console)	locale/setmode,errno	none	audited:clean	unit+differential:9	3	wired	rust2-wired	rust2	#1488 (wave3a wired; GATE-REPORT.md)
 sha1sum	356	mixed(crt-stdio+win32-console)	locale/setmode	none	audited:notes	unit+differential:1	3	wired	rust2-wired	rust2	#1488 (wave6 wired; GATE-REPORT.md)
 sha224sum	253	win32-console	none	none	audited:clean	unit	2	wired	rust2-wired	rust2	#1488 (wave2b wired; GATE-REPORT.md)

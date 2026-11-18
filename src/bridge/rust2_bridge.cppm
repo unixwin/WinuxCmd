@@ -161,12 +161,6 @@ auto write_error_status(const char* name) -> int {
   // GNU tty documents exit 3 for a write error (tty.c:20, and main sets
   // initialize_exit_failure(TTY_WRITE_ERROR) at tty.c:92).
   if (view == "tty") return 3;
-  // [GNU] ls.c registers close_stdout (ls.c:1661): a failed stdout write is
-  // diagnosed and escalates to LS_FAILURE = 2 (#1368, pinned by
-  // ls.issue1368_closed_stdout_reports_write_error_and_exits_2). The 1.x ls
-  // body surfaced it as report_stdout_write_error("ls", 2); the buffered
-  // rust2 drain must keep that status per command.
-  if (view == "ls") return 2;
   return 1;
 }
 
