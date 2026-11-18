@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "recorded_at": "2026-11-17T18:25:07.551877+00:00",
+  "recorded_at": "2026-11-18T01:54:30.627550+00:00",
   "note": "Pre-existing drift between master source extraction and the published locale catalogs, recorded when the drift gate landed (issue #1127 P3). May only shrink as translation sync batches land; growth in a PR must be deliberate and visible here.",
   "locales": {
     "zh-CN": {
@@ -29,32 +29,30 @@
         "legacy.fa79eec22859b07a"
       ],
       "extra": [
-        "command.who.error.unsupported_option",
         "legacy.019787e58ffdeabe",
         "legacy.024353e70c17335f",
         "legacy.07c59b07b48ebe56",
         "legacy.174e9af4fda5e690",
-        "legacy.17e5fbc96c349de6",
-        "legacy.2cf0ef73a2b4fbb6",
+        "legacy.2f0c25957c50712b",
         "legacy.3317a2567afe5132",
         "legacy.4f9521bc41d4fffc",
         "legacy.542bcb7ad5085e2c",
         "legacy.58e6467862c336a8",
         "legacy.673f01e0301d5bfe",
+        "legacy.70bb4ed1a3f2429b",
         "legacy.759c78daf388ebe9",
-        "legacy.83bd259766316c87",
         "legacy.93ae844755f04183",
         "legacy.9a5da8dc431e8e25",
         "legacy.9dfca1673e33e87d",
+        "legacy.a706511b3f1d9d18",
         "legacy.a82e9c6eb233d0ee",
         "legacy.bba1674428694deb",
-        "legacy.bd285103ff1f77a2",
         "legacy.bed0dcd6f6a37b06",
         "legacy.c7afa71eb81fcab5",
-        "legacy.efd6313399c13c5d",
-        "legacy.f68e64aebbf9716b",
+        "legacy.dfdc1c1d7429d223",
         "legacy.fab038a1ff0211bf",
-        "legacy.ff27302691463f1c"
+        "legacy.ff27302691463f1c",
+        "legacy.ff8321636bcc3e32"
       ]
     }
   }
