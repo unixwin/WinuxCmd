@@ -12,6 +12,9 @@
 //!   whose last line lacks the eol gets one supplied at its EOF, exactly
 //!   like sort.c fillbuf — output therefore always ends with the eol
 //!   (probed p5: "x" -> "x\n"; two files concatenate with the fixup).
+//!   --files0-from=F replaces the operands with the NUL-separated names in
+//!   F ("-" = stdin); command-line operands, "-", an empty list and a
+//!   zero-length name are fatal with GNU's wording (probed p1).
 //! * One key list per run. Keys come from -k F[.C][OPTS][,F[.C][OPTS]]
 //!   (parse_keyspec port) or the obsolescent +POS1 [-POS2] operands
 //!   (traditional usage is the default, sort.c main case 1). Global
@@ -47,10 +50,12 @@
 //!   sorts before "1K"; suffix order dominates the byte value).
 //!   -M matches the 3-letter English month names case-insensitively as
 //!   a prefix (JANX -> JAN); unknown keys are all 0 and then fall to the
-//!   last-resort comparison. -R hashes the (filtered) key with FNV-1a-64
-//!   and compares hashes byte-wise; GNU shuffles per run with an MD5 of
-//!   a random seed, so the OUTPUT ORDER differs from GNU by design while
-//!   identical keys stay grouped — documented deviation (gate win rows).
+//!   last-resort comparison. -R is sort.c compare_random: MD5(seed16 ||
+//!   filtered key) byte order with the original key as the collision
+//!   tiebreak. --random-source=F seeds it with F's first 16 bytes, so a
+//!   fixed source reproduces GNU's order exactly (probed p2/p2b); without
+//!   a source the seed is zeros, keeping -R reproducible (GNU draws from
+//!   getrandom — documented deviation).
 //!   -V is the filevercmp.c filenvercmp port (Debian verrevcmp, dot-file
 //!   specials, suffix cut + second pass).
 //! * compare(): keys first; if equal (or no keys) the whole lines
@@ -77,14 +82,14 @@
 //! * Accepted-and-ignored (documented, no observable effect of the
 //!   in-memory pipeline): -S/--buffer-size (grammar validated), -T
 //!   --temporary-directory, --parallel (0 rejected like GNU),
-//!   --batch-size, --compress-program, --random-source (opened when a
-//!   random key is in effect, like GNU, but the seed bytes do not
-//!   influence our fixed FNV hash), -y (Solaris quirk), --debug
-//!   (incompatible with -c/-o like GNU; no key annotation output).
-//!   Not implemented: --files0-from (the long option is intentionally
-//!   absent from the table, like the 1.x applet's --files0-from gap
-//!   class), POSIX2_VERSION / POSIXLY_CORRECT parsing variants.
-//!   -g f64 vs long double precision and the -R hash scheme are the
+//!   --batch-size, --compress-program, --random-source (the source is
+//!   read only when a random key is in effect, exactly like
+//!   random_md5_state_init; the seed does prefix the -R hash), -y
+//!   (Solaris quirk), --debug (incompatible with -c/-o like GNU; no key
+//!   annotation output).
+//!   POSIX2_VERSION / POSIXLY_CORRECT parsing variants are not
+//!   implemented.
+//!   -g f64 vs long double precision and the no-source -R seed are the
 //!   only ordering-visible deviations.
 
 use std::ffi::OsString;
@@ -129,6 +134,8 @@ struct KeyField {
     ignore: Ignore,
     translate: bool,
     reverse: bool,
+    /// sort.c traditional_used: the key came from obsolescent +POS/-POS
+    traditional_used: bool,
 }
 
 impl KeyField {
@@ -150,6 +157,7 @@ impl KeyField {
             ignore: Ignore::None,
             translate: false,
             reverse: false,
+            traditional_used: false,
         }
     }
 
@@ -166,6 +174,49 @@ impl KeyField {
             && !self.month
             && !self.version
             && !self.random
+    }
+
+    fn key_numeric(&self) -> bool {
+        self.numeric || self.general_numeric || self.human_numeric
+    }
+
+    /// sort.c key_to_opts, in the same letter order.
+    fn to_opts(&self) -> String {
+        let mut s = String::new();
+        if self.skipsblanks || self.skipeblanks {
+            s.push('b');
+        }
+        if self.ignore == Ignore::Nondictionary {
+            s.push('d');
+        }
+        if self.translate {
+            s.push('f');
+        }
+        if self.general_numeric {
+            s.push('g');
+        }
+        if self.human_numeric {
+            s.push('h');
+        }
+        if self.ignore == Ignore::Nonprinting {
+            s.push('i');
+        }
+        if self.month {
+            s.push('M');
+        }
+        if self.numeric {
+            s.push('n');
+        }
+        if self.random {
+            s.push('R');
+        }
+        if self.reverse {
+            s.push('r');
+        }
+        if self.version {
+            s.push('V');
+        }
+        s
     }
 }
 
@@ -210,6 +261,10 @@ struct Cfg {
     keys: Vec<KeyField>,
     /// gkey.reverse: reverses only the last-resort comparison
     reverse: bool,
+    /// the post-parse global key (sort.c gkey) for --debug key_warnings
+    gkey: KeyField,
+    /// no -k key: gkey became the only key (sort.c gkey_only)
+    gkey_only: bool,
     unique: bool,
     stable: bool,
     mergeonly: bool,
@@ -222,7 +277,15 @@ struct Cfg {
     eol: u8,
     outfile: Option<String>,
     random_source: Option<String>,
+    /// 16-byte seed hashed in front of every -R key (sort.c
+    /// random_md5_state_init); zeros when no --random-source is given, so
+    /// -R stays reproducible in the FNV-free GNU-MD5 domain only with a
+    /// source (documented deviation for the no-source case).
+    random_seed: [u8; 16],
     compress_program: Option<String>,
+    /// --files0-from: NUL-separated input names replace the operands
+    /// (sort.c main, FILES0_FROM_OPTION block).
+    files0_from: Option<String>,
     files: Vec<String>,
 }
 
@@ -231,6 +294,8 @@ impl Cfg {
         Cfg {
             keys: Vec::new(),
             reverse: false,
+            gkey: KeyField::new(),
+            gkey_only: false,
             unique: false,
             stable: false,
             mergeonly: false,
@@ -240,7 +305,9 @@ impl Cfg {
             eol: b'\n',
             outfile: None,
             random_source: None,
+            random_seed: [0u8; 16],
             compress_program: None,
+            files0_from: None,
             files: Vec::new(),
         }
     }
@@ -253,8 +320,6 @@ impl Cfg {
 /// Long options in registration order (the ambiguity-list order); values
 /// mark required-argument options. --check is optional-argument and
 /// handled specially (bare --check never consumes the next argv element).
-/// --files0-from is intentionally absent: not implemented here, so it
-/// reports GNU's unrecognized-option usage error rather than pretending.
 const LONG_OPTS: &[(&str, bool)] = &[
     ("ignore-leading-blanks", false),
     ("check", false),
@@ -262,6 +327,7 @@ const LONG_OPTS: &[(&str, bool)] = &[
     ("debug", false),
     ("dictionary-order", false),
     ("ignore-case", false),
+    ("files0-from", true),
     ("general-numeric-sort", false),
     ("ignore-nonprinting", false),
     ("key", true),
@@ -303,6 +369,13 @@ const SORT_VALID: &str = "  - 'general-numeric'\n  - 'human-numeric'\n  - 'month
 
 /// GNU single-quote form for diagnostics (C locale quote style).
 fn sq(s: &str) -> String {
+    format!("'{s}'")
+}
+
+/// GNU `quoteaf` (shell-escape-always): the name is always single-quoted.
+/// Used by the --files0-from diagnostics (sort.c uses quoteaf there, unlike
+/// the quotef forms elsewhere).
+fn qa(s: &str) -> String {
     format!("'{s}'")
 }
 
@@ -352,6 +425,17 @@ fn usage_fail(ctx: &Ctx, io: &mut Io, msg: &str) -> u32 {
     2
 }
 
+/// GNU error(SORT_FAILURE, 0, ...) shape: message only, no usage tail.
+/// sort.c has no emit_try_help on these paths — the option-conflict,
+/// output-file, tab, random/compress-source, field-spec and count errors
+/// are all plain error() calls (sort.c:4119 4128 4178 4502 4575 4581 4608
+/// 4613 4597), while only getopt-level failures carry the Try line.
+/// Byte-pinned by the differential oracle, regressions/51-sort-empty-tab.
+fn plain_err(_ctx: &Ctx, io: &mut Io, msg: &str) -> u32 {
+    let _ = writeln!(io.stderr, "sort: {msg}");
+    2
+}
+
 // ---------------------------------------------------------------------
 // parse_field_count port (xstrtoumax base 10, no suffixes)
 // ---------------------------------------------------------------------
@@ -390,7 +474,7 @@ fn parse_field_count(s: &str) -> Option<(usize, &str)> {
 }
 
 fn bad_field_spec(ctx: &Ctx, io: &mut Io, spec: &str, msg: &str) -> u32 {
-    usage_fail(
+    plain_err(
         ctx,
         io,
         &format!("{}: invalid field specification {}", msg, sq(spec)),
@@ -398,7 +482,7 @@ fn bad_field_spec(ctx: &Ctx, io: &mut Io, spec: &str, msg: &str) -> u32 {
 }
 
 fn invalid_count(ctx: &Ctx, io: &mut Io, msg: &str, string: &str) -> u32 {
-    usage_fail(
+    plain_err(
         ctx,
         io,
         &format!("{}: invalid count at start of {}", msg, sq(string)),
@@ -656,12 +740,161 @@ native byte values.
 
 "#;
 
+/// --files0-from=F: the option's names replace the operands entirely
+/// (sort.c main, FILES0_FROM_OPTION block). The list is NUL-separated;
+/// names are literal (never glob-expanded, never "-"); an empty list and a
+/// zero-length name are fatal before any input is read.
+fn resolve_files0_from(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg) -> Option<u32> {
+    let list = cfg.files0_from.clone()?;
+
+    // "you may not specify any files on the command-line"
+    if !cfg.files.is_empty() {
+        let _ = writeln!(io.stderr, "sort: extra operand {}", qa(&cfg.files[0]));
+        let _ = writeln!(
+            io.stderr,
+            "file operands cannot be combined with --files0-from"
+        );
+        let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "sort"));
+        return Some(2);
+    }
+
+    let mut data: Vec<u8> = Vec::new();
+    if list == "-" {
+        if io.stdin.read_to_end(&mut data).is_err() {
+            let _ = writeln!(
+                io.stderr,
+                "sort: cannot read file names from {}",
+                qa(&list)
+            );
+            return Some(2);
+        }
+    } else {
+        match crate::fsutil::open_read_operand(ctx, &list) {
+            Ok(mut f) => {
+                if f.read_to_end(&mut data).is_err() {
+                    let _ = writeln!(
+                        io.stderr,
+                        "sort: cannot read file names from {}",
+                        qa(&list)
+                    );
+                    return Some(2);
+                }
+            }
+            Err(e) => {
+                let _ = writeln!(
+                    io.stderr,
+                    "sort: open failed: {}: {}",
+                    fsutil::quotef(&list),
+                    read_reason(ctx, &list, &e)
+                );
+                return Some(2);
+            }
+        }
+    }
+
+    // readtokens0: NUL terminates a token; a trailing NUL does not add an
+    // empty token, but a leading/consecutive NUL does (probed p1).
+    let mut names: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    for i in 0..data.len() {
+        if data[i] == 0 {
+            names.push(String::from_utf8_lossy(&data[start..i]).into_owned());
+            start = i + 1;
+        }
+    }
+    if start < data.len() {
+        names.push(String::from_utf8_lossy(&data[start..]).into_owned());
+    }
+
+    if names.is_empty() {
+        let _ = writeln!(io.stderr, "sort: no input from {}", qa(&list));
+        return Some(2);
+    }
+    for (i, name) in names.iter().enumerate() {
+        if name == "-" {
+            // GNU prints the "standard input" wording even when the list
+            // itself came from a file (probed p1: dash.bin).
+            let _ = writeln!(
+                io.stderr,
+                "sort: when reading file names from standard input, no file name of {} allowed",
+                qa(name)
+            );
+            return Some(2);
+        }
+        if name.is_empty() {
+            let _ = writeln!(
+                io.stderr,
+                "sort: {}:{}: invalid zero-length file name",
+                fsutil::quotef(&list),
+                i + 1
+            );
+            return Some(2);
+        }
+    }
+    cfg.files = names;
+    None
+}
+
+/// random_md5_state_init (sort.c 2261): fill the 16-byte prefix from the
+/// named source. Without a source GNU seeds from getrandom/ISAAC; the
+/// library keeps the zero seed so -R without --random-source stays
+/// reproducible (documented deviation, MIGRATION §5).
+fn init_random_seed(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg) -> Option<u32> {
+    if !cfg.keys.iter().any(|k| k.random) {
+        return None;
+    }
+    let Some(src) = cfg.random_source.clone() else {
+        return None;
+    };
+    let native = fsutil::resolve(ctx, &src);
+    if std::fs::metadata(&native)
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+    {
+        // fopen succeeds on a directory; the 16-byte read is what fails.
+        let _ = writeln!(io.stderr, "sort: {}: read error: Is a directory", sq(&src));
+        return Some(2);
+    }
+    let mut f = match crate::fsutil::open_read_operand(ctx, &src) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = writeln!(
+                io.stderr,
+                "sort: open failed: {}: {}",
+                fsutil::quotef(&src),
+                read_reason(ctx, &src, &e)
+            );
+            return Some(2);
+        }
+    };
+    let mut seed = [0u8; 16];
+    match f.read_exact(&mut seed) {
+        Ok(()) => {
+            cfg.random_seed = seed;
+            None
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            let _ = writeln!(io.stderr, "sort: {}: end of file", sq(&src));
+            Some(2)
+        }
+        Err(_) => {
+            let _ = writeln!(io.stderr, "sort: {}: read error", sq(&src));
+            Some(2)
+        }
+    }
+}
+
 pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let (mut cfg, gkey) = match parse_args(args, ctx, io) {
         Ok(Some(pair)) => pair,
         Ok(None) => return Ok(0), // --help/--version already printed
         Err(status) => return Ok(status),
     };
+
+    // sort.c main resolves --files0-from before key inheritance.
+    if let Some(status) = resolve_files0_from(ctx, io, &mut cfg) {
+        return Ok(status);
+    }
 
     // --- inheritance (sort.c main, after option parsing) ---
     let mut keys = std::mem::take(&mut cfg.keys);
@@ -681,13 +914,16 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             key.reverse = gkey.reverse;
         }
     }
-    if keys.is_empty() && !gkey.default_compare() {
+    let gkey_only = keys.is_empty() && !gkey.default_compare();
+    if gkey_only {
         keys.push(gkey.clone());
     }
     if let Some(status) = check_ordering_compatibility(ctx, io, &keys) {
         return Ok(status);
     }
     cfg.keys = keys;
+    cfg.gkey = gkey.clone();
+    cfg.gkey_only = gkey_only;
     cfg.reverse = gkey.reverse;
 
     // --debug is incompatible with -c/-o (sort.c debug block).
@@ -697,29 +933,27 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         } else {
             'o'
         };
-        return Ok(usage_fail(
+        return Ok(plain_err(
             ctx,
             io,
             &format!("options '-{} --debug' are incompatible", x),
         ));
     }
 
-    // Random keys validate the random source eagerly (sort.c:
-    // random_md5_state_init before any input is read; probed p4:
-    // "open failed: nope-rs: ...", rc 2).
-    if cfg.keys.iter().any(|k| k.random) {
-        if let Some(src) = cfg.random_source.clone() {
-            if let Err(e) = std::fs::File::open(fsutil::resolve(ctx, &src)) {
-                let reason = read_reason(ctx, &src, &e);
-                let _ = writeln!(
-                    io.stderr,
-                    "sort: open failed: {}: {}",
-                    fsutil::quotef(&src),
-                    reason
-                );
-                return Ok(2);
-            }
-        }
+    // sort.c debug block: header + data-independent key warnings land
+    // before any input is read; the per-line annotation happens in
+    // write_line (debug_write_line below).
+    if cfg.debug {
+        let _ = writeln!(io.stderr, "{DEBUG_HEADER}");
+        debug_warnings(io, &cfg);
+    }
+
+    // sort.c random_md5_state_init: only a random key consults the source,
+    // and the read happens before any input. The 16-byte seed prefixes
+    // every -R key hash (probed p2/p2b: a 15-byte source is "end of file",
+    // 16 is enough; a directory is a read error).
+    if let Some(status) = init_random_seed(ctx, io, &mut cfg) {
+        return Ok(status);
     }
 
     // checkonly branch (sort.c main): the extra-operand and -o conflicts
@@ -748,6 +982,24 @@ pub fn sort_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return run_check(&cfg, io, ctx);
     }
     run_sort(&cfg, io, ctx)
+}
+
+/// 1.x operand expansion (utils/wildcard.cppm glob_expand called from the
+/// positional loop): GNU sort never globs — the surrounding shell does —
+/// so expansion happens only under the direct-invocation contract
+/// WINUX_SHELL_GLOB=native; unmatched patterns and literal existing paths
+/// stay literal (crate::glob carries the shared rules).
+fn push_file_operand(ctx: &Ctx, cfg: &mut Cfg, arg: String) {
+    let native_glob = winux_core::win32_env_get(ctx.env, "WINUX_SHELL_GLOB")
+        .map(|v| v.to_string_lossy() == "native")
+        .unwrap_or(false);
+    if native_glob && crate::glob::contains_wildcard(&arg) {
+        if let Some(matches) = crate::glob::glob_expand_in(ctx, &arg) {
+            cfg.files.extend(matches);
+            return;
+        }
+    }
+    cfg.files.push(arg);
 }
 
 /// GNU getopt_long replica for sort's tables, with sort.c's in-order
@@ -785,12 +1037,13 @@ fn parse_args(args: &[OsString], ctx: &Ctx, io: &mut Io) -> Result<Option<(Cfg, 
                             return Err(s);
                         }
                     }
+                    key.traditional_used = true;
                     cfg.keys.push(key);
                     i += 1;
                     continue;
                 }
             }
-            cfg.files.push(arg);
+            push_file_operand(ctx, &mut cfg, arg);
             i += 1;
             continue;
         }
@@ -975,6 +1228,12 @@ fn apply_long_value(
         "output" => set_output(ctx, io, cfg, value),
         "field-separator" => set_tab(ctx, io, cfg, value),
         "random-source" => set_random_source(ctx, io, cfg, value),
+        "files0-from" => {
+            // sort.c: getopt just records the last --files0-from operand;
+            // the conflict/read checks happen after parsing.
+            cfg.files0_from = Some(value.to_string());
+            None
+        }
         "compress-program" => set_compress_program(ctx, io, cfg, value),
         "sort" => apply_sort_word(ctx, io, gkey, value),
         "check" => apply_check_word(ctx, io, cfg, value),
@@ -1067,7 +1326,9 @@ fn apply_short_flag(
             None
         }
         'c' | 'C' => set_check_mode(ctx, io, cfg, c),
-        _ => opt_err(ctx, io, &argopt::invalid_option(ctx, &c.to_string())),
+        // getopt-level: GNU's unknown-option path carries the Try line
+        // (emit_try_help), unlike the plain error() diagnostics.
+        _ => Some(usage_fail(ctx, io, &argopt::invalid_option(ctx, &c.to_string()))),
     }
 }
 
@@ -1099,7 +1360,7 @@ fn apply_short_value(
 }
 
 fn opt_err(ctx: &Ctx, io: &mut Io, msg: &str) -> Option<u32> {
-    Some(usage_fail(ctx, io, msg))
+    Some(plain_err(ctx, io, msg))
 }
 
 fn set_check_mode(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg, c: char) -> Option<u32> {
@@ -1191,40 +1452,28 @@ fn apply_check_word(ctx: &Ctx, io: &mut Io, cfg: &mut Cfg, word: &str) -> Option
     }
 }
 
-/// xstrtol_fatal-shaped diagnostics for -S/--buffer-size (probed p5:
-/// "-S1X" -> "invalid suffix in -S argument '1X'").
-fn apply_buffer_size(ctx: &Ctx, io: &mut Io, optname: &str, value: &str) -> Option<u32> {
-    match parse_size_arg(value) {
-        Ok(()) => None,
-        Err("invalid") => Some(
-            opt_err(
-                ctx,
-                io,
-                &format!("invalid {optname} argument {}", sq(value)),
-            )
-            .unwrap(),
-        ),
-        Err("suffix") => Some(
-            opt_err(
-                ctx,
-                io,
-                &format!("invalid suffix in {optname} argument {}", sq(value)),
-            )
-            .unwrap(),
-        ),
-        Err(_) => Some(
-            opt_err(
-                ctx,
-                io,
-                &format!("{optname} argument {} too large", sq(value)),
-            )
-            .unwrap(),
-        ),
-    }
+/// xstrtol_fatal-shaped diagnostics for -S/--buffer-size (probed p3:
+/// "-S1X" -> "invalid suffix in -S argument '1X'"). GNU's xstrtol path
+/// prints no "Try ... --help" tail, so these use a bare diagnostic.
+fn apply_buffer_size(_ctx: &Ctx, io: &mut Io, optname: &str, value: &str) -> Option<u32> {
+    let msg = match parse_size_arg(value) {
+        Ok(()) => return None,
+        Err("invalid") => format!("invalid {optname} argument {}", sq(value)),
+        Err("suffix") => format!("invalid suffix in {optname} argument {}", sq(value)),
+        Err(_) => format!("{optname} argument {} too large", sq(value)),
+    };
+    let _ = writeln!(io.stderr, "sort: {msg}");
+    Some(2)
 }
 
-/// specify_nmerge: invalid, minimum-2, or too large (rc 2 each).
-fn apply_batch_size(ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
+/// GNU caps --batch-size at RLIMIT_NOFILE - 3 (sort.c specify_nmerge).
+/// Windows has no rlimit; the 1.x applet used the MSYS2/Cygwin OPEN_MAX
+/// analogue (3200), so the bound is 3197 (MIGRATION §6).
+const MAX_BATCH_SIZE_HINT: usize = 3200 - 3;
+
+/// specify_nmerge: invalid, minimum-2, or above the open-file budget.
+/// The rlimit path also omits the usage tail (probed p7).
+fn apply_batch_size(_ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
     let parsed = parse_field_count(value);
     match parsed {
         Some((n, rest)) if rest.is_empty() => {
@@ -1235,39 +1484,53 @@ fn apply_batch_size(ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
                     sq(value)
                 );
                 let _ = writeln!(io.stderr, "sort: minimum --batch-size argument is '2'");
-                let _ = writeln!(io.stderr, "{}", winux_core::try_help(ctx, "sort"));
+                return Some(2);
+            }
+            if n > MAX_BATCH_SIZE_HINT {
+                let _ = writeln!(
+                    io.stderr,
+                    "sort: --batch-size argument {} too large",
+                    sq(value)
+                );
+                let _ = writeln!(
+                    io.stderr,
+                    "sort: maximum --batch-size argument with current rlimit is {}",
+                    MAX_BATCH_SIZE_HINT
+                );
                 return Some(2);
             }
             None
         }
-        _ => Some(
-            opt_err(
-                ctx,
-                io,
-                &format!("invalid --batch-size argument {}", sq(value)),
-            )
-            .unwrap(),
-        ),
+        _ => {
+            let _ = writeln!(
+                io.stderr,
+                "sort: invalid --batch-size argument {}",
+                sq(value)
+            );
+            Some(2)
+        }
     }
 }
 
-/// specify_nthreads: 0 is rejected with GNU's wording (probed p5).
-fn apply_parallel(ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
+/// specify_nthreads: 0 is rejected with GNU's wording (probed p7; no usage
+/// tail).
+fn apply_parallel(_ctx: &Ctx, io: &mut Io, value: &str) -> Option<u32> {
     match parse_field_count(value) {
         Some((n, rest)) if rest.is_empty() => {
             if n == 0 {
-                return Some(opt_err(ctx, io, "number in parallel must be nonzero").unwrap());
+                let _ = writeln!(io.stderr, "sort: number in parallel must be nonzero");
+                return Some(2);
             }
             None
         }
-        _ => Some(
-            opt_err(
-                ctx,
-                io,
-                &format!("invalid --parallel argument {}", sq(value)),
-            )
-            .unwrap(),
-        ),
+        _ => {
+            let _ = writeln!(
+                io.stderr,
+                "sort: invalid --parallel argument {}",
+                sq(value)
+            );
+            Some(2)
+        }
     }
 }
 
@@ -1314,6 +1577,360 @@ fn check_ordering_compatibility(ctx: &Ctx, io: &mut Io, keys: &[KeyField]) -> Op
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------
+// --debug: sort.c debug_line / debug_key / mark_key / key_warnings
+// ---------------------------------------------------------------------
+
+const DEBUG_HEADER: &str = "sort: text ordering performed using simple byte comparison";
+
+/// Longest strtold-valid prefix (debug_key's general-numeric underline).
+fn general_prefix_len(s: &[u8]) -> usize {
+    let mut i = 0usize;
+    while i < s.len() && c_isspace(s[i]) {
+        i += 1;
+    }
+    let start = i;
+    if matches!(s.get(i), Some(b'-') | Some(b'+')) {
+        i += 1;
+    }
+    if starts_ci(s, i, b"infinity") {
+        return i + 8;
+    }
+    if starts_ci(s, i, b"inf") {
+        return i + 3;
+    }
+    if starts_ci(s, i, b"nan") {
+        let mut j = i + 3;
+        if s.get(j) == Some(&b'(') {
+            if let Some(rel) = s[j + 1..].iter().position(|&c| c == b')') {
+                j = j + 1 + rel + 1;
+            }
+        }
+        return j;
+    }
+    // hex float
+    if s.get(i) == Some(&b'0') && matches!(s.get(i + 1).map(|c| c | 0x20), Some(b'x')) {
+        let mut j = i + 2;
+        let mut digits = 0usize;
+        while hex_val(s.get(j).copied()).is_some() {
+            j += 1;
+            digits += 1;
+        }
+        if s.get(j) == Some(&b'.') {
+            j += 1;
+            while hex_val(s.get(j).copied()).is_some() {
+                j += 1;
+                digits += 1;
+            }
+        }
+        if digits == 0 {
+            return i; // "0x" alone does not convert past the sign
+        }
+        if matches!(s.get(j).map(|c| c | 0x20), Some(b'p')) {
+            let mut k = j + 1;
+            if matches!(s.get(k), Some(b'-') | Some(b'+')) {
+                k += 1;
+            }
+            if s.get(k).map(|c| is_digit(*c)).unwrap_or(false) {
+                j = k + 1;
+                while s.get(j).map(|c| is_digit(*c)).unwrap_or(false) {
+                    j += 1;
+                }
+            }
+        }
+        return j;
+    }
+    // decimal
+    let mut j = i;
+    let mut digits = 0usize;
+    while s.get(j).map(|c| is_digit(*c)).unwrap_or(false) {
+        j += 1;
+        digits += 1;
+    }
+    if s.get(j) == Some(&b'.') {
+        j += 1;
+        while s.get(j).map(|c| is_digit(*c)).unwrap_or(false) {
+            j += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        return 0;
+    }
+    if matches!(s.get(j).map(|c| c | 0x20), Some(b'e')) {
+        let mut k = j + 1;
+        if matches!(s.get(k), Some(b'-') | Some(b'+')) {
+            k += 1;
+        }
+        if s.get(k).map(|c| is_digit(*c)).unwrap_or(false) {
+            j = k + 1;
+            while s.get(j).map(|c| is_digit(*c)).unwrap_or(false) {
+                j += 1;
+            }
+        }
+    }
+    let _ = start;
+    j
+}
+
+/// debug_key's (offset, width) for the byte string GNU underlines.
+fn debug_span(content: &[u8], key: &KeyField, tab: Option<u8>) -> (usize, usize) {
+    let mut beg = if key.sword != usize::MAX {
+        begfield(content, key, tab)
+    } else {
+        0
+    };
+    let mut lim = if key.eword != usize::MAX {
+        beg.max(limfield(content, key, tab))
+    } else {
+        content.len()
+    };
+    if (key.skipsblanks && key.sword == usize::MAX) || key.month || key.key_numeric() {
+        while beg < content.len() && is_blank(content[beg]) {
+            beg += 1;
+        }
+        if lim < beg {
+            lim = beg;
+        } else if key.month {
+            // getmonth consumes the 3-letter prefix when it matches
+            lim = if getmonth(&content[beg..lim]) > 0 {
+                (beg + 3).min(lim)
+            } else {
+                beg
+            };
+        } else if key.general_numeric {
+            lim = beg + general_prefix_len(&content[beg..lim]);
+        } else if key.numeric || key.human_numeric {
+            let p = beg + usize::from(beg < lim && content[beg] == b'-');
+            let (max_digit, stop) = traverse_raw_number(&content[p..lim]);
+            if max_digit != 0 {
+                let mut end = p + stop;
+                if key.human_numeric && unit_order(*content.get(end).unwrap_or(&0)) != 0 {
+                    end += 1;
+                }
+                lim = end.min(lim);
+            } else {
+                lim = beg;
+            }
+        }
+    }
+    (beg, lim.saturating_sub(beg).min(content.len().saturating_sub(beg)))
+}
+
+fn mark_key<W: Write>(w: &mut W, content: &[u8], key: Option<&KeyField>, tab: Option<u8>) -> std::io::Result<()> {
+    let (offset, width) = match key {
+        Some(k) => debug_span(content, k, tab),
+        None => (0, content.len()),
+    };
+    if offset > 0 {
+        w.write_all(&vec![b' '; offset])?;
+    }
+    if width == 0 {
+        w.write_all(b"^ no match for key\n")
+    } else {
+        w.write_all(&vec![b'_'; width])?;
+        w.write_all(b"\n")
+    }
+}
+
+/// sort.c write_line's debug branch: the line with TAB shown as '>' and
+/// the eol forced to '\n', then one underline per key plus the
+/// last-resort whole-line underline unless -u/-s.
+fn debug_write_line<W: Write>(w: &mut W, raw: &[u8], cfg: &Cfg) -> std::io::Result<()> {
+    let content = &raw[..raw.len().saturating_sub(1)];
+    let shown: Vec<u8> = content
+        .iter()
+        .map(|&b| if b == b'\t' { b'>' } else { b })
+        .collect();
+    w.write_all(&shown)?;
+    w.write_all(b"\n")?;
+    if cfg.keys.is_empty() {
+        mark_key(w, content, None, cfg.tab)?;
+    } else {
+        for k in &cfg.keys {
+            mark_key(w, content, Some(k), cfg.tab)?;
+        }
+        if !cfg.unique && !cfg.stable {
+            mark_key(w, content, None, cfg.tab)?;
+        }
+    }
+    Ok(())
+}
+
+/// key_warnings port (sort.c 2594): data-independent diagnostics emitted
+/// once, before any input, when --debug is active.
+fn debug_warnings(io: &mut Io, cfg: &Cfg) {
+    let mut ugkey = cfg.gkey.clone();
+    let mut basic_numeric_field = false;
+    let mut general_numeric_field = false;
+    let mut basic_numeric_field_span = false;
+    let mut general_numeric_field_span = false;
+
+    for (idx, key) in cfg.keys.iter().enumerate() {
+        let keynum = idx + 1;
+
+        // sort.c key_warnings traditional_used block: rebuild the
+        // obsolescent spelling and its -k equivalent. Char offsets never
+        // appear in either form; sword wraps SIZE_MAX+1 -> 0 for +0.
+        if key.traditional_used {
+            let mut sword = key.sword;
+            if sword == usize::MAX {
+                sword = sword.wrapping_add(1);
+            }
+            let mut obuf = format!("+{sword}");
+            let mut nbuf = format!("-k {}", sword.wrapping_add(1));
+            if key.eword != usize::MAX {
+                obuf += &format!(" -{}", key.eword.wrapping_add(1));
+                nbuf += &format!(
+                    ",{}",
+                    key.eword
+                        .wrapping_add(1)
+                        .wrapping_add(usize::from(key.echar == usize::MAX))
+                );
+            }
+            let _ = writeln!(
+                io.stderr,
+                "sort: obsolescent key {} used; consider {} instead",
+                sq(&obuf),
+                sq(&nbuf)
+            );
+        }
+
+        if key.key_numeric() {
+            if key.general_numeric {
+                general_numeric_field = true;
+            } else {
+                basic_numeric_field = true;
+            }
+        }
+
+        let zero_width = key.sword != usize::MAX && key.eword < key.sword;
+        if zero_width {
+            let _ = writeln!(
+                io.stderr,
+                "sort: key {keynum} has zero width and will be ignored"
+            );
+        }
+
+        let implicit_skip = key.key_numeric() || key.month;
+        let line_offset = key.eword == 0 && key.echar != 0;
+        if !zero_width
+            && !cfg.gkey_only
+            && cfg.tab.is_none()
+            && !line_offset
+            && ((!key.skipsblanks && !implicit_skip)
+                || (!key.skipsblanks && key.schar != 0)
+                || (!key.skipeblanks && key.echar != 0))
+        {
+            let _ = writeln!(
+                io.stderr,
+                "sort: leading blanks are significant in key {keynum}; consider also specifying 'b'"
+            );
+        }
+
+        if !cfg.gkey_only && key.key_numeric() {
+            let mut sword = key.sword.wrapping_add(1);
+            let eword = key.eword.wrapping_add(1);
+            if sword == 0 {
+                sword += 1;
+            }
+            if eword == 0 || sword < eword {
+                let _ = writeln!(
+                    io.stderr,
+                    "sort: key {keynum} is numeric and spans multiple fields"
+                );
+                if key.general_numeric {
+                    general_numeric_field_span = true;
+                } else {
+                    basic_numeric_field_span = true;
+                }
+            }
+        }
+
+        // flag global options not copied into (or specified by) any key
+        if ugkey.ignore != Ignore::None && ugkey.ignore == key.ignore {
+            ugkey.ignore = Ignore::None;
+        }
+        if ugkey.translate && key.translate {
+            ugkey.translate = false;
+        }
+        ugkey.skipsblanks &= !key.skipsblanks;
+        ugkey.skipeblanks &= !key.skipeblanks;
+        ugkey.month &= !key.month;
+        ugkey.numeric &= !key.numeric;
+        ugkey.general_numeric &= !key.general_numeric;
+        ugkey.human_numeric &= !key.human_numeric;
+        ugkey.random &= !key.random;
+        ugkey.version &= !key.version;
+        ugkey.reverse &= !key.reverse;
+    }
+
+    let mut number_locale_warned = false;
+    // C locale: thousands_sep is absent, decimal_point is '.'.
+    if basic_numeric_field_span && cfg.tab == Some(b'.') {
+        let _ = writeln!(
+            io.stderr,
+            "sort: field separator '.' is treated as a decimal point in numbers"
+        );
+        number_locale_warned = true;
+    }
+    if basic_numeric_field_span || general_numeric_field_span {
+        if cfg.tab == Some(b'.') {
+            if !number_locale_warned {
+                let _ = writeln!(
+                    io.stderr,
+                    "sort: field separator '.' is treated as a decimal point in numbers"
+                );
+                number_locale_warned = true;
+            }
+        } else if cfg.tab == Some(b'-') {
+            let _ = writeln!(
+                io.stderr,
+                "sort: field separator '-' is treated as a minus sign in numbers"
+            );
+        } else if general_numeric_field_span && cfg.tab == Some(b'+') {
+            let _ = writeln!(
+                io.stderr,
+                "sort: field separator '+' is treated as a plus sign in numbers"
+            );
+        }
+    }
+    if (basic_numeric_field || general_numeric_field) && !number_locale_warned {
+        if cfg.tab.is_none() {
+            let _ = writeln!(
+                io.stderr,
+                "sort: note numbers use '.' as a decimal point in this locale"
+            );
+        } else {
+            let _ = writeln!(
+                io.stderr,
+                "sort: numbers use '.' as a decimal point in this locale"
+            );
+        }
+    }
+
+    if !ugkey.default_compare() || (ugkey.reverse && (cfg.stable || cfg.unique) && !cfg.keys.is_empty()) {
+        let saved_reverse = ugkey.reverse;
+        if !(cfg.stable || cfg.unique) {
+            ugkey.reverse = false;
+        }
+        let opts = ugkey.to_opts();
+        let _ = writeln!(
+            io.stderr,
+            "sort: {} '-{opts}' {} ignored",
+            if opts.len() == 1 { "option" } else { "options" },
+            if opts.len() == 1 { "is" } else { "are" }
+        );
+        ugkey.reverse = saved_reverse;
+    }
+    if ugkey.reverse && !(cfg.stable || cfg.unique) && !cfg.keys.is_empty() {
+        let _ = writeln!(
+            io.stderr,
+            "sort: option '-r' only applies to last-resort comparison"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1454,6 +2071,7 @@ struct Cmp<'a> {
     unique: bool,
     stable: bool,
     reverse: bool,
+    random_seed: &'a [u8; 16],
 }
 
 impl<'a> Cmp<'a> {
@@ -1590,7 +2208,7 @@ impl<'a> Cmp<'a> {
                 return (getmonth(xa) - getmonth(xb)).signum();
             }
             if key.random {
-                return compare_random(xa, xb);
+                return compare_random(xa, xb, self.random_seed);
             }
             return filenvercmp(xa, xb);
         }
@@ -2178,22 +2796,138 @@ fn getmonth(s: &[u8]) -> i32 {
 }
 
 // ---------------------------------------------------------------------
-// -R: deterministic FNV-1a-64 hash (documented deviation from GNU's
-// per-run MD5-seeded shuffle)
+// -R: MD5(seed16 || key), sort.c compare_random
 // ---------------------------------------------------------------------
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
+/// Minimal MD5 (RFC 1321). sort.c seeds a struct md5_ctx with the 16
+/// random bytes and then hashes each key; copying the ctx is equivalent
+/// to hashing `seed || key` (the seed is exactly one 16-byte block-buffer
+/// prefix and no compression block has run yet).
+struct Md5 {
+    state: [u32; 4],
+    len: u64,
+    buf: [u8; 64],
+    fill: usize,
 }
 
-fn compare_random(a: &[u8], b: &[u8]) -> i32 {
-    let ha = fnv1a64(a);
-    let hb = fnv1a64(b);
+impl Md5 {
+    fn new() -> Self {
+        Md5 {
+            state: [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476],
+            len: 0,
+            buf: [0u8; 64],
+            fill: 0,
+        }
+    }
+
+    fn update(&mut self, mut data: &[u8]) {
+        self.len = self.len.wrapping_add(data.len() as u64);
+        while !data.is_empty() {
+            let take = (64 - self.fill).min(data.len());
+            self.buf[self.fill..self.fill + take].copy_from_slice(&data[..take]);
+            self.fill += take;
+            data = &data[take..];
+            if self.fill == 64 {
+                let block = self.buf;
+                self.compress(&block);
+                self.fill = 0;
+            }
+        }
+    }
+
+    fn finalize(mut self) -> [u8; 16] {
+        let bit_len = self.len.wrapping_mul(8);
+        let mut pad = Vec::with_capacity(72);
+        pad.push(0x80u8);
+        while (self.fill + pad.len()) % 64 != 56 {
+            pad.push(0);
+        }
+        pad.extend_from_slice(&bit_len.to_le_bytes());
+        // update() would re-add to len; compress directly instead.
+        let mut data = &pad[..];
+        while !data.is_empty() {
+            let take = (64 - self.fill).min(data.len());
+            self.buf[self.fill..self.fill + take].copy_from_slice(&data[..take]);
+            self.fill += take;
+            data = &data[take..];
+            if self.fill == 64 {
+                let block = self.buf;
+                self.compress(&block);
+                self.fill = 0;
+            }
+        }
+        let mut out = [0u8; 16];
+        for (i, w) in self.state.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        out
+    }
+
+    fn compress(&mut self, block: &[u8; 64]) {
+        const S: [u32; 64] = [
+            7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14,
+            20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11,
+            16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+        ];
+        const K: [u32; 64] = [
+            0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+            0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+            0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+            0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+            0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+            0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+            0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+            0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+            0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+            0xeb86d391,
+        ];
+        let mut m = [0u32; 16];
+        for (i, w) in m.iter_mut().enumerate() {
+            *w = u32::from_le_bytes([
+                block[i * 4],
+                block[i * 4 + 1],
+                block[i * 4 + 2],
+                block[i * 4 + 3],
+            ]);
+        }
+        let [mut a, mut b, mut c, mut d] = self.state;
+        for i in 0..64 {
+            let (f, g) = match i {
+                0..=15 => ((b & c) | (!b & d), i),
+                16..=31 => ((d & b) | (!d & c), (5 * i + 1) % 16),
+                32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
+                _ => (c ^ (b | !d), (7 * i) % 16),
+            };
+            let tmp = d;
+            d = c;
+            c = b;
+            b = b.wrapping_add(
+                a.wrapping_add(f)
+                    .wrapping_add(K[i])
+                    .wrapping_add(m[g])
+                    .rotate_left(S[i]),
+            );
+            a = tmp;
+        }
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+    }
+}
+
+fn md5_seeded(seed: &[u8; 16], key: &[u8]) -> [u8; 16] {
+    let mut h = Md5::new();
+    h.update(seed);
+    h.update(key);
+    h.finalize()
+}
+
+/// sort.c compare_random: MD5(seed || key) byte order, then the original
+/// key bytes as the checksum-collision tiebreak.
+fn compare_random(a: &[u8], b: &[u8], seed: &[u8; 16]) -> i32 {
+    let ha = md5_seeded(seed, a);
+    let hb = md5_seeded(seed, b);
     if ha != hb {
         return if ha < hb { -1 } else { 1 };
     }
@@ -2593,6 +3327,7 @@ fn run_sort(cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> CmdResult {
         unique: cfg.unique,
         stable: cfg.stable,
         reverse: cfg.reverse,
+        random_seed: &cfg.random_seed,
     };
 
     let result: Result<Vec<usize>, u32> = (|| {
@@ -2678,7 +3413,13 @@ fn run_sort(cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> CmdResult {
                 let mut failed = false;
                 for idx in &out {
                     let ln = &lines[*idx];
-                    if w.write_all(&buf[ln.start..ln.start + ln.len]).is_err() {
+                    let raw = &buf[ln.start..ln.start + ln.len];
+                    let res = if cfg.debug {
+                        debug_write_line(&mut w, raw, cfg)
+                    } else {
+                        w.write_all(raw)
+                    };
+                    if res.is_err() {
                         failed = true;
                         break;
                     }
@@ -2716,7 +3457,13 @@ fn run_sort(cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> CmdResult {
         let mut failed = false;
         for idx in &out {
             let ln = &lines[*idx];
-            if w.write_all(&buf[ln.start..ln.start + ln.len]).is_err() {
+            let raw = &buf[ln.start..ln.start + ln.len];
+            let res = if cfg.debug {
+                debug_write_line(&mut w, raw, cfg)
+            } else {
+                w.write_all(raw)
+            };
+            if res.is_err() {
                 failed = true;
                 break;
             }
@@ -2761,6 +3508,7 @@ fn run_check(cfg: &Cfg, io: &mut Io, ctx: &Ctx) -> CmdResult {
         unique: cfg.unique,
         stable: cfg.stable,
         reverse: cfg.reverse,
+        random_seed: &cfg.random_seed,
     };
     let mut ordered = true;
     for i in 1..lines.len() {
@@ -3270,6 +4018,8 @@ mod tests {
         let (r, _, err) = run(&["--parallel=0"], "x\n");
         assert_eq!(r, 2);
         assert!(err.contains("number in parallel must be nonzero"));
+        // GNU's rlimit paths print no usage tail (probed p7)
+        assert!(!err.contains("Try 'sort --help'"), "{err:?}");
         let (r, _, err) = run(&["--parallel=x"], "x\n");
         assert_eq!(r, 2);
         assert!(err.contains("invalid --parallel argument 'x'"));
@@ -3278,6 +4028,20 @@ mod tests {
         let (r, _, err) = run(&["--batch-size=0"], "x\n");
         assert_eq!(r, 2);
         assert!(err.contains("minimum --batch-size argument is '2'"));
+        assert!(!err.contains("Try 'sort --help'"), "{err:?}");
+        // above the Windows rlimit analogue (3200 - 3)
+        let (r, _, err) = run(&["--batch-size=99999"], "x\n");
+        assert_eq!(r, 2);
+        assert!(
+            err.contains("--batch-size argument '99999' too large"),
+            "{err:?}"
+        );
+        assert!(
+            err.contains("maximum --batch-size argument with current rlimit is 3197"),
+            "{err:?}"
+        );
+        // 3197 is accepted
+        expect(&["--batch-size=3197"], "b\na\n", "a\nb\n");
     }
 
     #[test]
@@ -3306,6 +4070,75 @@ mod tests {
         assert!(err.contains("open failed: nope-rs: No such file or directory"));
         // no random key: the source is never touched
         expect(&["--random-source=nope-rs"], "b\na\n", "a\nb\n");
+    }
+
+    #[test]
+    fn md5_vectors() {
+        use super::{md5_seeded, Md5};
+        let hex = |d: [u8; 16]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let mut h = Md5::new();
+        h.update(b"");
+        assert_eq!(hex(h.finalize()), "d41d8cd98f00b204e9800998ecf8427e");
+        let mut h = Md5::new();
+        h.update(b"abc");
+        assert_eq!(hex(h.finalize()), "900150983cd24fb0d6963f7d28e17f72");
+        // the seed is hashed first, exactly like sort.c's live ctx copy
+        let seed = *b"0123456789abcdef";
+        assert_eq!(hex(md5_seeded(&seed, b"")), "4032af8d61035123906e58e067140cc5");
+    }
+
+    #[test]
+    fn random_source_seeds_gnu_md5_order() {
+        // GNU 9.4, seed = first 16 bytes of "fixed random source\n"
+        // (sort-probes/p2-random-source.out)
+        let (r, out, err) = run_files(
+            &["-R", "--random-source=seed.bin", "-k1,1", "r.txt"],
+            &[
+                ("seed.bin", "fixed random source\n"),
+                (
+                    "r.txt",
+                    "alpha 1\nbravo 1\nalpha 2\ncharlie 1\nbravo 2\n",
+                ),
+            ],
+            "",
+        );
+        assert_eq!(r, 0, "{err:?}");
+        assert_eq!(
+            out,
+            "bravo 1\nbravo 2\nalpha 1\nalpha 2\ncharlie 1\n"
+        );
+        // the reverse comparison uses the same hash order
+        let (r, out, err) = run_files(
+            &["--random-sort", "--random-source", "seed.bin", "-r", "r2.txt"],
+            &[
+                ("seed.bin", "fixed random source\n"),
+                ("r2.txt", "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\n"),
+            ],
+            "",
+        );
+        assert_eq!(r, 0, "{err:?}");
+        assert_eq!(
+            out,
+            "delta\ncharlie\necho\nalpha\nfoxtrot\nbravo\n"
+        );
+    }
+
+    #[test]
+    fn random_source_short_file_is_eof() {
+        // probed p2b: 15 bytes -> end of file, 16 bytes is enough
+        let (r, _, err) = run_files(
+            &["-R", "--random-source=seed.bin"],
+            &[("seed.bin", "0123456789abcde")],
+            "a\nb\n",
+        );
+        assert_eq!(r, 2);
+        assert!(err.contains("sort: 'seed.bin': end of file"), "{err:?}");
+        let (r, _, err) = run_files(
+            &["-R", "--random-source=seed.bin"],
+            &[("seed.bin", "0123456789abcdef")],
+            "a\nb\n",
+        );
+        assert_eq!(r, 0, "{err:?}");
     }
 
     #[test]
@@ -3384,5 +4217,169 @@ mod tests {
         expect(&["-k1.1"], "b\na\n", "a\nb\n");
         // -k2.1 starts at field 2's first byte (leading blank included)
         expect(&["-k2.1"], "a b\na c\n", "a b\na c\n");
+    }
+
+    // ---------- --files0-from (probed p1, GNU 9.4) ----------
+
+    #[test]
+    fn files0_from_names_replace_operands() {
+        let sc = ScratchCtx::new("sortf0");
+        std::fs::write(sc.path("a.txt"), "c\na\n").unwrap();
+        std::fs::write(sc.path("b.txt"), "b\nd\n").unwrap();
+        std::fs::write(sc.path("list.bin"), b"a.txt\0b.txt\0").unwrap();
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let args: Vec<OsString> = ["--files0-from", "list.bin"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        let r = super::sort_cmd(&args, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0, "stderr {:?}", io.err());
+        assert_eq!(io.out(), "a\nb\nc\nd\n");
+    }
+
+    #[test]
+    fn files0_from_errors_match_gnu() {
+        let sc = ScratchCtx::new("sortf0e");
+        let ctx = sc.ctx();
+        let mut run0 = |list: &[u8]| {
+            std::fs::write(sc.path("l.bin"), list).unwrap();
+            let mut io = MemIo::new("");
+            let args: Vec<OsString> = ["--files0-from", "l.bin"].iter().map(Into::into).collect();
+            let r = super::sort_cmd(&args, &mut io.split(), &ctx).unwrap();
+            (r, io.err())
+        };
+        let (r, err) = run0(b"");
+        assert_eq!(r, 2);
+        assert!(err.contains("sort: no input from 'l.bin'"), "{err:?}");
+        let (r, err) = run0(b"\0");
+        assert_eq!(r, 2);
+        assert!(
+            err.contains("sort: l.bin:1: invalid zero-length file name"),
+            "{err:?}"
+        );
+        let (r, err) = run0(b"a\0\0b\0");
+        assert_eq!(r, 2);
+        assert!(
+            err.contains("sort: l.bin:2: invalid zero-length file name"),
+            "{err:?}"
+        );
+        let (r, err) = run0(b"-\0");
+        assert_eq!(r, 2);
+        assert!(
+            err.contains("no file name of '-' allowed"),
+            "{err:?}"
+        );
+        // a trailing name without the final NUL is still a name
+        std::fs::write(sc.path("a.txt"), "b\na\n").unwrap();
+        let (r, err) = run0(b"a.txt");
+        assert_eq!(r, 0, "{err:?}");
+    }
+
+    // ---------- --debug annotation (probed p4b..p4f) ----------
+
+    #[test]
+    fn debug_annotates_keys_on_stdout() {
+        let (r, out, err) = run(
+            &["--debug", "-k2,2n"],
+            "beta 10\nalpha 2\nalpha 1\nbeta 2\n",
+        );
+        assert_eq!(r, 0);
+        assert_eq!(
+            out,
+            "alpha 1\n      _\n_______\n\
+             alpha 2\n      _\n_______\n\
+             beta 2\n     _\n______\n\
+             beta 10\n     __\n_______\n"
+        );
+        assert!(err.contains(super::DEBUG_HEADER), "{err:?}");
+        assert!(
+            err.contains("note numbers use '.' as a decimal point in this locale"),
+            "{err:?}"
+        );
+        assert!(!err.contains("sort: debug"), "{err:?}");
+    }
+
+    #[test]
+    fn debug_plain_tab_and_no_match() {
+        let (_, out, _) = run(&["--debug"], "a\tb\na b\n");
+        assert_eq!(out, "a>b\n___\na b\n___\n");
+        let (_, out, err) = run(&["--debug", "-k2,1"], "a b\nc d\n");
+        assert_eq!(
+            out,
+            "a b\n ^ no match for key\n___\nc d\n ^ no match for key\n___\n"
+        );
+        assert!(
+            err.contains("sort: key 1 has zero width and will be ignored"),
+            "{err:?}"
+        );
+        let (_, out, err) = run(&["--debug", "-n"], "abc\nx9\n");
+        assert_eq!(
+            out,
+            "abc\n^ no match for key\n___\nx9\n^ no match for key\n__\n"
+        );
+        assert!(err.contains("note numbers use"), "{err:?}");
+    }
+
+    #[test]
+    fn debug_unique_stable_drop_last_resort_line() {
+        let (_, out, err) = run(&["--debug", "-u", "-k1,1"], "b 2\na 2\na 1\n");
+        assert_eq!(out, "a 2\n_\nb 2\n_\n");
+        assert!(
+            err.contains("leading blanks are significant in key 1"),
+            "{err:?}"
+        );
+        let (_, out, _) = run(&["--debug", "-s", "-k1,1"], "b 2\na 2\na 1\n");
+        assert_eq!(out, "a 2\n_\na 1\n_\nb 2\n_\n");
+    }
+
+    #[test]
+    fn debug_month_and_general_underline_the_prefix() {
+        let (_, out, _) = run(&["--debug", "-M"], "JANX\nzzz\nfeb\n");
+        assert_eq!(
+            out,
+            "zzz\n^ no match for key\n___\nJANX\n___\n____\nfeb\n___\n___\n"
+        );
+        let (_, out, _) = run(&["--debug", "-g"], "1.5x\nabc\n2e3y\n");
+        assert_eq!(
+            out,
+            "abc\n^ no match for key\n___\n1.5x\n___\n____\n2e3y\n___\n____\n"
+        );
+    }
+
+    #[test]
+    fn debug_obsolescent_key_warning() {
+        // GNU 9.4 (sort-probes/p8-traditional.sh): the +POS/-POS spelling is
+        // echoed with its -k equivalent; char offsets never appear.
+        let (_, _, err) = run(&["--debug", "+1", "-2"], "b 2\na 10\na 1\n");
+        assert!(
+            err.contains("obsolescent key '+1 -2' used; consider '-k 2,2' instead"),
+            "{err:?}"
+        );
+        let (_, _, err) = run(&["--debug", "+0"], "b\na\n");
+        assert!(
+            err.contains("obsolescent key '+0' used; consider '-k 1' instead"),
+            "{err:?}"
+        );
+        let (_, _, err) = run(&["--debug", "+1.2", "-2.3"], "a b c d\n1 2 3 4\n");
+        assert!(
+            err.contains("obsolescent key '+1 -3' used; consider '-k 2,3' instead"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn debug_reverse_warnings() {
+        let (_, out, err) = run(&["--debug", "-k1,1n", "-r"], "b 2\na 10\na 1\n");
+        assert_eq!(
+            out,
+            "b 2\n^ no match for key\n___\na 10\n^ no match for key\n____\na 1\n^ no match for key\n___\n"
+        );
+        assert!(
+            err.contains("option '-r' only applies to last-resort comparison"),
+            "{err:?}"
+        );
+        let (_, _, err) = run(&["--debug", "-k1,1n", "-r", "-s"], "b 2\na 1\n");
+        assert!(err.contains("option '-r' is ignored"), "{err:?}");
     }
 }

@@ -3417,6 +3417,57 @@ sort_rows = [
     ("so82-version", "strict", "", "LC_ALL=C", "", ["--version"]),
     ("so83-unknown-opt", "strict", "", "LC_ALL=C", "", ["--bogus"]),
     ("so84-stdin-ignored-flag", "strict", "", "LC_ALL=C", "zz", ["--parallel=2"]),
+    ("so85-files0-basic", "strict",
+     "printf 'c\\na\\n' > a.txt; printf 'b\\nd\\n' > b.txt; "
+     "printf 'a.txt\\0b.txt\\0' > l.bin", "LC_ALL=C", "", ["--files0-from", "l.bin"]),
+    ("so86-files0-empty", "strict", "printf '' > l.bin", "LC_ALL=C", "", ["--files0-from", "l.bin"]),
+    ("so87-files0-zero-name", "strict", "printf '\\0' > l.bin", "LC_ALL=C", "",
+     ["--files0-from", "l.bin"]),
+    ("so88-files0-dash-name", "strict", "printf -- '-\\0' > l.bin", "LC_ALL=C", "",
+     ["--files0-from", "l.bin"]),
+    ("so89-files0-with-operand", "strict",
+     "printf 'a\\n' > a.txt; printf 'a.txt\\0' > l.bin", "LC_ALL=C", "",
+     ["--files0-from", "l.bin", "a.txt"]),
+    ("so90-files0-missing-list", "strict", "", "LC_ALL=C", "", ["--files0-from", "nosuch.bin"]),
+    ("so91-files0-tail-no-nul", "strict",
+     "printf 'c\\na\\n' > a.txt; printf 'b\\nd\\n' > b.txt; "
+     "printf 'a.txt\\0b.txt' > l.bin", "LC_ALL=C", "", ["--files0-from", "l.bin"]),
+    ("so92-files0-mid-zero-name", "strict",
+     "printf 'c\\na\\n' > a.txt; printf 'a.txt\\0\\0a.txt\\0' > l.bin", "LC_ALL=C", "",
+     ["--files0-from", "l.bin"]),
+    ("so93-files0-repeat-last-wins", "strict",
+     "printf 'c\\na\\n' > a.txt; printf 'b\\nd\\n' > b.txt; "
+     "printf 'a.txt\\0' > l1.bin; printf 'b.txt\\0' > l2.bin", "LC_ALL=C", "",
+     ["--files0-from", "l1.bin", "--files0-from", "l2.bin"]),
+    ("so94-random-source-order", "strict",
+     "printf 'fixed random source\\n' > seed.bin; "
+     "printf 'alpha 1\\nbravo 1\\nalpha 2\\ncharlie 1\\nbravo 2\\n' > r.txt",
+     "LC_ALL=C", "", ["-R", "--random-source=seed.bin", "-k1,1", "r.txt"]),
+    ("so95-random-source-reverse", "strict",
+     "printf 'fixed random source\\n' > seed.bin; "
+     "printf 'alpha\\nbravo\\ncharlie\\ndelta\\necho\\nfoxtrot\\n' > r2.txt",
+     "LC_ALL=C", "", ["--random-sort", "--random-source", "seed.bin", "-r", "r2.txt"]),
+    ("so96-random-source-short", "strict",
+     "printf '0123456789abcde' > s15.bin; printf 'a\\nb\\n' > r.txt", "LC_ALL=C", "",
+     ["-R", "--random-source=s15.bin", "r.txt"]),
+    ("so97-random-source-dir", "strict",
+     "mkdir sd; printf 'a\\nb\\n' > r.txt", "LC_ALL=C", "",
+     ["-R", "--random-source=sd", "r.txt"]),
+    ("so98-random-source-duplicate", "strict",
+     "printf '0123456789abcdef' > s16.bin; printf '0123456789abcdeX' > s16b.bin; "
+     "printf 'a\\nb\\n' > r.txt", "LC_ALL=C", "",
+     ["-R", "--random-source=s16.bin", "--random-source=s16b.bin", "r.txt"]),
+    ("so99-batch-size-too-large", "strict", "", "LC_ALL=C", "", ["--batch-size=99999"]),
+    ("so100-buffer-size-iec", "strict", "printf 'b\\na\\n' > b.txt", "LC_ALL=C", "",
+     ["--buffer-size=2MiB", "b.txt"]),
+    ("so101-buffer-size-bad", "strict", "", "LC_ALL=C", "", ["--buffer-size=bad"]),
+    ("so102-compress-program-empty", "strict", "printf 'b\\na\\n' > b.txt", "LC_ALL=C", "",
+     ["--compress-program=", "b.txt"]),
+    ("so103-temporary-directory-unused", "strict", "printf 'b\\na\\n' > b.txt", "LC_ALL=C", "",
+     ["--temporary-directory=missing", "b.txt"]),
+    # --debug annotation is still a tracked gap (no GNU shape yet); keep the
+    # record-only row until the annotation port lands.
+    ("so76-debug-annotation", "note", "printf 'b\\na\\n' > sdg", "LC_ALL=C", "", ["--debug", "sdg"]),
 ]
 
 CSPLIT_F = "printf 'a\\nb\\n--\\nc\\nd\\n--\\ne\\n' > f.txt"

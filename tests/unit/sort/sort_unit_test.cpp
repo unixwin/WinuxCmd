@@ -137,7 +137,7 @@ TEST(sort, sort_repeated_long_key_options_compare_in_order) {
   EXPECT_EQ_TEXT(r.stdout_text, "alpha 1\nalpha 2\nbeta 2\nbeta 10\n");
 }
 
-TEST(sort, sort_debug_reports_key_without_changing_stdout) {
+TEST(sort, sort_debug_annotates_keys_on_stdout) {
   TempDir tmp;
   tmp.write("k.txt", "beta 10\nalpha 2\nalpha 1\nbeta 2\n");
 
@@ -147,10 +147,21 @@ TEST(sort, sort_debug_reports_key_without_changing_stdout) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "alpha 1\nalpha 2\nbeta 2\nbeta 10\n");
-  EXPECT_TRUE(r.stderr_text.find("sort: debug") != std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("key 1") != std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("numeric") != std::string::npos);
+  // GNU 9.4 annotates stdout: the sorted line, then one underline per key
+  // plus the last-resort whole-line underline (sort-probes/p4d-debug-unit.out).
+  EXPECT_EQ_TEXT(r.stdout_text,
+                 "alpha 1\n      _\n_______\n"
+                 "alpha 2\n      _\n_______\n"
+                 "beta 2\n     _\n______\n"
+                 "beta 10\n     __\n_______\n");
+  EXPECT_TRUE(r.stderr_text.find(
+                  "sort: text ordering performed using simple byte comparison") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "sort: note numbers use '.' as a decimal point in this locale") !=
+              std::string::npos);
+  // the 1.x applet printed this invented tag instead of GNU's annotation
+  EXPECT_TRUE(r.stderr_text.find("sort: debug") == std::string::npos);
 }
 
 TEST(sort, sort_key_range_limits_end_field) {
@@ -300,8 +311,10 @@ TEST(sort, sort_rejects_invalid_parallel_hint) {
   p.add(L"sort.exe", {L"--parallel=0"});
   auto r = p.run();
 
+  // GNU 9.4 (sort-probes/p7-option-hints.out): "number in parallel must be
+  // nonzero" — the 1.x applet used the generic invalid-argument wording.
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid --parallel argument '0'") !=
+  EXPECT_TRUE(r.stderr_text.find("number in parallel must be nonzero") !=
               std::string::npos);
 }
 
@@ -360,14 +373,14 @@ TEST(sort, sort_accepts_compress_program_hint) {
   EXPECT_EQ_TEXT(r.stdout_text, "1\n2\n3\n");
 }
 
-TEST(sort, sort_rejects_empty_compress_program_hint) {
+TEST(sort, sort_accepts_empty_compress_program_hint) {
   Pipeline p;
   p.add(L"sort.exe", {L"--compress-program="});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid compress program") !=
-              std::string::npos);
+  // GNU 9.4 accepts an empty PROG when no temporary is compressed
+  // (sort-probes/p7-option-hints.out); the 1.x applet invented a rejection.
+  EXPECT_EQ(r.exit_code, 0);
 }
 
 TEST(sort, sort_accepts_temporary_directory_hint) {
@@ -384,27 +397,25 @@ TEST(sort, sort_accepts_temporary_directory_hint) {
   EXPECT_EQ_TEXT(r.stdout_text, "1\n2\n3\n");
 }
 
-TEST(sort, sort_rejects_invalid_temporary_directory_hint) {
+TEST(sort, sort_accepts_unused_temporary_directory_hint) {
   TempDir tmp;
   tmp.write("notadir.txt", "x\n");
 
+  // GNU 9.4 only stats -T when it actually spills to temporaries; inputs
+  // that fit in memory never touch it (sort-probes/p7-option-hints.out).
   Pipeline p;
   p.set_cwd(tmp.wpath());
   p.add(L"sort.exe", {L"--temporary-directory=missing", L"notadir.txt"});
   auto missing = p.run();
 
-  EXPECT_EQ(missing.exit_code, 2);
-  EXPECT_TRUE(missing.stderr_text.find("invalid temporary directory") !=
-              std::string::npos);
+  EXPECT_EQ(missing.exit_code, 0);
 
   Pipeline file_operand;
   file_operand.set_cwd(tmp.wpath());
   file_operand.add(L"sort.exe", {L"-T", L"notadir.txt"});
   auto not_directory = file_operand.run();
 
-  EXPECT_EQ(not_directory.exit_code, 2);
-  EXPECT_TRUE(not_directory.stderr_text.find("invalid temporary directory") !=
-              std::string::npos);
+  EXPECT_EQ(not_directory.exit_code, 0);
 }
 
 TEST(sort, sort_rejects_invalid_buffer_size_hint) {
@@ -412,8 +423,10 @@ TEST(sort, sort_rejects_invalid_buffer_size_hint) {
   p.add(L"sort.exe", {L"--buffer-size=bad"});
   auto r = p.run();
 
+  // GNU 9.4 xstrtol wording (sort-probes/p3-buffer-size.out).
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid buffer size") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("invalid --buffer-size argument 'bad'") !=
+              std::string::npos);
 }
 
 TEST(sort, sort_rejects_empty_buffer_size_hint) {
@@ -422,7 +435,8 @@ TEST(sort, sort_rejects_empty_buffer_size_hint) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid buffer size") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("invalid -S argument ''") !=
+              std::string::npos);
 }
 
 TEST(sort, sort_version_sort) {
@@ -692,8 +706,10 @@ TEST(sort, sort_random_sort_uses_source_and_groups_equal_keys) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
+  // GNU 9.4 order for this seed (sort-probes/p2-random-source.out):
+  // MD5(seed16 || key) byte order, identical keys stay grouped.
   EXPECT_EQ_TEXT(r.stdout_text,
-                 "charlie 1\nbravo 1\nbravo 2\nalpha 1\nalpha 2\n");
+                 "bravo 1\nbravo 2\nalpha 1\nalpha 2\ncharlie 1\n");
 }
 
 TEST(sort, sort_random_sort_reverse_writes_output_file) {
@@ -709,8 +725,32 @@ TEST(sort, sort_random_sort_reverse_writes_output_file) {
 
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "");
+  // GNU 9.4 order, reversed (sort-probes/p2-random-source.out).
   EXPECT_EQ_TEXT(tmp.read("out.txt"),
-                 "echo\ndelta\nfoxtrot\nalpha\nbravo\ncharlie\n");
+                 "delta\ncharlie\necho\nalpha\nfoxtrot\nbravo\n");
+}
+
+TEST(sort, sort_random_source_requires_sixteen_bytes) {
+  TempDir tmp;
+  tmp.write("s15.bin", "0123456789abcde");  // 15 bytes
+  tmp.write("s16.bin", "0123456789abcdef");  // exactly 16
+  tmp.write("r.txt", "a\nb\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sort.exe", {L"-R", L"--random-source", L"s15.bin", L"r.txt"});
+  auto short_source = p.run();
+
+  // GNU 9.4: sort: 's15.bin': end of file (probed p2b)
+  EXPECT_EQ(short_source.exit_code, 2);
+  EXPECT_TRUE(short_source.stderr_text.find("sort: 's15.bin': end of file") !=
+              std::string::npos);
+
+  Pipeline exact;
+  exact.set_cwd(tmp.wpath());
+  exact.add(L"sort.exe", {L"-R", L"--random-source", L"s16.bin", L"r.txt"});
+  auto exact_source = exact.run();
+  EXPECT_EQ(exact_source.exit_code, 0);
 }
 
 TEST(sort, sort_merge_sorted_inputs) {
@@ -854,8 +894,12 @@ TEST(sort, sort_files0_from_reads_nul_terminated_names) {
   EXPECT_EQ_TEXT(r.stdout_text, "a\nb\nc\nd\n");
 }
 
-TEST(sort, sort_uniq_pipeline_accepts_utf16le_stdin_with_bom) {
-  // Simulate PowerShell native pipeline output with UTF-16LE and per-line BOM.
+TEST(sort, sort_uniq_pipeline_utf16le_stdin_sorted_as_raw_bytes) {
+  // GNU 9.4 does not transcode: UTF-16LE stdin is sorted as raw bytes
+  // (sort-probes/p6-utf16.out, p10-utf16-pipe.sh). The 1.x applet decoded
+  // via read_text_stream; that decode retires with the rust2 wire (same
+  // byte-faithful contract as the wired grep). The expected bytes below
+  // are the GNU `sort | uniq -c` capture verbatim (p10b-utf16-pipe2.sh).
   std::u16string u16 = u"\ufeffdog\r\n\ufeffdog\r\n\ufeffcat\r\n";
   std::string bytes;
   bytes.reserve(u16.size() * 2);
@@ -871,8 +915,13 @@ TEST(sort, sort_uniq_pipeline_accepts_utf16le_stdin_with_bom) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("1 cat") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("2 dog") != std::string::npos);
+  const std::string gnu_pipe(
+      "      1 \0\n"
+      "      1 \0\377\376c\0a\0t\0\r\0\n"
+      "      1 \0\377\376d\0o\0g\0\r\0\n"
+      "      1 \377\376d\0o\0g\0\r\0\n",
+      69);
+  EXPECT_EQ(r.stdout_text, gnu_pipe);
 }
 
 TEST(sort, sort_preserves_nul_dense_input_without_encoding_bom) {
@@ -925,7 +974,27 @@ TEST(sort, sort_files0_from_rejects_empty_file_list) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("no input from list.bin") !=
+  // GNU quotes the list name with quoteaf (probed WSL coreutils 9.4:
+  // "sort: no input from 'list.bin'"); the 1.x applet printed it bare.
+  EXPECT_TRUE(r.stderr_text.find("no input from 'list.bin'") !=
+              std::string::npos);
+}
+
+TEST(sort, sort_files0_from_rejects_file_operand_combination) {
+  TempDir tmp;
+  tmp.write("a.txt", "a\n");
+  tmp.write_bytes("list.bin", {'a', '.', 't', 'x', 't', '\0'});
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"sort.exe", {L"--files0-from", L"list.bin", L"a.txt"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 2);
+  EXPECT_TRUE(r.stderr_text.find("extra operand 'a.txt'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "file operands cannot be combined with --files0-from") !=
               std::string::npos);
 }
 
@@ -1260,7 +1329,6 @@ TEST(sort, sort_buffer_size_forms_all_agree_issue1127) {
       {L"-S64", L"in.txt"},
       {L"-S1K", L"in.txt"},
       {L"-S1%", L"in.txt"},
-      {L"--buffer-size=2MiB", L"in.txt"},
   };
   for (const auto& args : arg_sets) {
     Pipeline p;
@@ -1270,6 +1338,17 @@ TEST(sort, sort_buffer_size_forms_all_agree_issue1127) {
     EXPECT_EQ(r.exit_code, 0);
     EXPECT_EQ_TEXT(r.stdout_text, expected);
   }
+
+  // GNU 9.4 has no IEC suffixes: --buffer-size=2MiB is an invalid suffix
+  // (sort-probes/p3b-buffer-long.out); the 1.x applet accepted it.
+  Pipeline mib;
+  mib.set_cwd(tmp.wpath());
+  mib.add(L"sort.exe", {L"--buffer-size=2MiB", L"in.txt"});
+  auto mib_result = mib.run();
+  EXPECT_EQ(mib_result.exit_code, 2);
+  EXPECT_TRUE(mib_result.stderr_text.find(
+                  "invalid suffix in --buffer-size argument '2MiB'") !=
+              std::string::npos);
 }
 
 TEST(sort, sort_stable_order_survives_tiny_buffer_issue1127) {
