@@ -2910,7 +2910,9 @@ TEST(ls, ls_invalid_time_style_fails) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 2);
-  EXPECT_TRUE(r.stderr_text.find("invalid --time-style argument 'bogus'") !=
+  // [GNU] 9.4 argmatch wording: "invalid argument 'bogus' for 'time style'"
+  // with the [posix-] style list (verified against the WSL oracle).
+  EXPECT_TRUE(r.stderr_text.find("invalid argument 'bogus' for 'time style'") !=
               std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("[posix-]full-iso") != std::string::npos);
 }
@@ -3756,12 +3758,21 @@ TEST(ls, ls_dired_emits_name_offsets_and_trailer) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"ls.exe", {L"--dired", L"-1", L"aa.txt", L"bb.txt"});
+  // [GNU] --dired records name byte ranges only in the long format
+  // (ls.c:2372-2374); -1/-D alone stay a no-op (verified 9.4).
+  p.add(L"ls.exe", {L"--dired", L"-l", L"aa.txt", L"bb.txt"});
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 0);
-  EXPECT_TRUE(r.stdout_text.find("aa.txt\nbb.txt\n") != std::string::npos);
-  EXPECT_TRUE(r.stdout_text.find("//DIRED// 0 6 7 13\n") != std::string::npos);
+  const size_t pos_aa = r.stdout_text.find("aa.txt");
+  const size_t pos_bb = r.stdout_text.find("bb.txt");
+  ASSERT_NE(pos_aa, std::string::npos);
+  ASSERT_NE(pos_bb, std::string::npos);
+  const std::string expected = "//DIRED// " + std::to_string(pos_aa) + " " +
+                               std::to_string(pos_aa + 6) + " " +
+                               std::to_string(pos_bb) + " " +
+                               std::to_string(pos_bb + 6) + "\n";
+  EXPECT_TRUE(r.stdout_text.find(expected) != std::string::npos);
   EXPECT_TRUE(r.stdout_text.find("//DIRED-OPTIONS// --quoting-style=literal") !=
               std::string::npos);
 }
@@ -3792,7 +3803,9 @@ TEST(ls, ls_hyperlink_rejects_invalid_when_with_gnu_list) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_TRUE(r.stderr_text.find("invalid --hyperlink argument 'bogus'") !=
+  // [GNU] 9.4 argmatch wording: "invalid argument 'bogus' for '--hyperlink'"
+  // (verified against the WSL oracle).
+  EXPECT_TRUE(r.stderr_text.find("invalid argument 'bogus' for '--hyperlink'") !=
               std::string::npos);
   EXPECT_TRUE(r.stderr_text.find("Valid arguments are:") != std::string::npos);
 }
@@ -4127,8 +4140,9 @@ TEST(ls, ls_color_attached_empty_is_invalid_issue1513) {
   p.add(L"ls.exe", {L"--color="});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 2);
-  // GNU 9.4 argmatch reports the empty prefix as ambiguous.
+  // [GNU] 9.4 argmatch reports the empty prefix as ambiguous and dies
+  // with the argmatch exit status 1 (verified against the WSL oracle).
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_TRUE(r.stderr_text.find("ambiguous argument ''") !=
               std::string::npos);
 }

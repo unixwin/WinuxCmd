@@ -205,9 +205,18 @@ fn scan(args: &[OsString], ctx: &Ctx) -> (Vec<Occ>, Vec<OsString>) {
     let mut operands: Vec<OsString> = Vec::new();
     let mut i = 0usize;
     let mut no_more = false;
+    // POSIXLY_CORRECT (glibc getopt): mere presence — an empty value
+    // counts — stops option scanning at the first non-option operand;
+    // every later argv word, "--" included, is an operand.
+    let posix = env(ctx, "POSIXLY_CORRECT").is_some();
     while i < args.len() {
         let arg = args[i].to_string_lossy().into_owned();
         if no_more {
+            operands.push(args[i].clone());
+            i += 1;
+            continue;
+        }
+        if posix && !operands.is_empty() {
             operands.push(args[i].clone());
             i += 1;
             continue;
@@ -514,7 +523,9 @@ fn argmatch<'a, T: PartialEq>(value: &str, table: &[(&'a str, T)]) -> Result<usi
     let mut hit: Option<usize> = None;
     let mut ambiguous = false;
     for (i, (name, v)) in table.iter().enumerate() {
-        if !value.is_empty() && name.starts_with(value) {
+        // An empty value is a prefix of every candidate -> ambiguous
+        // (gnulib argmatch; `ls --sort=` dies "ambiguous argument ''").
+        if name.starts_with(value) {
             match hit {
                 None => hit = Some(i),
                 Some(h) if table[h].1 == *v => hit = Some(h),
@@ -888,7 +899,7 @@ fn interpret(occs: &[Occ], io: &mut Io, ctx: &Ctx) -> Result<Cfg, Early> {
                         &tr!(
                             ctx,
                             "command.ls.error.invalid_line_width",
-                            "invalid line width \u{2018}{value}\u{2019}",
+                            "invalid line width: \u{2018}{value}\u{2019}",
                             value = v
                         ),
                     );
@@ -1090,6 +1101,12 @@ fn interpret(occs: &[Occ], io: &mut Io, ctx: &Ctx) -> Result<Cfg, Early> {
                     },
                 };
                 c.with_color = when == When::Always || (when == When::IfTty && tty_stdout());
+                if c.with_color {
+                    // ls.c:1686-1689: color disables tab padding in the
+                    // column formats. Ordered like decode_switches: a
+                    // later -T/TABSIZE still wins.
+                    c.tabsize_opt = Some(0);
+                }
             }
             "hyperlink" => {
                 let when = match val {
@@ -1354,6 +1371,11 @@ struct Entry {
     arg_dir: bool,
     /// -L/-H stat failure inside a listing: '?' placeholder fields.
     stat_failed: bool,
+    /// Resolved reparse-target spelling for a dereferenced directory
+    /// operand: an LX link has no Win32-traversable spelling, so
+    /// enumeration must run on the target while display keeps the
+    /// operand (ls.cpp probe_directory_operand_w lookup_target).
+    list_lookup: Option<String>,
 }
 
 #[cfg(windows)]
@@ -2055,6 +2077,10 @@ fn lex_collapse(path: &str) -> String {
     };
     let absolute = !prefix.is_empty() || rest.split('\\').next().is_some_and(|c| c.ends_with(':'));
     let min_comps = if !absolute { 0 } else { min_comps.max(1) };
+    // A trailing separator on a ROOT is the root itself: "C:\" must stay
+    // "C:\" — collapsing it to "C:" would name the drive's current
+    // directory instead (\\?\C: is rejected by the attribute probes).
+    let root_trailing = rest.ends_with('\\') || rest.ends_with('/');
     let mut stack: Vec<&str> = Vec::new();
     for part in rest.split('\\') {
         match part {
@@ -2073,7 +2099,11 @@ fn lex_collapse(path: &str) -> String {
             _ => stack.push(part),
         }
     }
-    format!("{}{}", prefix, stack.join("\\"))
+    let mut joined = stack.join("\\");
+    if root_trailing && stack.len() <= min_comps && !joined.ends_with('\\') {
+        joined.push('\\');
+    }
+    format!("{}{}", prefix, joined)
 }
 
 /// ls.cpp normalize_lookup_path: an all-separator operand is the root;
@@ -2156,6 +2186,22 @@ struct Probe {
 
 fn probe_path(ctx: &Ctx, path: &str) -> Probe {
     let lookup = resolve_bare_exe(ctx, &normalize_lookup_path(path));
+    // Pseudo-devices and the kernel-synthesized /dev nodes answer a
+    // fixed character-device record and must win over the Win32 probes:
+    // GetFileAttributesW("NUL") succeeds with FILE_ATTRIBUTE_ARCHIVE,
+    // which would misreport /dev/null as a regular file (#225, niubash#993).
+    if winux_core::path::resolve_pseudo_device(&lookup).is_some()
+        || winux_core::path::synthesized_device(&lookup).is_some()
+    {
+        return Probe {
+            fd: Fd {
+                attrs: ATTR_NORMAL | ATTR_DEVICE,
+                ..Fd::default()
+            },
+            found: true,
+            attrs_valid: true,
+        };
+    }
     let ext = api_path(ctx, &lookup);
     if let Some(fd) = plat::find_first(&ext) {
         return Probe {
@@ -2171,17 +2217,6 @@ fn probe_path(ctx: &Ctx, path: &str) -> Probe {
                 ..Fd::default()
             },
             found: false,
-            attrs_valid: true,
-        };
-    }
-    if let Some(dev) = winux_core::path::resolve_pseudo_device(&lookup) {
-        let _ = dev;
-        return Probe {
-            fd: Fd {
-                attrs: ATTR_NORMAL | ATTR_DEVICE,
-                ..Fd::default()
-            },
-            found: true,
             attrs_valid: true,
         };
     }
@@ -2343,15 +2378,31 @@ fn ls_error(io: &mut Io, msg: &str) {
 // literal where the C locale would emit \ooo).
 // ======================================================================
 
-/// Is `c` printable under the C.UTF-8 oracle? ASCII graphics plus every
-/// assigned non-format character; C0/C1 controls, format chars (Cf),
-/// line/paragraph separators, and noncharacters are not.
-fn is_print(c: char) -> bool {
+/// Effective locale codeset: LC_ALL > LC_CTYPE > LANG, first non-empty
+/// wins; none set means the C locale (setlocale(LC_ALL, "") fallback).
+/// `utf8` selects the multibyte printability table — gnulib quotearg's
+/// iswprint holds for é/CJK/emoji only under a UTF-8 codeset.
+fn utf8_locale(ctx: &Ctx) -> bool {
+    let pick = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|k| env(ctx, k).filter(|v| !v.is_empty()));
+    pick.is_some_and(|v| {
+        let v = v.to_ascii_lowercase();
+        v.contains("utf-8") || v.contains("utf8")
+    })
+}
+
+/// Is `c` printable under the effective locale? ASCII graphics plus —
+/// only for a UTF-8 codeset — every assigned non-format character; C0/C1
+/// controls, format chars (Cf), line/paragraph separators, and
+/// noncharacters are not. Under the C locale every non-ASCII character is
+/// non-printable (gnulib iswprint in the POSIX locale).
+fn is_print(c: char, utf8: bool) -> bool {
     let u = c as u32;
     if (0x20..0x7f).contains(&u) {
         return true;
     }
-    if u < 0x20 || (0x7f..0xa0).contains(&u) {
+    if !utf8 || u < 0x20 || (0x7f..0xa0).contains(&u) {
         return false;
     }
     // Cf format chars, Zl/Zp, noncharacters, unassigned private areas stay
@@ -2379,7 +2430,7 @@ fn push_utf8_octal(out: &mut String, c: char) {
     }
 }
 
-fn c_escape_into(out: &mut String, c: char) {
+fn c_escape_into(out: &mut String, c: char, utf8: bool) {
     match c {
         '\u{7}' => out.push_str("\\a"),
         '\u{8}' => out.push_str("\\b"),
@@ -2391,7 +2442,7 @@ fn c_escape_into(out: &mut String, c: char) {
         '\\' => out.push_str("\\\\"),
         '"' => out.push_str("\\\""),
         _ => {
-            if is_print(c) {
+            if is_print(c, utf8) {
                 out.push(c);
             } else if (c as u32) < 0x80 {
                 append_octal(out, c as u8);
@@ -2404,10 +2455,10 @@ fn c_escape_into(out: &mut String, c: char) {
 
 /// escape_display_name: the inner text of c_quoting_style (escapes `"` and
 /// `\`, named controls, octal for non-printables).
-fn escape_display_name(name: &str) -> String {
+fn escape_display_name(name: &str, utf8: bool) -> String {
     let mut out = String::with_capacity(name.len() * 2);
     for c in name.chars() {
-        c_escape_into(&mut out, c);
+        c_escape_into(&mut out, c, utf8);
     }
     out
 }
@@ -2415,7 +2466,7 @@ fn escape_display_name(name: &str) -> String {
 /// escape_quoting_style (-b): same escapes except `"` stays literal and
 /// the space (plus indicator chars registered by ls.c:2364-2369 when
 /// indicator_style >= file_type) is backslash-quoted.
-fn escape_style_display_name(name: &str, extra_chars: &str) -> String {
+fn escape_style_display_name(name: &str, extra_chars: &str, utf8: bool) -> String {
     let mut out = String::with_capacity(name.len() * 2);
     for c in name.chars() {
         if c == ' ' || extra_chars.contains(c) {
@@ -2425,29 +2476,44 @@ fn escape_style_display_name(name: &str, extra_chars: &str) -> String {
         }
         match c {
             '"' => out.push('"'),
-            _ => c_escape_into(&mut out, c),
+            _ => c_escape_into(&mut out, c, utf8),
         }
     }
     out
 }
 
-/// locale/clocale quoting under the UTF-8 oracle: ‘...’ marks, named
-/// escapes and octal for non-printables, `'` literal (probed 9.4:
-/// ‘it's.txt’ keeps the apostrophe).
-fn locale_quote_display_name(name: &str) -> String {
-    let mut out = String::from("\u{2018}");
+/// locale/clocale quoting (gnulib quotearg.c locale_quoting_style /
+/// clocale_quoting_style): the quote marks come from the locale — ‘...’
+/// under a UTF-8 codeset for BOTH styles, and in the C locale '...'
+/// (locale) vs "..." (clocale, the c_quoting_style form). Inside, `'`
+/// is escaped only when it is the active quote char (the C-locale
+/// '...' form renders it \'), `"` stays literal under the ‘...’/‘...'’
+/// forms, `\` always doubles, and non-printables take the named/octal
+/// escapes (probed 9.4: C.UTF-8 ‘a'b’ keeps the apostrophe, C 'a\'b').
+fn locale_quote_display_name(name: &str, utf8: bool, clocale: bool) -> String {
+    if !utf8 && clocale {
+        return format!("\"{}\"", escape_display_name(name, utf8));
+    }
+    let (open, close) = if utf8 {
+        ('\u{2018}', '\u{2019}')
+    } else {
+        ('\'', '\'')
+    };
+    let mut out = String::new();
+    out.push(open);
     for c in name.chars() {
         match c {
             '"' => out.push('"'),
+            '\'' if !utf8 => out.push_str("\\'"),
             '\'' => out.push('\''),
-            _ => c_escape_into(&mut out, c),
+            _ => c_escape_into(&mut out, c, utf8),
         }
     }
-    out.push('\u{2019}');
+    out.push(close);
     out
 }
 
-fn shell_special_at(c: char, index: usize, len: usize) -> bool {
+fn shell_special_at(c: char, index: usize, len: usize, utf8: bool) -> bool {
     if c == '#' || c == '~' {
         return index == 0;
     }
@@ -2478,13 +2544,13 @@ fn shell_special_at(c: char, index: usize, len: usize) -> bool {
             | '|'
             | '!'
             | '\\'
-    ) || !is_print(c)
+    ) || !is_print(c, utf8)
 }
 
 /// quotearg's shell/C compatibility test: the apostrophe form is only
 /// eligible for the shorter "C" re-render when no other character would
 /// need escaping inside "...".
-fn shell_and_c_compatible(c: char) -> bool {
+fn shell_and_c_compatible(c: char, utf8: bool) -> bool {
     !matches!(
         c,
         '!' | '"'
@@ -2502,17 +2568,17 @@ fn shell_and_c_compatible(c: char) -> bool {
             | '`'
             | '|'
             | '\\'
-    ) && is_print(c)
+    ) && is_print(c, utf8)
 }
 
 /// shell_quoting_style / shell-always: single quotes with the '\'' splice
 /// for apostrophes; a name containing ' where every char is C+shell safe
 /// re-renders as the C string "..." (quotearg.c encountered_single_quote).
-fn shell_quote_display_name(name: &str, always: bool) -> String {
+fn shell_quote_display_name(name: &str, always: bool, utf8: bool) -> String {
     let mut quote = always;
     if !quote {
         for (i, c) in name.chars().enumerate() {
-            if shell_special_at(c, i, name.chars().count()) {
+            if shell_special_at(c, i, name.chars().count(), utf8) {
                 quote = true;
                 break;
             }
@@ -2521,7 +2587,7 @@ fn shell_quote_display_name(name: &str, always: bool) -> String {
     if !quote {
         return name.to_string();
     }
-    if name.contains('\'') && name.chars().all(shell_and_c_compatible) {
+    if name.contains('\'') && name.chars().all(|c| shell_and_c_compatible(c, utf8)) {
         return format!("\"{name}\"");
     }
     let mut out = String::from("'");
@@ -2541,10 +2607,17 @@ fn shell_quote_display_name(name: &str, always: bool) -> String {
 /// 'tab'$'\t''name'). `always` is GNU's shell_escape_always_quoting_style —
 /// the quoteaf() shape mv/cp diagnostics use for operands (#374).
 pub(crate) fn shell_escape_quote_display_name(name: &str, always: bool) -> String {
+    shell_escape_quote_display_name_l(name, always, true)
+}
+
+/// `utf8` selects the locale printability table (see [`is_print`]). The
+/// pub(crate) entry keeps the C.UTF-8 oracle default for the mv/cp
+/// diagnostic callers that have no locale plumbing.
+fn shell_escape_quote_display_name_l(name: &str, always: bool, utf8: bool) -> String {
     let mut quote = always;
     if !quote {
         for (i, c) in name.chars().enumerate() {
-            if shell_special_at(c, i, name.chars().count()) {
+            if shell_special_at(c, i, name.chars().count(), utf8) {
                 quote = true;
                 break;
             }
@@ -2553,14 +2626,14 @@ pub(crate) fn shell_escape_quote_display_name(name: &str, always: bool) -> Strin
     if !quote {
         return name.to_string();
     }
-    if name.contains('\'') && name.chars().all(shell_and_c_compatible) {
+    if name.contains('\'') && name.chars().all(|c| shell_and_c_compatible(c, utf8)) {
         return format!("\"{name}\"");
     }
     let mut out = String::from("'");
     for c in name.chars() {
         if c == '\'' {
             out.push_str("'\\''");
-        } else if is_print(c) || c == '\u{7f}' {
+        } else if is_print(c, utf8) || c == '\u{7f}' {
             out.push(c);
         } else {
             // close quote, emit $'<escape>', reopen
@@ -2592,24 +2665,25 @@ pub(crate) fn shell_escape_quote_display_name(name: &str, always: bool) -> Strin
     out
 }
 
-fn apply_quoting(name: &str, q: Quoting, indicator_extra: &str) -> String {
+fn apply_quoting(name: &str, q: Quoting, indicator_extra: &str, utf8: bool) -> String {
     match q {
         Quoting::Literal => name.to_string(),
-        Quoting::Escape => escape_style_display_name(name, indicator_extra),
-        Quoting::C => format!("\"{}\"", escape_display_name(name)),
+        Quoting::Escape => escape_style_display_name(name, indicator_extra, utf8),
+        Quoting::C => format!("\"{}\"", escape_display_name(name, utf8)),
         Quoting::CMaybe => {
-            let esc = escape_display_name(name);
+            let esc = escape_display_name(name, utf8);
             if esc != name {
                 format!("\"{esc}\"")
             } else {
                 esc
             }
         }
-        Quoting::Shell => shell_quote_display_name(name, false),
-        Quoting::ShellAlways => shell_quote_display_name(name, true),
-        Quoting::ShellEscape => shell_escape_quote_display_name(name, false),
-        Quoting::ShellEscapeAlways => shell_escape_quote_display_name(name, true),
-        Quoting::Locale | Quoting::Clocale => locale_quote_display_name(name),
+        Quoting::Shell => shell_quote_display_name(name, false, utf8),
+        Quoting::ShellAlways => shell_quote_display_name(name, true, utf8),
+        Quoting::ShellEscape => shell_escape_quote_display_name_l(name, false, utf8),
+        Quoting::ShellEscapeAlways => shell_escape_quote_display_name_l(name, true, utf8),
+        Quoting::Locale => locale_quote_display_name(name, utf8, false),
+        Quoting::Clocale => locale_quote_display_name(name, utf8, true),
     }
 }
 
@@ -3526,15 +3600,28 @@ fn wildcard_match(pattern: &str, name: &str) -> bool {
 // Entry model + permission string + display name assembly.
 // ======================================================================
 
-/// get_permissions_string (ls.cpp): the synthesized 10-char POSIX form —
-/// 'c' for character devices, 'l' for reparse links, 'd' for plain dirs,
-/// '-' otherwise; 'rwx' triplets with 'w' removed under READONLY and 'x'
-/// absent on devices.
-fn permissions_string(fd: &Fd, is_fifo: bool) -> String {
-    let mut p = String::with_capacity(10);
-    p.push(if is_fifo {
+/// Executable-extension heuristic of the shared Windows mode model —
+/// the same set `test -x`, `find -perm` and `stat` honor (#1777):
+/// exe/com/bat/cmd judged on the leaf's last extension, case-insensitive.
+fn exec_mode_name(leaf: &str) -> bool {
+    let ext = match leaf.rfind('.') {
+        Some(d) if d + 1 < leaf.len() => leaf[d + 1..].to_lowercase(),
+        _ => return false,
+    };
+    crate::modemap::EXEC_EXTS.iter().any(|x| *x == ext)
+}
+
+/// get_permissions_string (ls.cpp #1777 single mode model): the
+/// synthesized 10-char POSIX form — 'p' fifo, 'c' character device,
+/// 'l' reparse link, 'd' plain dir, '-' regular — over the same mode
+/// bits `modemap::current_mode` reconstructs: links 0777 and devices
+/// 0666 unconditionally, directories and executable-extension files
+/// 0755, other regulars 0644, with READONLY clearing the write bits.
+fn permissions_string(fd: &Fd, is_fifo: bool, leaf: &str) -> String {
+    let chardev = fd.is_chardev();
+    let kind = if is_fifo {
         'p'
-    } else if fd.is_chardev() {
+    } else if chardev {
         'c'
     } else if fd.is_reparse() {
         'l'
@@ -3542,13 +3629,25 @@ fn permissions_string(fd: &Fd, is_fifo: bool) -> String {
         'd'
     } else {
         '-'
-    });
-    let w = if fd.read_only() { '-' } else { 'w' };
-    let x = if fd.is_chardev() { '-' } else { 'x' };
-    for _ in 0..3 {
-        p.push('r');
-        p.push(w);
-        p.push(x);
+    };
+    let mode: u32 = if chardev {
+        0o666
+    } else if kind == 'l' {
+        0o777
+    } else {
+        let mut m = if fd.read_only() { 0o444 } else { 0o644 };
+        if kind == 'd' || (kind == '-' && exec_mode_name(leaf)) {
+            m |= 0o111;
+        }
+        m
+    };
+    let mut p = String::with_capacity(10);
+    p.push(kind);
+    for shift in [6u32, 3, 0] {
+        let b = (mode >> shift) & 7;
+        p.push(if b & 4 != 0 { 'r' } else { '-' });
+        p.push(if b & 2 != 0 { 'w' } else { '-' });
+        p.push(if b & 1 != 0 { 'x' } else { '-' });
     }
     p
 }
@@ -3569,24 +3668,65 @@ fn should_deref(deref: Deref, fd: &Fd, command_line: bool) -> bool {
     }
 }
 
-/// Canonicalize through the filesystem (the deref probe): returns the
-/// resolved Fd for the TARGET, or None when the link dangles.
-fn dereferenced_fd(ctx: &Ctx, path: &str, orig: &Fd) -> Option<(Fd, String)> {
-    let resolved = std::fs::canonicalize(api_path(ctx, path))
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())?;
-    let ext = if resolved.starts_with(r"\\?\") {
-        resolved.clone()
+/// Strip the \\?\ extended prefix (and fold \\?\UNC\ back to \\) so a
+/// canonicalized path can feed the operand boundary again.
+fn unextend(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    p.strip_prefix(r"\\?\").unwrap_or(p).to_string()
+}
+
+/// resolve_dereference_target_w (ls.cpp:1306): -L/-H dereference is
+/// stat(2) — it follows the whole link chain. Win32 traverses junctions
+/// and native symlinks, but an LX reparse point (tag 0xA000001D, the
+/// shape WSL stores on a Windows volume) is opaque to
+/// canonicalize/CreateFileW, so fall back to the stored reparse target
+/// and probe that path; a target that is itself a link is followed
+/// again, bounded by the kernel's ELOOP limit.
+fn resolve_deref_target(ctx: &Ctx, path: &str, depth: u32) -> Option<String> {
+    if depth >= 40 {
+        return None;
+    }
+    if let Ok(canon) = std::fs::canonicalize(api_path(ctx, path)) {
+        return Some(unextend(&canon.to_string_lossy()));
+    }
+    let stored = plat::read_reparse_target(&api_path(ctx, path))?;
+    let tp = std::path::Path::new(&stored);
+    let resolved = if tp.is_absolute() {
+        stored
     } else {
-        api_path(ctx, &resolved)
+        let parent = std::path::Path::new(path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        join_path(&parent, &stored)
     };
+    let native = normalize_slashes(&resolved);
+    let ext = api_path(ctx, &native);
+    let attrs = plat::attributes_ex(&ext)
+        .map(|f| f.attrs)
+        .or_else(|| plat::attributes(&ext))?;
+    if attrs & ATTR_REPARSE != 0 {
+        return resolve_deref_target(ctx, &native, depth + 1);
+    }
+    Some(native)
+}
+
+/// Canonicalize through the filesystem (the deref probe): returns the
+/// resolved Fd for the TARGET plus the resolved spelling (for directory
+/// operands whose link target must be enumerated), or None when the
+/// link dangles.
+fn dereferenced_fd(ctx: &Ctx, path: &str, orig: &Fd) -> Option<(Fd, String, String)> {
+    let resolved = resolve_deref_target(ctx, path, 0)?;
+    let ext = api_path(ctx, &resolved);
     let fd = plat::attributes_ex(&ext).or_else(|| plat::find_first(&ext))?;
     let name = std::path::Path::new(&resolved)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let _ = orig;
-    Some((fd, name))
+    Some((fd, name, resolved))
 }
 
 /// Effective display metadata: the lstat'd find_data unless the deref
@@ -3594,7 +3734,7 @@ fn dereferenced_fd(ctx: &Ctx, path: &str, orig: &Fd) -> Option<(Fd, String)> {
 /// resolve_display_entry).
 fn display_fd(ctx: &Ctx, entry: &Entry, deref: Deref) -> (Fd, bool) {
     if should_deref(deref, &entry.fd, entry.command_line) {
-        if let Some((fd, _)) = dereferenced_fd(ctx, &entry.full_path, &entry.fd) {
+        if let Some((fd, _, _)) = dereferenced_fd(ctx, &entry.full_path, &entry.fd) {
             return (fd, true);
         }
         return (entry.fd, false); // dangling: caller reports
@@ -3623,13 +3763,19 @@ fn build_display_name(
     } else {
         ""
     };
-    let mut rendered = apply_quoting(name, cfg.quoting, extra);
+    let mut rendered = apply_quoting(name, cfg.quoting, extra, cfg.quoting_utf8);
     // -q / non-tty default off, tty default on (qmark_funny_chars):
     // whatever control characters survived quoting render as '?'.
     let qmark = |s: &str| -> String {
         if cfg.hide_control {
             s.chars()
-                .map(|c| if is_print(c) || c == ' ' { c } else { '?' })
+                .map(|c| {
+                    if is_print(c, cfg.quoting_utf8) || c == ' ' {
+                        c
+                    } else {
+                        '?'
+                    }
+                })
                 .collect()
         } else {
             s.to_string()
@@ -3642,14 +3788,8 @@ fn build_display_name(
     // decision, and the reparse read answers (#1639).
     if long_format && fd.is_reparse() && !should_deref(cfg.deref, fd, command_line) {
         if let Some(t) = read_link_display(ctx, full_path, fd) {
-            let qd = qmark(&apply_quoting(&t.display, cfg.quoting, ""));
+            let qd = qmark(&apply_quoting(&t.display, cfg.quoting, "", cfg.quoting_utf8));
             target = Some((qd, t.resolved));
-        }
-    }
-    if cfg.with_hyperlink {
-        rendered = hyperlink_wrap(&rendered, full_path);
-        if let Some((d, r)) = &target {
-            target = Some((hyperlink_wrap(d, r), r.clone()));
         }
     }
     let indicator_extra: String = match &target {
@@ -3658,8 +3798,9 @@ fn build_display_name(
             indicator_suffix(cfg.indicator, name, fd, is_fifo).to_string()
         }
         Some((_, resolved)) => {
-            // The indicator reflects the TARGET's type (GNU prints it
-            // after the target in `name -> target/`).
+            // The indicator reflects the TARGET's type and GNU prints it
+            // after the target in `name -> target/` — never on the link
+            // name itself.
             let p = probe_path(ctx, resolved);
             if p.found || p.attrs_valid {
                 let tf = p.fd;
@@ -3674,8 +3815,18 @@ fn build_display_name(
             }
         }
     };
-    let name_width = display_width(&rendered) + display_width(&indicator_extra);
-    rendered.push_str(&indicator_extra);
+    if let Some((d, _)) = &mut target {
+        d.push_str(&indicator_extra);
+    } else {
+        rendered.push_str(&indicator_extra);
+    }
+    if cfg.with_hyperlink {
+        rendered = hyperlink_wrap(&rendered, full_path);
+        if let Some((d, r)) = &mut target {
+            *d = hyperlink_wrap(d, r);
+        }
+    }
+    let name_width = display_width(&rendered);
     DisplayName {
         rendered,
         target,
@@ -3878,6 +4029,7 @@ struct Resolved {
     time_style: TimeStyle,
     time_custom: String,
     quoting: Quoting,
+    quoting_utf8: bool,
     hide_control: bool,
     indicator: Indicator,
     deref: Deref,
@@ -4093,6 +4245,7 @@ fn resolve(c: &Cfg, ctx: &Ctx, io: &mut Io) -> Result<Resolved, u32> {
         time_style,
         time_custom,
         quoting,
+        quoting_utf8: utf8_locale(ctx),
         hide_control,
         indicator: c.indicator,
         deref,
@@ -4175,8 +4328,8 @@ fn entry_cmp(a: &Entry, b: &Entry, cfg: &Resolved) -> Ordering {
             .cmp(ext_raw(&b.name))
             .then_with(|| a.name.cmp(&b.name)),
         Sort::Width => {
-            let wa = display_width(&apply_quoting(&a.name, cfg.quoting, ""));
-            let wb = display_width(&apply_quoting(&b.name, cfg.quoting, ""));
+            let wa = display_width(&apply_quoting(&a.name, cfg.quoting, "", cfg.quoting_utf8));
+            let wb = display_width(&apply_quoting(&b.name, cfg.quoting, "", cfg.quoting_utf8));
             wa.cmp(&wb).then_with(|| a.name.cmp(&b.name))
         }
         Sort::None => Ordering::Equal,
@@ -4552,6 +4705,10 @@ fn collect_entries(
         if should_deref(cfg.deref, &fd, false) && dereferenced_fd(ctx, &full_path, &fd).is_none() {
             let joined = if display_name.is_empty() {
                 full_path.clone()
+            } else if display_name == "." {
+                // GNU attach() elides a "." directory: `ls -lL .` reports
+                // "cannot access 'dangling'", not "'./dangling'".
+                name.clone()
             } else {
                 format!(
                     "{}{}{}",
@@ -4584,6 +4741,7 @@ fn collect_entries(
             command_line: false,
             arg_dir: false,
             stat_failed,
+            list_lookup: None,
         });
     }
     Some(entries)
@@ -4730,7 +4888,11 @@ fn print_long_entries(
         }
         let (disp, _) = display_fd(ctx, e, cfg.deref);
         let is_fifo = disp.system() && is_winux_fifo(ctx, &e.full_path);
-        let mut perms = permissions_string(&disp, is_fifo);
+        let perm_leaf = std::path::Path::new(&e.full_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| e.name.clone());
+        let mut perms = permissions_string(&disp, is_fifo, &perm_leaf);
         if perms.starts_with('-') && is_fifo {
             perms.replace_range(0..1, "p");
         }
@@ -4953,9 +5115,13 @@ fn gobble_operand(ctx: &Ctx, path: &str, c: &Cfg, cfg: &Resolved, io: &mut Io) -
     // operand-level deref for classification: the effective stat decides
     // dir-vs-file the way gobble_file's do_stat does (ls.c:1696-1700).
     let mut classify_fd = fd;
+    let mut list_lookup = None;
     if should_deref(cfg.deref, &fd, true) {
         match dereferenced_fd(ctx, &lookup, &fd) {
-            Some((d, _)) => classify_fd = d,
+            Some((d, _, resolved)) => {
+                classify_fd = d;
+                list_lookup = Some(resolved);
+            }
             None => {
                 if cfg.deref == Deref::All || cfg.deref == Deref::CmdlineAll {
                     // -L/-H on a dangling operand: stat() failed (GNU
@@ -4977,7 +5143,10 @@ fn gobble_operand(ctx: &Ctx, path: &str, c: &Cfg, cfg: &Resolved, io: &mut Io) -
             }
         }
     }
-    let arg_dir = classify_fd.is_dir() && !c.immediate_dirs;
+    // GNU filetype: a non-dereferenced reparse point is arg_symlink, not
+    // arg_directory — `ls -l link` prints `link -> target`, it does not
+    // extract the target's contents (only a stat()'d plain dir queues).
+    let arg_dir = classify_fd.is_dir() && !classify_fd.is_reparse() && !c.immediate_dirs;
     Some(Entry {
         name: path.to_string(),
         full_path: lookup,
@@ -4985,6 +5154,7 @@ fn gobble_operand(ctx: &Ctx, path: &str, c: &Cfg, cfg: &Resolved, io: &mut Io) -
         command_line: true,
         arg_dir,
         stat_failed: false,
+        list_lookup,
     })
 }
 
@@ -5049,6 +5219,7 @@ fn process_paths(
                 minor: false,
             };
             let disp = make_generic_display(&d.name);
+            let lookup = d.list_lookup.as_deref().unwrap_or(&d.full_path);
             list_recursive(
                 out,
                 ctx,
@@ -5058,7 +5229,7 @@ fn process_paths(
                 cs,
                 &mut visited,
                 &disp,
-                &d.full_path,
+                lookup,
                 true,
                 &mut res,
             );
@@ -5075,7 +5246,8 @@ fn process_paths(
                 out.p(&disp);
                 out.p(":\n");
             }
-            let r = list_directory(out, ctx, c, cfg, colors, cs, &d.name, &d.full_path);
+            let lookup = d.list_lookup.as_deref().unwrap_or(&d.full_path);
+            let r = list_directory(out, ctx, c, cfg, colors, cs, &d.name, lookup);
             success &= r.ok;
             minor |= r.minor;
         }
