@@ -582,19 +582,23 @@ TEST(tail, tail_follow_option_recognized) {
   EXPECT_TRUE(r.stdout_text.find("--follow") != std::string::npos);
 }
 
-TEST(tail, tail_use_polling_option_is_recognized) {
+TEST(tail, tail_use_polling_is_unrecognized_like_gnu) {
   TempDir tmp;
   tmp.write("a.txt", "line1\nline2\n");
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"tail.exe",
-        {L"--debug", L"--use-polling", L"-f", L"--pid", L"999999", L"a.txt"});
+  p.add(L"tail.exe", {L"--use-polling", L"-n", L"1", L"a.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
-  EXPECT_TRUE(r.stderr_text.find("polling follow implementation") !=
+  // [GNU] coreutils 9.4 tail.c long_options[] (tail.c:237) has no
+  // --use-polling; the 1.x extension is retired. Probed WSL 9.4:
+  // "tail: unrecognized option '--use-polling'", rc 1.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("tail: unrecognized option '--use-polling'") !=
+              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("Try 'tail --help' for more information.") !=
               std::string::npos);
 }
 
@@ -604,14 +608,20 @@ TEST(tail, tail_follow_mode_last_occurrence_wins_to_descriptor) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"tail.exe", {L"--debug", L"-F", L"--follow=descriptor", L"--pid",
+  p.add(L"tail.exe", {L"-F", L"--follow=descriptor", L"--pid",
                       L"999999", L"a.txt"});
   auto r = p.run();
 
+  // [GNU] each -f/--follow/-F ASSIGNS the mode in argv order
+  // (tail.c:2185-2193). -F first sets retry+name; the later
+  // --follow=descriptor wins, so --retry is only effective for the
+  // initial open and GNU warns (probed WSL 9.4).
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
-  EXPECT_TRUE(r.stderr_text.find("following by descriptor") !=
-              std::string::npos);
+  EXPECT_TRUE(
+      r.stderr_text.find(
+          "tail: warning: --retry only effective for the initial open") !=
+      std::string::npos);
 }
 
 TEST(tail, tail_follow_mode_last_occurrence_wins_to_name) {
@@ -620,13 +630,16 @@ TEST(tail, tail_follow_mode_last_occurrence_wins_to_name) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
-  p.add(L"tail.exe", {L"--debug", L"--follow=descriptor", L"-F", L"--pid",
+  p.add(L"tail.exe", {L"--follow=descriptor", L"-F", L"--pid",
                       L"999999", L"a.txt"});
   auto r = p.run();
 
+  // [GNU] the later -F wins (name+retry). --retry is now effective, so
+  // the descriptor-only warning must be absent (probed WSL 9.4: empty
+  // stderr).
   EXPECT_EQ(r.exit_code, 0);
   EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
-  EXPECT_TRUE(r.stderr_text.find("following by name") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.empty());
 }
 
 TEST(tail, tail_retry_and_pid_follow_missing_file_until_it_appears) {
@@ -648,8 +661,22 @@ TEST(tail, tail_retry_and_pid_follow_missing_file_until_it_appears) {
   auto r = p.run();
   writer.join();
 
-  EXPECT_EQ(r.exit_code, 0);
+  // [GNU] -f --retry gives descriptor mode, so the initial open failure
+  // is only retried; once the name appears it is read, but the run's
+  // status stays the initial-open failure (the polling fallback exits
+  // with tail.c's `ok`, probed WSL 9.4: rc 1 with the data on stdout).
+  EXPECT_EQ(r.exit_code, 1);
   EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
+  EXPECT_TRUE(
+      r.stderr_text.find(
+          "tail: warning: --retry only effective for the initial open") !=
+      std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "tail: cannot open 'live.txt' for reading: No such file or "
+                  "directory") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find(
+                  "tail: 'live.txt' has appeared;  following new file") !=
+              std::string::npos);
 }
 
 TEST(tail, tail_repeated_pid_last_wins) {
@@ -687,7 +714,7 @@ TEST(tail, tail_repeated_pid_last_wins) {
   EXPECT_TRUE(r.stdout_text.find("after-short-pid\n") != std::string::npos);
 }
 
-TEST(tail, tail_debug_reports_follow_mode_to_stderr_only) {
+TEST(tail, tail_debug_is_unrecognized_like_gnu) {
   TempDir tmp;
   tmp.write("live.txt", "line1\nline2\n");
 
@@ -696,11 +723,14 @@ TEST(tail, tail_debug_reports_follow_mode_to_stderr_only) {
   p.add(L"tail.exe", {L"--debug", L"-f", L"--pid", L"999999", L"live.txt"});
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 0);
-  EXPECT_EQ_TEXT(r.stdout_text, "line1\nline2\n");
-  EXPECT_TRUE(r.stderr_text.find("polling follow implementation") !=
+  // [GNU] coreutils 9.4 tail.c long_options[] (tail.c:237) has no --debug
+  // (it arrives upstream after the 9.4 oracle); the 1.x follow diagnostic
+  // extension is retired. Probed WSL 9.4: rc 1, stderr only.
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("tail: unrecognized option '--debug'") !=
               std::string::npos);
-  EXPECT_TRUE(r.stderr_text.find("following by descriptor") !=
+  EXPECT_TRUE(r.stderr_text.find("Try 'tail --help' for more information.") !=
               std::string::npos);
 }
 
@@ -883,6 +913,11 @@ TEST(tail, tail_zero_terminated_multi_file_headers) {
 }
 
 TEST(tail, tail_invalid_count_message_matches_gnu) {
+  // [GNU] quotearg is locale-shaped: LC_ALL=C prints 'xx', a UTF-8 locale
+  // prints the curly form. The differential oracle pins LC_ALL=C
+  // (runner.sh ORACLE_LOCALE) and the 1.x C++ tail emits that ASCII shape,
+  // so the diagnostics match the C-locale oracle byte for byte — the
+  // reverted UTF-8 re-pin broke regressions/110-class comparisons.
   Pipeline lines;
   lines.add(L"tail.exe", {L"-n", L"xx"});
   auto r = lines.run();
@@ -976,5 +1011,8 @@ TEST(tail, tail_follow_attached_empty_is_invalid_issue1513) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("for '--follow'") != std::string::npos);
+  // quote-agnostic: GNU prints curly quotes under the UTF-8 locale the
+  // port targets (p-tail-followeq.sh); pin the argmatch wording only.
+  EXPECT_TRUE(r.stderr_text.find("ambiguous argument") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("--follow") != std::string::npos);
 }

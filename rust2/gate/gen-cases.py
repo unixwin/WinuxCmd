@@ -2268,6 +2268,81 @@ tail_rows = [
      ["-z", "-n", "2", "-f", "--pid=2147483647", "f"]),
     ("tl71-partial-last-line", "strict", "printf 'a\\nb' > p", "", "", ["-n", "1", "p"]),
     ("tl72-dir-header-no-follow", "strict", "mkdir d; " + HEAD_TAIL_FILE, "", "", ["d", "f"]),
+    # WP-I option-order pins (#1811). The TSV carried these rows without
+    # the generator (that lane edited the TSV directly); backfilled here
+    # so regenerating the table is lossless.
+    ("tl73-cn-lines-win", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-c", "5", "-n", "1", "f"]),
+    ("tl74-nc-bytes-win", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "1", "-c", "5", "f"]),
+    ("tl75-nc-lines-win", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "2", "-c", "3", "f"]),
+    ("tl76-cn-lines-win2", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-c", "3", "-n", "2", "f"]),
+    ("tl77-fromstart-sticky", "strict", "printf 'abcdefg' > b", "", "", ["-n", "+3", "-c", "2", "b"]),
+    ("tl78-fromstart-then-lines", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-c", "+3", "-n", "2", "f"]),
+    ("tl79-plus-sticky-clear", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "+2", "-n", "1", "f"]),
+    ("tl80-n1-then-plus2", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "1", "-n", "+2", "f"]),
+    ("tl81-obsolete-c", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "", ["-3c", "f"]),
+    ("tl82-obsolete-b", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "", ["-3b", "f"]),
+    ("tl83-obsolete-l", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "", ["-3l", "f"]),
+    ("tl84-obsolete-dashdash", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-5", "--", "f"]),
+    ("tl85-obsolete-plus", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "", ["+2", "f"]),
+    ("tl86-invalid-context", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-5", "-c", "3", "f"]),
+    ("tl87-invalid-context2", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f; printf 'x\\n' > g", "", "",
+     ["-5", "f", "g"]),
+    ("tl88-obsolete-overflow", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-99999999999999999999", "f"]),
+    ("tl89-obsolete-scale-overflow", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-9999999999999999999b", "f"]),
+    ("tl90-count-eoverflow", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "9999999999999999999b", "f"]),
+    ("tl91-count-max-ok", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-c", "18446744073709551615", "f"]),
+    ("tl92-count-overflow", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-c", "18446744073709551616", "f"]),
+    ("tl93-invalid-before-help", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "x", "--help"]),
+    ("tl94-help-before-invalid", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["--help", "-n", "x"]),
+    ("tl95-invalid-before-digit", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "x", "-2", "f"]),
+    ("tl96-invalid-before-bogus", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "x", "--bogus", "f"]),
+    ("tl97-pid-order-first", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["--pid=x", "-n", "1", "f"]),
+    ("tl98-lines-before-pid", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-n", "x", "--pid=1", "f"]),
+    ("tl99-qv-last-wins", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-q", "-v", "f", "f"]),
+    ("tl100-vq-last-wins", "strict", "printf 'h1\\nh2\\nh3\\nh4\\nh5\\n' > f", "", "",
+     ["-v", "-q", "f", "f"]),
+    # 1.x follow-diagnostic extensions retired: coreutils 9.4
+    # tail.c:237 long_options[] has neither --debug nor --use-polling
+    # (probed WSL 9.4: unrecognized option, rc 1).
+    ("tl101-debug-retired", "strict", HEAD_TAIL_FILE, "", "", ["--debug", "-n", "1", "f"]),
+    ("tl102-use-polling-retired", "strict", HEAD_TAIL_FILE, "", "",
+     ["--use-polling", "-n", "1", "f"]),
+    # follow mode is ASSIGNED in argv order (tail.c:2185-2193): -F sets
+    # name+retry, a later --follow=descriptor re-selects descriptor.
+    ("tl103-F-then-follow-descriptor", "strict", HEAD_TAIL_FILE, "", "",
+     ["-F", "--follow=descriptor", "--pid=2147483647", "f"]),
+    ("tl104-follow-descriptor-then-F", "strict", HEAD_TAIL_FILE, "", "",
+     ["--follow=descriptor", "-F", "--pid=2147483647", "f"]),
+    # descriptor-mode --retry on a file that never appears: GNU keeps the
+    # initial-open failure as the run status (tail.c main's `ok`).
+    ("tl105-f-retry-missing-only", "strict", "", "", "",
+     ["-f", "--retry", "--pid=2147483647", "missing"]),
+    # GNU tail never globs: '*.txt' stays a literal operand and fails
+    # with cannot-open (probed WSL 9.4, p-tail-glob.sh).
+    ("tl106-wildcard-literal", "strict",
+     "printf 'l1\nl2\nl3\n' > file1.txt; printf 'l4\nl5\nl6\n' > file2.txt",
+     "LC_ALL=C", "", ["-n", "1", "*.txt"]),
 ]
 
 cut_rows = [

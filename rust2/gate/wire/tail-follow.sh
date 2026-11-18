@@ -238,6 +238,17 @@ sc_desc_retry_missing() {
     fin
 }
 
+sc_desc_retry_missing_only() {
+    # descriptor mode, the only name is initially absent: GNU retries the
+    # open and reads the name once it appears, but the run status stays
+    # the initial-open failure (rc 1; probed WSL 9.4)
+    life 2.1
+    $TAIL -f --retry -s 0.1 --pid=$P f > out 2> err & TP=$!
+    st; echo hi > f
+    st; echo more >> f
+    fin
+}
+
 sc_pid_exit() {
     # no writes: the follower must exit by itself when P dies (rc 0)
     printf 'a\n' > f
@@ -366,7 +377,7 @@ SCENARIOS="append append_default_interval multi_headers multi_quiet
 verbose_single truncate truncate_rewrite desc_rename desc_delete
 name_rotate name_replace retry_delete name_noretry_delete name_noretry_multi_reappear
 name_noretry_rename_last retry_missing
-retry_missing_multi desc_retry_missing pid_exit stdin_file stdin_file_truncate
+retry_missing_multi desc_retry_missing desc_retry_missing_only pid_exit stdin_file stdin_file_truncate
 stdin_file_c99 stdin_file_plus_files stdin_pipe
 stdin_pipe_plus_file bytes_from lines_zero zero_term sleep_fraction
 broken_pipe"
