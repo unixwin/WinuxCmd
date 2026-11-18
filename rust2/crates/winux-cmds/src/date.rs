@@ -104,30 +104,8 @@ const OPTS: &[OptSpec] = &[
         takes_value: false,
     },
     OptSpec {
-        short: None,
+        short: Some('v'),
         long: "debug",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "universal",
-        takes_value: false,
-    },
-    OptSpec {
-        // obsolete alias of --utc (GNU accepts it; issue #1073)
-        short: None,
-        long: "uct",
-        takes_value: false,
-    },
-    OptSpec {
-        // obsolete alias of -R/--rfc-email (GNU accepts it; issue #1073)
-        short: None,
-        long: "rfc-822",
-        takes_value: false,
-    },
-    OptSpec {
-        short: None,
-        long: "resolution",
         takes_value: false,
     },
 ];
@@ -328,9 +306,6 @@ pub(crate) struct DateTime {
     pub epoch: i64,      // UTC epoch seconds
     pub utc_offset: i64, // seconds east of UTC
     pub tzname: String,
-    /// sub-second nanoseconds (FILETIME carries 100 ns units; -d/-r
-    /// operands usually land on 0)
-    pub ns: u32,
 }
 
 impl DateTime {
@@ -349,16 +324,7 @@ impl DateTime {
             epoch,
             utc_offset: offset,
             tzname,
-            ns: 0,
         }
-    }
-
-    /// from_epoch with an explicit sub-second part (the --resolution
-    /// instant and file mtimes carry real 100 ns ticks).
-    pub fn from_epoch_ns(epoch: i64, offset: i64, tzname: String, ns: u32) -> Self {
-        let mut dt = Self::from_epoch(epoch, offset, tzname);
-        dt.ns = ns;
-        dt
     }
 
     fn days_since_epoch(&self) -> i64 {
