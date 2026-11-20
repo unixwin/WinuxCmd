@@ -659,6 +659,19 @@ auto build_environment_block(const EnvEntries& vars) -> std::vector<wchar_t> {
     block.push_back(L'\0');
   }
   block.push_back(L'\0');
+  if (block.size() == 1) {
+    // #1837: no entry survived (an `env -i` run with no assignments, or
+    // only empty-name assignments), so the block above is a single NUL --
+    // the degenerate edge of the block format, whose entries are scanned
+    // as NUL-terminated strings closed by an empty entry.  Handing that
+    // one-WCHAR block to CreateProcessW is the only launch-path
+    // difference between `env -i cmd` -- which fails for some images
+    // with ERROR_INVALID_PARAMETER ("Invalid argument", rc126) -- and
+    // `env -i A= cmd`, which launches the same image fine.  Emit the
+    // canonical empty block instead: the terminator pair is physically
+    // present and the block still carries zero entries.
+    block.push_back(L'\0');
+  }
   return block;
 }
 
