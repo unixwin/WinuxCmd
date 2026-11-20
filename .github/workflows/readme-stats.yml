@@ -1,0 +1,62 @@
+# Weekly refresh of the auto-generated blocks in README.md (code size by
+# language via tokei, and the commit-contributors table). The script
+# rewrites only the <!-- AUTO:... --> marked blocks; everything else in
+# the README -- including the hand-curated maintainers list -- is left
+# untouched. Output is deterministic (no dates / HEAD sha), so the bot
+# commits only when the numbers actually changed.
+#
+# main is protected (PR-required), so the bot pushes a branch, opens a PR
+# and merges it itself when allowed, otherwise leaves it open.
+
+name: readme-stats
+
+on:
+  schedule:
+    - cron: "13 6 * * 1" # Mondays, 06:13 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: taiki-e/install-action@tokei
+
+      - name: Regenerate README auto blocks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/readme-stats.py
+
+      - name: Open/update PR with refreshed blocks
+        env:
+          # Org policy forbids the default GITHUB_TOKEN from creating PRs;
+          # a BOT_TOKEN secret (maintainer PAT) takes over when present.
+          GH_TOKEN: ${{ secrets.BOT_TOKEN || github.token }}
+        run: |
+          git add README.md
+          if git diff --cached --quiet -- README.md; then
+            echo "README auto blocks unchanged; nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Unique branch per run: a merged PR keeps gh from creating a new
+          # one off the same head ("has diverged from local branch").
+          branch="bot/readme-stats-${{ github.run_id }}"
+          git checkout -b "$branch"
+          git commit -m "docs: refresh README code-size + contributors blocks"
+          git push origin "$branch"
+          pr_url=$(gh pr create --title "docs: refresh README code-size + contributors blocks" \
+            --body "Automated weekly refresh of the README auto blocks (readme-stats workflow)." \
+            --head "$branch" 2>/dev/null || true)
+          pr=${pr_url:-$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')}
+          gh pr merge "$pr" --merge --auto || \
+            gh pr merge "$pr" --merge --delete-branch || \
+            echo "PR $pr left open for manual merge"

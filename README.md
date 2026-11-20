@@ -314,6 +314,52 @@ binary with PGO. To reproduce locally:
 Training workloads are in `scripts/pgo-train.sh`; ARM64 builds are not
 PGO'd (profiles must be collected on the target architecture).
 
+## 📏 Code size
+
+Counted with [tokei](https://github.com/XAMPPRocky/tokei) over the whole tree (tests included), refreshed weekly by the readme-stats workflow:
+
+<!-- AUTO:CODE-SIZE:START -->
+| Language | Files | Code lines |
+|---|---:|---:|
+| C++ | 374 | 122,033 |
+| Rust | 152 | 102,415 |
+| JSON | 46 | 40,951 |
+| C++ Header | 1 | 17,952 |
+| Python | 39 | 16,996 |
+| Shell | 24 | 5,149 |
+| PowerShell | 46 | 4,645 |
+| C Header | 16 | 2,978 |
+| CMake | 8 | 1,003 |
+| C# | 1 | 325 |
+| Other | 13 | 293 |
+| **Total** | **720** | **314,740** |
+<!-- AUTO:CODE-SIZE:END -->
+
+## 👥 Maintainers and contributors
+
+WinuxCmd is maintained by its two core maintainers:
+
+| Maintainer | Role |
+|---|---|
+| [@caomengxuan666](https://github.com/caomengxuan666) | Creator and core maintainer |
+| [@arookieofc](https://github.com/arookieofc) | Core maintainer |
+
+Everyone who has landed code (bots excluded), refreshed weekly by the readme-stats workflow:
+
+<!-- AUTO:CONTRIBUTORS:START -->
+| Contributor | Commits |
+|---|---:|
+| [@caomengxuan666](https://github.com/caomengxuan666) | 2,062 |
+| [@arookieofc](https://github.com/arookieofc) | 83 |
+| [@Uarz](https://github.com/Uarz) | 14 |
+| [@Catapult291](https://github.com/Catapult291) | 4 |
+| [@daiaji](https://github.com/daiaji) | 4 |
+| [@arookieofc-ai](https://github.com/arookieofc-ai) | 3 |
+| [@OpenCode](https://github.com/OpenCode) | 2 |
+| [@zzmyth-sys](https://github.com/zzmyth-sys) | 2 |
+| [@Haoming9527](https://github.com/Haoming9527) | 1 |
+<!-- AUTO:CONTRIBUTORS:END -->
+
 ## 🤝 Contributing
 
 Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). For the Rust
