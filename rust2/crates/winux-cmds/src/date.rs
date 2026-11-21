@@ -1027,6 +1027,9 @@ fn parse_time_expr(
         if !allow_bare_digits || body.contains('.') || body.len() > 4 {
             return None;
         }
+        if meridian.is_some() && body.len() > 2 {
+            return None;
+        }
         let v: i64 = body.parse().ok()?;
         if body.len() <= 2 {
             hh = v;
@@ -1118,8 +1121,18 @@ fn strip_trailing_zone(s: &str) -> (&str, Option<i64>) {
     // ±hhmm
     if b.len() >= 6 {
         let pos = b.len() - 5;
+        let last_tok = s
+            .rsplit(|c: char| c.is_ascii_whitespace())
+            .next()
+            .unwrap_or("");
+        let is_mon_day_year = b[pos] == b'-'
+            && last_tok
+                .get(..last_tok.len().saturating_sub(5))
+                .and_then(|prefix| prefix.split_once('-'))
+                .is_some_and(|(m, d)| parse_month_name(m).is_some() && parse_pos_day(d).is_some());
         if (b[pos] == b'+' || b[pos] == b'-')
-            && (b[pos - 1].is_ascii_digit() || b[pos - 1].is_ascii_whitespace())
+            && (b[pos - 1].is_ascii_whitespace()
+                || (b[pos - 1].is_ascii_digit() && !is_mon_day_year))
             && b[pos + 1..].iter().all(|c| c.is_ascii_digit())
         {
             if let (Ok(hh), Ok(mm)) = (
@@ -1279,8 +1292,20 @@ fn parse_year_tok(tok: &str) -> Option<i64> {
     (1..=9999).contains(&y).then_some(y)
 }
 
+fn parse_hyphen_year_tok(tok: &str) -> Option<i64> {
+    if let Some(y) = parse_year_tok(tok) {
+        return Some(y);
+    }
+    if tok.len() == 2 && tok.bytes().all(|b| b.is_ascii_digit()) {
+        let y: i64 = tok.parse().ok()?;
+        return Some(if y <= 68 { 2000 + y } else { 1900 + y });
+    }
+    None
+}
+
 /// Match a month-name date at the start of `tokens`:
-/// - `DD-Month-YYYY` (1 token)
+/// - `DD-Month-YYYY` / `DD-Month-YY` (1 token)
+/// - `Month-DD-YYYY` / `Month-DD-YY` (1 token)
 /// - `Month DD[,] YYYY` (3 tokens)
 /// - `DD Month[,] YYYY` (3 tokens)
 /// - `Month DD` or `DD Month` (2 tokens, `year = None`)
@@ -1289,13 +1314,24 @@ fn parse_month_date(tokens: &[&str]) -> Option<(Option<i64>, i64, i64, usize)> {
     let first = *tokens.first()?;
     if first.contains('-') {
         let mut parts = first.split('-');
-        let ds = parts.next()?;
-        let ms = parts.next()?;
-        let ys = parts.next()?;
+        let p0 = parts.next()?;
+        let p1 = parts.next()?;
+        let p2 = parts.next()?;
         if parts.next().is_none() {
-            if let (Some(d), Some(m), Some(y)) =
-                (parse_pos_day(ds), parse_month_name(ms), parse_year_tok(ys))
-            {
+            if let (Some(d), Some(m), Some(y)) = (
+                parse_pos_day(p0),
+                parse_month_name(p1),
+                parse_hyphen_year_tok(p2),
+            ) {
+                if d <= days_in_month(y, m) {
+                    return Some((Some(y), m, d, 1));
+                }
+            }
+            if let (Some(m), Some(d), Some(y)) = (
+                parse_month_name(p0),
+                parse_pos_day(p1),
+                parse_hyphen_year_tok(p2),
+            ) {
                 if d <= days_in_month(y, m) {
                     return Some((Some(y), m, d, 1));
                 }
@@ -1614,7 +1650,11 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
     let (mut hh, mut mm, mut ss, mut ns) = (0i64, 0i64, 0i64, 0u32);
     if !time_tokens.is_empty() {
         let time_str = time_tokens.join(" ");
-        let allow_bare = date_vals.is_some();
+        let allow_bare = date_vals.is_some()
+            || matches!(
+                now_date_override,
+                Some(NowDateRule::Weekday { .. } | NowDateRule::DayShift(_))
+            );
         let ((th, tm, ts, tns), time_zone_seen, time_zone_off) =
             parse_time_expr(&time_str, allow_bare)?;
         hh = th;
@@ -3012,6 +3052,45 @@ mod tests {
         }
         assert_eq!(fmt_at("2020 Jan 2"), None);
         assert_eq!(fmt_at("Feb 30 2020"), None);
+
+        // 2b. Issue #1847: Mon-D-Y hyphenated dates & bare HHMM after weekday/day keywords
+        let issue_1847_cases = [
+            ("Jan-2-2020", "2020-01-02_00:00:00"),
+            ("January-2-2020", "2020-01-02_00:00:00"),
+            ("Jan-02-2020", "2020-01-02_00:00:00"),
+            ("Jan-2-20", "2020-01-02_00:00:00"),
+            ("Jan-2-69", "1969-01-02_00:00:00"),
+            ("2-Jan-20", "2020-01-02_00:00:00"),
+            ("Feb-29-2020", "2020-02-29_00:00:00"),
+            ("Jan-2-2020 12:34:56", "2020-01-02_12:34:56"),
+            ("Jan-2-2020 12:34", "2020-01-02_12:34:00"),
+            ("Jan-2-2020 +1 day", "2020-01-03_00:00:00"),
+            ("monday 0304", "2020-01-06_03:04:00"),
+            ("monday 1530", "2020-01-06_15:30:00"),
+            ("monday 03", "2020-01-06_03:00:00"),
+            ("monday 3", "2020-01-06_03:00:00"),
+            ("monday 3am", "2020-01-06_03:00:00"),
+            ("next monday 0304", "2020-01-06_03:04:00"),
+            ("last monday 0304", "2019-12-30_03:04:00"),
+            ("today 0304", "2020-01-02_03:04:00"),
+            ("tomorrow 0304", "2020-01-03_03:04:00"),
+            ("yesterday 0304", "2020-01-01_03:04:00"),
+            ("monday 0304 UTC", "2020-01-06_03:04:00"),
+            ("monday 0304 +1 day", "2020-01-07_03:04:00"),
+        ];
+        for (input, want) in issue_1847_cases {
+            assert_eq!(fmt_at(input).as_deref(), Some(want), "{input}");
+        }
+        for bad in [
+            "Feb-29-2021",
+            "2020-Jan-2",
+            "Jan-2",
+            "monday 0304am",
+            "monday 2400",
+            "monday 0360",
+        ] {
+            assert_eq!(fmt_at(bad), None, "{bad}");
+        }
 
         // 3. Combined day keyword + wall time
         let day_time_cases = [
