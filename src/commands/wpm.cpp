@@ -978,6 +978,25 @@ auto move_aside(const fs::path& target, fs::path* parked_out) -> bool;
 /// walks the receipts to find shim packages the map does not know yet.
 auto receipts_dir(const fs::path& root) -> fs::path;
 
+/// Defined with the reconcile helpers below; the command-link rebuild and
+/// `wpm expose` rerun the declared intra-package link sets install receipts
+/// recorded (unixwin/WinuxCmd#1835).
+struct DeclaredLink {
+  fs::path source;
+  fs::path target;
+};
+struct LinkReconcileCounts {
+  int created = 0;
+  int unchanged = 0;
+  int failed = 0;
+};
+auto reconcile_declared_links(const std::vector<DeclaredLink>& links,
+                              bool dry_run, bool verbose)
+    -> LinkReconcileCounts;
+auto receipt_link_sets(const fs::path& root) -> std::vector<DeclaredLink>;
+auto files_equal(const fs::path& a, const fs::path& b) -> bool;
+auto path_is_within(const fs::path& root, const fs::path& path) -> bool;
+
 /// Defined with the shim helpers below; the command-link rebuild resolves a
 /// package's payloads through the same resolver the install path uses.
 auto shim_payload_for(const fs::path& root, const std::string& package,
@@ -1210,6 +1229,18 @@ auto rebuild_links(const fs::path& root, bool force, bool dry_run, bool verbose)
         ++failed;
       }
     }
+  }
+
+  // Declared intra-package link sets (a deduplicated archive's links.json,
+  // recorded by install receipts): the same idempotent reconcile as the
+  // command links, so a replaced payload never leaves a link target on the
+  // previous inode (unixwin/WinuxCmd#1835).
+  {
+    const auto declared =
+        reconcile_declared_links(receipt_link_sets(root), dry_run, verbose);
+    created += declared.created;
+    unchanged += declared.unchanged;
+    failed += declared.failed;
   }
 
   safePrintLn(
@@ -2615,10 +2646,20 @@ auto materialize_file(const fs::path& source, const fs::path& target,
   if (CreateHardLinkW(target.wstring().c_str(), source.wstring().c_str(),
                       nullptr))
     return true;
-  const DWORD link_error = GetLastError();
-  ec = std::error_code(static_cast<int>(link_error), std::system_category());
+  // A filesystem that refuses hardlinks (FAT/exFAT/network/cross-volume)
+  // still gets the file: physical copy plus a warning, never a missing name
+  // (unixwin/WinuxCmd#1835, same contract as niu-git package.py).
+  const std::string link_error =
+      std::error_code(static_cast<int>(GetLastError()), std::system_category())
+          .message();
   fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec);
-  return !ec;
+  if (ec) return false;
+  safeErrorPrintLn(
+      wpm_text("command.wpm.warn.hardlink_fallback",
+               "wpm: hardlink failed for '{}' ({}); placed a physical copy "
+               "instead",
+               target.string(), link_error));
+  return true;
 }
 
 auto copy_directory_contents(const fs::path& src, const fs::path& dest,
@@ -2990,7 +3031,9 @@ auto create_package_entry_links(const fs::path& root, const nlohmann::json& pkg,
     std::error_code ec;
     if (!fs::exists(payload, ec)) continue;
     if (same_path_name(current, link)) continue;  // never touch the running exe
-    if (same_file(payload, link)) continue;       // already the right bytes
+    // already the right bytes: a hardlink on link-capable filesystems, a
+    // physical copy where the fallback path had to place one (#1835).
+    if (same_file(payload, link) || files_equal(payload, link)) continue;
     if (dry_run) {
       if (json) {
         safeErrorPrintLn("wpm: dry-run: would link " + link.string());
@@ -3386,7 +3429,9 @@ auto receipt_install_records(const fs::path& root)
 }
 
 auto write_install_receipt(const fs::path& root, const nlohmann::json& pkg,
-                           const nlohmann::json& artifact) -> void {
+                           const nlohmann::json& artifact,
+                           const std::vector<DeclaredLink>& declared_links =
+                               {}) -> void {
   const std::string name = pkg.value("name", "");
   if (name.empty()) return;
   auto destinations = artifact_destination_paths(root, artifact, name);
@@ -3404,6 +3449,18 @@ auto write_install_receipt(const fs::path& root, const nlohmann::json& pkg,
   for (const auto& [payload, link] : package_entry_links(root, pkg, artifact)) {
     (void)payload;
     receipt["destinations"].push_back(link.string());
+  }
+  if (!declared_links.empty()) {
+    receipt["links"] = nlohmann::json::array();
+    for (const auto& link : declared_links) {
+      receipt["links"].push_back({{"source", link.source.string()},
+                                  {"target", link.target.string()}});
+      // Declared link targets are managed destinations as well: the upgrade
+      // reconcile drops them before the same pass re-materializes them, so a
+      // replaced payload never leaves a name on the previous inode
+      // (unixwin/WinuxCmd#1835).
+      receipt["destinations"].push_back(link.target.string());
+    }
   }
   std::error_code ec;
   fs::create_directories(receipts_dir(root), ec);
@@ -3511,6 +3568,227 @@ auto files_equal(const fs::path& a, const fs::path& b) -> bool {
   std::string sb((std::istreambuf_iterator<char>(ib)),
                  std::istreambuf_iterator<char>());
   return sa == sb;
+}
+
+/// Where the canonical copy of a declared link lives once the files mapping
+/// lands. `links.json` and `files` speak the same archive-relative spelling:
+/// a directory mapping covers everything below `from`, a file mapping covers
+/// its exact name (unixwin/WinuxCmd#1835).
+auto installed_path_for_archive_name(const fs::path& root,
+                                     const nlohmann::json& artifact,
+                                     std::string_view package,
+                                     const fs::path& archive_name)
+    -> std::optional<fs::path> {
+  const std::string wanted = archive_name.generic_string();
+  if (wanted.empty() || !artifact.contains("files") ||
+      !artifact["files"].is_array())
+    return std::nullopt;
+  for (const auto& mapping : artifact["files"]) {
+    const std::string from =
+        trim_trailing_separators(mapping.value("from", ""));
+    if (from.empty()) continue;
+    auto destination =
+        artifact_destination_for_mapping(root, artifact, package, mapping);
+    if (!destination) continue;
+    if (mapping_is_directory(mapping)) {
+      if (wanted != from && !wanted.starts_with(from + "/")) continue;
+      const fs::path relative = fs::path(wanted).lexically_relative(from);
+      if (relative.empty() || relative.native().starts_with(L"..")) continue;
+      return *destination / relative;
+    }
+    if (wanted == from) return *destination;
+  }
+  return std::nullopt;
+}
+
+/// The link set a deduplicated archive declares at its root (niu-git's
+/// `links.json`, format `niugit-links/1`): the archive stores one physical
+/// copy per unique content and names the alternates, so the package pays one
+/// copy on disk too (unixwin/WinuxCmd#1835, paired with unixwin/niu-git#23).
+auto read_declared_links(const fs::path& extracted)
+    -> std::vector<std::pair<std::string, std::string>> {
+  std::vector<std::pair<std::string, std::string>> links;
+  auto text = read_text(extracted / "links.json");
+  if (!text) return links;
+  auto manifest = parse_json_text(*text);
+  if (!manifest || !manifest->contains("links") ||
+      !(*manifest)["links"].is_array())
+    return links;
+  for (const auto& item : (*manifest)["links"]) {
+    if (!item.is_object()) continue;
+    const std::string target = item.value("target", "");
+    const std::string source = item.value("source", "");
+    if (target.empty() || source.empty()) continue;
+    links.emplace_back(source, target);
+  }
+  return links;
+}
+
+/// Resolve an archive's declared link set against the installed tree.
+auto resolve_declared_links(const fs::path& root, std::string_view package,
+                            const nlohmann::json& artifact,
+                            const fs::path& extracted)
+    -> std::vector<DeclaredLink> {
+  std::vector<DeclaredLink> resolved;
+  for (const auto& [source, target] : read_declared_links(extracted)) {
+    auto installed_source = installed_path_for_archive_name(
+        root, artifact, package, fs::path(source));
+    auto installed_target = installed_path_for_archive_name(
+        root, artifact, package, fs::path(target));
+    if (!installed_source || !installed_target ||
+        !path_is_within(root, *installed_source) ||
+        !path_is_within(root, *installed_target)) {
+      safeErrorPrintLn(
+          wpm_text("command.wpm.warn.declared_link_unmapped",
+                   "wpm: skipping declared link '{}': not covered by the "
+                   "files mapping",
+                   target));
+      continue;
+    }
+    resolved.push_back({*installed_source, *installed_target});
+  }
+  return resolved;
+}
+
+/// The link sets every install receipt recorded, for the whole-installation
+/// reconcile `wpm links rebuild` runs.
+auto receipt_link_sets(const fs::path& root) -> std::vector<DeclaredLink> {
+  std::vector<DeclaredLink> links;
+  std::error_code ec;
+  for (const auto& item :
+       fs::directory_iterator(receipts_dir(root),
+                              fs::directory_options::skip_permission_denied,
+                              ec)) {
+    if (ec) break;
+    std::error_code file_ec;
+    if (!item.is_regular_file(file_ec) || file_ec) continue;
+    if (item.path().extension() != ".json") continue;
+    auto text = read_text(item.path());
+    if (!text) continue;
+    auto receipt = parse_json_text(*text);
+    if (!receipt || !receipt->contains("links") ||
+        !(*receipt)["links"].is_array())
+      continue;
+    for (const auto& entry : (*receipt)["links"]) {
+      if (!entry.is_object()) continue;
+      const std::string source = entry.value("source", "");
+      const std::string target = entry.value("target", "");
+      if (source.empty() || target.empty()) continue;
+      const fs::path installed_target(target);
+      // Receipt paths must resolve inside this root (the same guard
+      // receipt-driven deletions get) before a link is materialized at one.
+      if (!path_is_within(root, installed_target)) continue;
+      links.push_back({fs::path(source), installed_target});
+    }
+  }
+  return links;
+}
+
+/// One package's recorded link set (expose/unexpose and uninstall paths).
+auto read_receipt_links(const fs::path& root, std::string_view package)
+    -> std::vector<DeclaredLink> {
+  std::vector<DeclaredLink> links;
+  auto text = read_text(receipt_path(root, package));
+  if (!text) return links;
+  auto receipt = parse_json_text(*text);
+  if (!receipt || !receipt->contains("links") ||
+      !(*receipt)["links"].is_array())
+    return links;
+  for (const auto& entry : (*receipt)["links"]) {
+    if (!entry.is_object()) continue;
+    const std::string source = entry.value("source", "");
+    const std::string target = entry.value("target", "");
+    if (source.empty() || target.empty()) continue;
+    const fs::path installed_target(target);
+    if (!path_is_within(root, installed_target)) continue;
+    links.push_back({fs::path(source), installed_target});
+  }
+  return links;
+}
+
+/// Materialize a declared link set, `links rebuild` style: identical content
+/// is left alone, a name on the wrong inode (a replaced payload, a held file)
+/// is re-created from the live source, a filesystem that refuses hardlinks
+/// gets a physical copy via materialize_file - never a missing name
+/// (unixwin/WinuxCmd#1835).
+auto reconcile_declared_links(const std::vector<DeclaredLink>& links,
+                              bool dry_run, bool verbose)
+    -> LinkReconcileCounts {
+  LinkReconcileCounts counts;
+  const fs::path current = current_exe_path();
+  for (const auto& link : links) {
+    std::error_code ec;
+    if (!fs::is_regular_file(link.source, ec)) {
+      safeErrorPrintLn(
+          wpm_text("command.wpm.error.declared_link_source",
+                   "wpm: declared link source missing: {}",
+                   link.source.string()));
+      ++counts.failed;
+      continue;
+    }
+    if (same_path_name(current, link.target)) continue;
+    ec.clear();
+    const bool exists = fs::exists(link.target, ec);
+    if (exists && (same_file(link.source, link.target) ||
+                   files_equal(link.source, link.target))) {
+      ++counts.unchanged;
+      continue;
+    }
+    if (dry_run) {
+      safePrintLn(wpm_text("command.wpm.status.declared_link",
+                           "link {} -> {}", link.target.string(),
+                           link.source.string()));
+      ++counts.created;
+      continue;
+    }
+    ec.clear();
+    fs::create_directories(link.target.parent_path(), ec);
+    if (exists && !delete_file_name(link.target)) {
+      // Same contract as the command links: a name that cannot be deleted is
+      // parked and the link created over the freed name, so one held target
+      // cannot keep the package on the old inode.
+      fs::path parked;
+      if (!move_aside(link.target, &parked)) {
+        safeErrorPrintLn(
+            wpm_text("command.wpm.error.declared_link_remove",
+                     "wpm: failed to replace declared link '{}': {}",
+                     link.target.string(),
+                     win32_error_text(GetLastError())));
+        ++counts.failed;
+        continue;
+      }
+      if (!materialize_file(link.source, link.target, true, ec)) {
+        std::error_code restore_ec;
+        fs::rename(parked, link.target, restore_ec);
+        safeErrorPrintLn(
+            wpm_text("command.wpm.error.declared_link_create",
+                     "wpm: failed to create declared link '{}': {}",
+                     link.target.string(), ec.message()));
+        ++counts.failed;
+        continue;
+      }
+      std::error_code parked_ec;
+      fs::remove(parked, parked_ec);
+      ++counts.created;
+      if (verbose)
+        safePrintLn("wpm: relinked " + link.target.string() +
+                    " (parked the previous name)");
+      continue;
+    }
+    if (!materialize_file(link.source, link.target, true, ec)) {
+      safeErrorPrintLn(
+          wpm_text("command.wpm.error.declared_link_create",
+                   "wpm: failed to create declared link '{}': {}",
+                   link.target.string(), ec.message()));
+      ++counts.failed;
+      continue;
+    }
+    ++counts.created;
+    if (verbose)
+      safePrintLn(wpm_text("command.wpm.status.linked", "linked {}",
+                           link.target.string()));
+  }
+  return counts;
 }
 
 // The shim template ships next to wpm itself; fall back to a copy already
@@ -4273,6 +4551,25 @@ auto install_package(const Options& opts, std::string_view package_name,
                  pkg->value("name", std::string(package_name))));
     return finish(false, "error");
   }
+  // A deduplicated archive stores one physical copy per unique content plus
+  // a links.json link set at its root: materialize the declared names against
+  // the payload that just landed - hardlink, physical copy + warning where
+  // the filesystem refuses links (unixwin/WinuxCmd#1835).
+  const auto declared_links = resolve_declared_links(
+      opts.root, pkg->value("name", std::string(package_name)), *artifact,
+      extracted);
+  if (!declared_links.empty()) {
+    const auto link_counts =
+        reconcile_declared_links(declared_links, opts.dry_run, opts.verbose);
+    if (link_counts.failed > 0) {
+      json_errors.push_back(wpm_text(
+          "command.wpm.error.declared_links_failed",
+          "wpm: failed to materialize {} declared link(s) for '{}'",
+          link_counts.failed,
+          pkg->value("name", std::string(package_name))));
+      return finish(false, "error");
+    }
+  }
   if (shim_layout && !opts.dry_run) {
     cleanup_legacy_flat_artifacts(opts.root, extracted, *artifact, *pkg, json);
   }
@@ -4312,7 +4609,7 @@ auto install_package(const Options& opts, std::string_view package_name,
                  pkg->value("name", std::string(package_name))));
     return finish(false, "error");
   }
-  write_install_receipt(opts.root, *pkg, *artifact);
+  write_install_receipt(opts.root, *pkg, *artifact, declared_links);
   discard_parked(staging, opts.verbose);
   // The extraction directory has served its purpose and would otherwise keep a
   // second copy of the payload - and, historically, the inode the PATH entry
@@ -5666,6 +5963,22 @@ auto uninstall_package(const Options& opts, const nlohmann::json& pkg)
     }
   }
 
+  // Declared intra-package link targets the install recorded (a deduplicated
+  // archive's links.json): a target can sit outside every file mapping, so
+  // the mapping walk above cannot reach it (unixwin/WinuxCmd#1835).
+  for (const auto& link : read_receipt_links(opts.root, name)) {
+    if (opts.dry_run) {
+      std::error_code ec;
+      if (fs::exists(link.target, ec))
+        removed.push_back(link.target.string());
+      continue;
+    }
+    if (!uninstall_remove_destination(opts, link.target, false, removed,
+                                      errors)) {
+      ok = false;
+    }
+  }
+
   // Shim-layout packages keep their payload under opt\<pkg> and forwarders in
   // usr\bin; drop the forwarders only when they are ours. "Ours" is either a
   // link to the small forwarder (`winuxcmd-shim.exe`, the current model) or a
@@ -5854,6 +6167,309 @@ auto uninstall_packages(const Options& opts,
   safePrintLn(wpm_text("command.wpm.status.uninstall_summary",
                        "wpm: uninstall complete removed={} failed={}",
                        removed_count, failed));
+  return failed == 0 ? 0 : 1;
+}
+
+/// Keep an install receipt's `destinations` in step with the exposure change
+/// an expose/unexpose switch made: entry links that exist are recorded, entry
+/// links that were revoked are dropped. Without the drop, the
+/// receipt-records check ("every recorded destination still exists") would
+/// read a revoked package as uninstalled (unixwin/WinuxCmd#1835). A bundled
+/// package carries no receipt at all and is left that way - only wpm-managed
+/// state is touched.
+auto sync_receipt_entry_links(const fs::path& root, const nlohmann::json& pkg,
+                              const nlohmann::json& artifact,
+                              bool exposed) -> void {
+  const std::string name = pkg.value("name", "");
+  if (name.empty()) return;
+  auto text = read_text(receipt_path(root, name));
+  if (!text) return;
+  auto receipt = parse_json_text(*text);
+  if (!receipt || !receipt->contains("destinations") ||
+      !(*receipt)["destinations"].is_array())
+    return;
+
+  std::set<std::wstring> link_keys;
+  for (const auto& [payload, link] :
+       package_entry_links(root, pkg, artifact)) {
+    (void)payload;
+    link_keys.insert(normalized_path_key(link));
+  }
+
+  auto& destinations = (*receipt)["destinations"];
+  bool changed = false;
+  if (!exposed) {
+    nlohmann::json kept = nlohmann::json::array();
+    for (const auto& dest : destinations) {
+      if (dest.is_string() &&
+          link_keys.contains(normalized_path_key(
+              fs::path(dest.get<std::string>())))) {
+        changed = true;
+        continue;
+      }
+      kept.push_back(dest);
+    }
+    if (changed) destinations = std::move(kept);
+  } else {
+    std::set<std::wstring> recorded;
+    for (const auto& dest : destinations) {
+      if (dest.is_string())
+        recorded.insert(
+            normalized_path_key(fs::path(dest.get<std::string>())));
+    }
+    for (const auto& [payload, link] :
+         package_entry_links(root, pkg, artifact)) {
+      (void)payload;
+      std::error_code exists_ec;
+      // Only links that actually materialized are recorded, or the receipt
+      // existence check would read the package as uninstalled.
+      if (!fs::exists(link, exists_ec)) continue;
+      if (recorded.contains(normalized_path_key(link))) continue;
+      destinations.push_back(link.string());
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  write_text(receipt_path(root, name), receipt->dump(2) + "\n");
+}
+
+/// The post-install expose/revoke switch (unixwin/WinuxCmd#1835): `wpm
+/// expose` materializes an installed package's declared commands as entry
+/// links in <root>/bin - the same hardlink-or-copy materialization install
+/// uses, idempotent like `links rebuild` - and reruns the intra-package link
+/// set its receipt recorded. `wpm unexpose` removes exactly those entry-link
+/// names; the payload, the shims and the rest of .wpm stay, so the package
+/// remains installed.
+auto expose_package(const Options& opts, const nlohmann::json& index,
+                    std::string_view requested, bool expose,
+                    nlohmann::json* json_result) -> int {
+  const bool json = json_result != nullptr;
+  std::vector<std::string> errors;
+  const std::string name(requested);
+  auto finish = [&](bool ok, const std::string& status,
+                    nlohmann::json extra = nlohmann::json::object()) -> int {
+    if (json_result != nullptr) {
+      nlohmann::json result = {{"name", name},
+                               {"status", status},
+                               {"errors", errors},
+                               {"dry_run", opts.dry_run}};
+      result.update(extra);
+      *json_result = std::move(result);
+    }
+    return ok ? 0 : 1;
+  };
+
+  auto pkg = find_package(index, name);
+  if (!pkg) return finish(false, "not_found");
+
+  // Alias entries (git -> niugit) expose the provider's commands.
+  if (const auto resolved = resolve_package_alias(index, name);
+      resolved.name != name) {
+    if (resolved.cycle) {
+      errors.push_back(
+          wpm_text("command.wpm.error.alias_cycle",
+                   "wpm: '{}' is part of an alias cycle: {}", name,
+                   format_package_alias_chain(resolved.chain)));
+      safeErrorPrintLn(errors.back());
+      return finish(false, "alias_cycle");
+    }
+    pkg = find_package(index, resolved.name);
+    if (!pkg) {
+      errors.push_back(
+          wpm_text("command.wpm.error.alias_target",
+                   "wpm: '{}' is an alias for '{}', which is not in the index",
+                   name, resolved.name));
+      safeErrorPrintLn(errors.back());
+      return finish(false, "alias_target_missing");
+    }
+  }
+
+  const std::string package = pkg->value("name", "");
+  auto artifact = artifact_for_current_arch(*pkg);
+  if (!artifact) {
+    errors.push_back(wpm_text("command.wpm.error.expose_not_installable",
+                              "wpm: package '{}' has no {} artifact", package,
+                              detect_arch_key()));
+    safeErrorPrintLn(errors.back());
+    return finish(false, "not_installable");
+  }
+
+  // Expose only works on packages already on disk - including bundled ones,
+  // which have payload destinations but no receipt (.wpm is not shipped with
+  // the bundle, niubash#1052).
+  if (!package_has_receipt(opts.root, package) &&
+      !package_is_installed(opts.root, *pkg)) {
+    errors.push_back(
+        wpm_text("command.wpm.error.expose_not_installed",
+                 "wpm: package '{}' is not installed", package));
+    safeErrorPrintLn(errors.back());
+    return finish(false, "not_installed");
+  }
+
+  nlohmann::json paths = nlohmann::json::array();
+  bool ok = true;
+  const fs::path current = current_exe_path();
+  if (expose) {
+    for (const auto& [payload, link] :
+         package_entry_links(opts.root, *pkg, *artifact)) {
+      std::error_code ec;
+      if (!fs::exists(payload, ec)) {
+        errors.push_back(
+            wpm_text("command.wpm.error.expose_payload_missing",
+                     "wpm: cannot expose '{}': payload not found: {}", link
+                         .filename()
+                         .string(),
+                     payload.string()));
+        safeErrorPrintLn(errors.back());
+        ok = false;
+        continue;
+      }
+      if (same_path_name(current, link)) continue;
+      if ((fs::exists(link, ec) &&
+           (same_file(payload, link) || files_equal(payload, link)))) {
+        paths.push_back(link.string());
+        continue;
+      }
+      if (fs::exists(link, ec) && !opts.force) {
+        errors.push_back(
+            wpm_text("command.wpm.error.destination_exists",
+                     "wpm: destination exists; use --force: {}",
+                     link.string()));
+        safeErrorPrintLn(errors.back());
+        ok = false;
+        continue;
+      }
+      if (opts.dry_run) {
+        safePrintLn(wpm_text("command.wpm.status.link", "link {} -> {}",
+                             link.string(), payload.string()));
+        paths.push_back(link.string());
+        continue;
+      }
+      if (!materialize_file(payload, link, true, ec)) {
+        errors.push_back(wpm_text("command.wpm.error.create_link",
+                                  "wpm: failed to create hard link '{}': {}",
+                                  link.string(), ec.message()));
+        safeErrorPrintLn(errors.back());
+        ok = false;
+        continue;
+      }
+      paths.push_back(link.string());
+      if (opts.verbose)
+        safePrintLn(wpm_text("command.wpm.status.linked", "linked {}",
+                             link.string()));
+    }
+    // The intra-package link set the install recorded is reconciled in the
+    // same pass - `links rebuild` semantics for the declared names.
+    const auto declared = reconcile_declared_links(
+        read_receipt_links(opts.root, package), opts.dry_run, opts.verbose);
+    ok = ok && declared.failed == 0;
+    if (!opts.dry_run)
+      sync_receipt_entry_links(opts.root, *pkg, *artifact, true);
+  } else {
+    // Unexpose removes exactly the entry-link names this package declares in
+    // <root>/bin - the declared-name namespace, same contract the links
+    // reconcile applies to its own entries.
+    for (const auto& item : package_commands_json(*pkg)) {
+      if (!item.is_string()) continue;
+      const fs::path link =
+          entry_dir(opts.root) / exe_suffix(item.get<std::string>());
+      std::error_code ec;
+      if (!fs::exists(link, ec)) continue;
+      if (same_path_name(current, link)) continue;
+      if (fs::is_directory(link, ec)) {
+        errors.push_back(
+            wpm_text("command.wpm.error.refuse_directory",
+                     "wpm: refusing to replace directory: {}",
+                     link.string()));
+        safeErrorPrintLn(errors.back());
+        ok = false;
+        continue;
+      }
+      paths.push_back(link.string());
+      if (opts.dry_run) {
+        safePrintLn(wpm_text("command.wpm.status.remove", "remove {}",
+                             link.string()));
+        continue;
+      }
+      if (!delete_file_name(link)) {
+        errors.push_back(
+            wpm_text("command.wpm.error.remove",
+                     "wpm: failed to remove '{}': {}", link.string(),
+                     win32_error_text(GetLastError())));
+        safeErrorPrintLn(errors.back());
+        ok = false;
+      }
+    }
+    if (!opts.dry_run)
+      sync_receipt_entry_links(opts.root, *pkg, *artifact, false);
+  }
+
+  if (!opts.dry_run) {
+    auto line = wpm_text(
+        expose ? "command.wpm.status.exposed" : "command.wpm.status.unexposed",
+        expose ? "wpm: exposed {}" : "wpm: unexposed {}", package);
+    if (json) {
+      safeErrorPrintLn(line);
+    } else {
+      safePrintLn(line);
+    }
+  }
+  return finish(ok,
+                !ok                              ? "error"
+                : opts.dry_run                   ? (expose ? "would_expose"
+                                                         : "would_unexpose")
+                : (expose ? "exposed" : "unexposed"),
+                {{"links", std::move(paths)}});
+}
+
+auto expose_packages(const Options& opts,
+                     std::span<const std::string_view> names, bool expose)
+    -> int {
+  auto index = load_index(opts.root);
+  nlohmann::json results = nlohmann::json::array();
+  int failed = 0;
+  int changed = 0;
+  bool refreshed = false;
+
+  for (const auto& name_view : names) {
+    const std::string name(name_view);
+    if (!find_package(index, name) && !refreshed) {
+      // The package list can be newer than the local index (a bundled root
+      // carries no .wpm at all until something fetches one).
+      refreshed = refresh_index_once(opts,
+                                     "package not found in local index");
+      if (refreshed) index = load_index(opts.root);
+    }
+    nlohmann::json result;
+    const int rc =
+        expose_package(opts, index, name, expose,
+                       opts.json ? &result : nullptr);
+    if (!opts.json) result = {{"name", name}};
+    if (rc != 0) {
+      ++failed;
+    } else {
+      ++changed;
+    }
+    if (opts.json) results.push_back(std::move(result));
+    if (!find_package(index, name)) {
+      safeErrorPrintLn(
+          wpm_text("command.wpm.error.uninstall_not_found",
+                   "wpm: package not found in index: {}", name));
+    }
+  }
+
+  if (opts.json) {
+    nlohmann::json payload = {
+        {"schema", 1}, {"results", std::move(results)}, {"failed", failed}};
+    safePrintLn(payload.dump(2));
+    return failed == 0 ? 0 : 1;
+  }
+  safePrintLn(wpm_text(
+      expose ? "command.wpm.status.expose_summary"
+             : "command.wpm.status.unexpose_summary",
+      expose ? "wpm: expose complete changed={} failed={}"
+             : "wpm: unexpose complete changed={} failed={}",
+      changed, failed));
   return failed == 0 ? 0 : 1;
 }
 
@@ -6104,6 +6720,12 @@ auto print_usage() -> int {
       "  outdated                              list installed packages with "
       "updates\n"
       "  uninstall|remove|erase <package>...   uninstall one or more packages\n"
+      "  expose <package>...                   create bin\\ command links for "
+      "an\n"
+      "                                        installed package\n"
+      "  unexpose <package>...                 revoke a package's bin\\ "
+      "command\n"
+      "                                        links without uninstalling\n"
       "  update|upgrade winuxcmd               update WinuxCmd from local "
       "index\n"
       "\n"
@@ -6298,6 +6920,21 @@ auto dispatch(const Options& opts, std::span<const std::string_view> args)
                                "[--from <manifest>]"));
     return 1;
   }
+  if (args[0] == "expose" || args[0] == "unexpose") {
+    const bool expose = args[0] == "expose";
+    if (args.size() >= 2) {
+      std::vector<std::string_view> packages;
+      packages.reserve(args.size() - 1);
+      for (size_t i = 1; i < args.size(); ++i) packages.push_back(args[i]);
+      return expose_packages(opts, packages, expose);
+    }
+    safeErrorPrintLn(wpm_text(
+        expose ? "command.wpm.error.usage.expose"
+               : "command.wpm.error.usage.unexpose",
+        expose ? "wpm: usage: wpm expose <package>... [--force] [--dry-run]"
+               : "wpm: usage: wpm unexpose <package>... [--dry-run]"));
+    return 1;
+  }
   if (args[0] == "update" || args[0] == "upgrade") {
     if (args.size() >= 2 && (args[1] == "winuxcmd" || args[1] == "coreutils")) {
       return update_winuxcmd(opts);
@@ -6331,6 +6968,8 @@ REGISTER_COMMAND(
     "  wpm source region auto|global|cn\n"
     "  wpm outdated\n"
     "  wpm uninstall <package>\n"
+    "  wpm expose <package>\n"
+    "  wpm unexpose <package>\n"
     "  wpm update winuxcmd",
     "winuxcmd(1), ln(1)", "WinuxCmd Project", "Copyright (c) 2026 WinuxCmd",
     WPM_OPTIONS) {
