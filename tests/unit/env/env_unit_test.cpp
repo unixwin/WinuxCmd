@@ -61,6 +61,20 @@ auto has_env_line(std::string_view output, std::string_view key,
   return false;
 }
 
+// env resolves the wrapped command through PATH alone (GNU execvp
+// semantics), so PATH must lead with the staged bin dir: without it the
+// child is whatever foreign <cmd>.exe the machine carries.
+auto bin_dir_first_path() -> std::wstring {
+  std::wstring path = ProjectPaths::detect_bin_dir().wstring();
+  wchar_t inherited[32768];
+  if (DWORD n = GetEnvironmentVariableW(L"PATH", inherited, 32768);
+      n > 0 && n < 32768) {
+    path += L";";
+    path.append(inherited, n);
+  }
+  return path;
+}
+
 }  // namespace
 
 TEST(env, env_lists_current) {
@@ -755,5 +769,96 @@ TEST(env, env_option_scan_ends_at_first_assignment) {
   EXPECT_NE(r.exit_code, 0);
   EXPECT_TRUE(r.stderr_text.find("failed to run command '--help'") !=
               std::string::npos);
+}
+
+// #1839: env -a/--argv0 replaces the child's argv[0]. Suite applets are
+// links of the same multicall binary, so the dispatcher falls back to the
+// module filename (<cmd>.exe) when argv[0] names no registered command.
+TEST(env, env_argv0_dispatches_multicall_suite_command) {
+  Pipeline p;
+  p.set_env(L"PATH", bin_dir_first_path());
+  p.add(L"env.exe", {L"-a", L"myname", L"echo", L"hi"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi\n");
+}
+
+TEST(env, env_argv0_long_form_dispatches_multicall_suite_command) {
+  Pipeline p;
+  p.set_env(L"PATH", bin_dir_first_path());
+  p.add(L"env.exe", {L"--argv0=myname", L"echo", L"hi"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi\n");
+}
+
+// #1839: the module-filename fallback needs no dispatcher hint in the
+// child's environment. With -i and a single known variable, a leaked hint
+// variable would show up as an extra line in printenv's output.
+TEST(env, env_argv0_printenv_empty_environment_shows_no_dispatch_hint) {
+  Pipeline p;
+  p.set_env(L"PATH", bin_dir_first_path());
+  p.add(L"env.exe", {L"-i", L"--argv0=myname", L"ONLY_VAR=1", L"printenv"});
+  auto r = p.run();
+
+  TEST_LOG_EXIT_CODE(r);
+  TEST_LOG("env -i argv0 printenv stderr", r.stderr_text);
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "ONLY_VAR=1\n");
+}
+
+TEST(env, env_argv0_printenv_dispatches_and_lists_environment) {
+  Pipeline p;
+  p.set_env(L"PATH", bin_dir_first_path());
+  p.set_env(L"ENV_SENTINEL", L"present");
+  p.add(L"env.exe", {L"-a", L"myname", L"printenv"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(has_env_line(r.stdout_text, "ENV_SENTINEL", "present"));
+}
+
+// #1839: the default edition ships no true.exe entry link, so stage the
+// multicall binary under that name in a private PATH dir — the same shape
+// an entry link has — and verify the argv[0] fallback still dispatches.
+TEST(env, env_argv0_dispatches_staged_entry_name) {
+  TempDir tmp;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
+                             tmp.path / "true.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_env(L"PATH", tmp.wpath());
+  p.add(L"env.exe", {L"-a", L"myname", L"true"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+}
+
+// #1839: `env -a <x> winuxcmd <cmd>` launches winuxcmd.exe itself with a
+// foreign argv[0]; the module stem "winuxcmd" routes back to the verb form.
+TEST(env, env_argv0_dispatches_through_winuxcmd_verb_image) {
+  Pipeline p;
+  p.set_env(L"PATH", bin_dir_first_path());
+  p.add(L"env.exe", {L"-a", L"myname", L"winuxcmd", L"echo", L"hi"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "hi\n");
+}
+
+// #1839: argv[0] stays authoritative while it names a registered command —
+// `env -a echo printenv HOME` dispatches echo (the busybox argv[0] rule),
+// not the printenv.exe image that was launched.
+TEST(env, env_argv0_applet_name_takes_precedence_over_image) {
+  Pipeline p;
+  p.set_env(L"PATH", bin_dir_first_path());
+  p.add(L"env.exe", {L"-a", L"echo", L"printenv", L"HOME"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "HOME\n");
 }
 
