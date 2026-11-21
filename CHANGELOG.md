@@ -6,6 +6,8 @@ repository release tags.
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-22
+
 ### Changed
 
 - **locale value model (#1549)**: `locale` answers keyword operands from the
@@ -35,6 +37,10 @@ repository release tags.
   from the `LC_TIME` value model instead of fixed C-locale literals, and
   `-R`/`--rfc-email` stays in English as GNU keeps it. `%h` now expands to
   the abbreviated month (`%b`), not the full month name.
+- **date input formats (#1813)**: `date -d` now accepts weekday and
+  month-name forms, day+time composites, `TZ=` prefixes, `@`-epoch
+  fractions, RFC 2822 dates, and `YYYYMMDDTHHMM`, matching the GNU
+  coreutils parser shapes verified against coreutils 9.4.
 ## [2.0.0] - unreleased (WP-R draft, 2026-11-14)
 
 > Draft for captain review. The wiring waves that land between this snapshot
