@@ -19,12 +19,16 @@
 //!   `time`/`iso_8601_time`): `H`, `HH`, `HHMM`, `H:M[:S]`, optional
 //!   `am`/`pm`, and a trailing military-zone letter (`T` = UTC-7, so probed
 //!   `1024t` = 17:24 UTC; `Z` = UTC). The civil date comes from now.
-//! * NOT part of the port's subset (documented boundary, tracked by the
-//!   date-parse-datetime issue): weekday/month names (`monday`,
-//!   `next monday`, `Jan 2 2020`), combined day+time operands
-//!   (`tomorrow 10:00`), `TZ="..."` prefixes, nanoseconds in the input,
-//!   ordinal/`YYYYMMDD` numeric date forms, and named zones beyond
-//!   UTC/GMT/Z. Those stay `invalid date` rather than being approximated.
+//! * Additional `parse-datetime` families: weekday names (`monday`,
+//!   `next monday`, `last friday`, `this monday`, `2 monday`), month-name
+//!   dates (`Jan 2 2020`, `2 Jan 2020`, `January 2, 2020`, `2-Jan-2020`,
+//!   `Jan 2`), combined day keyword + wall time (`tomorrow 10:00`,
+//!   `yesterday 14:30:00`), `TZ="..."` prefixes (POSIX TZ strings; IANA
+//!   names fall back to UTC as documented below), fractional `@EPOCH`
+//!   (`@0.5`, `@-0.5`), RFC 2822 style (`Thu, 01 Jan 1970 00:00:00 GMT`),
+//!   and `YYYYMMDDTHHMM` (military `T` = UTC-7).
+//! * NOT part of the port's subset (documented boundary): ordinal date
+//!   forms and IANA zoneinfo names beyond UTC/GMT/Z/common US abbrevs.
 //! * `+FORMAT` strftime subset — probed conversions; GNU's unknown-
 //!   conversion rule prints the token literally (probed `%Q` -> `%Q`).
 //! * `-u`, `-R`, `-I[=FMT]`/`--iso-8601`, `--rfc-3339`, `--rfc-email`,
@@ -388,11 +392,13 @@ enum RuleKind {
     MonthWeekDay(i64, i64, i64),
 }
 
+#[derive(Clone, Copy)]
 struct TzRule {
     kind: RuleKind,
     time: i64, // seconds into the day (2:00 default)
 }
 
+#[derive(Clone)]
 pub(crate) struct TimeZone {
     std_name: String,
     /// seconds WEST of UTC (POSIX convention; EST5 -> 18000)
@@ -724,6 +730,16 @@ enum CalUnit {
     Year,
 }
 
+#[derive(Clone, Copy)]
+enum NowDateRule {
+    /// `today` (0), `tomorrow` (+1), `yesterday` (-1) combined with a wall time
+    DayShift(i64),
+    /// Weekday (`0..=6`, Sun..Sat) with ordinal (`0` = bare/this/0, `1` = next/1, `-1` = last)
+    Weekday { target_wd: i64, ordinal: i64 },
+    /// Month + day without year (`Jan 2`, `2 Jan`): year comes from `now`
+    MonthDay { month: i64, day: i64 },
+}
+
 /// A parsed -d operand.
 struct ParsedDate {
     y: i64,
@@ -741,16 +757,21 @@ struct ParsedDate {
     /// Time-of-day-only operand (`HH`, `HHMM`, `HH:MM[:SS][am|pm]`): the
     /// civil date comes from `now` at resolve time.
     time_only: Option<(i64, i64, i64)>,
+    /// Civil date rule anchored on `now` (weekdays, `tomorrow 10:00`, `Jan 2`).
+    now_date_override: Option<NowDateRule>,
     /// Explicit zone offset in seconds east of UTC (e.g. military zone
     /// letter `T` = -7h, `Z` = 0, or `±hhmm`). `None` uses the effective
     /// zone (including military `J`).
     zone_override: Option<i64>,
+    /// Input-only `TZ="..."` prefix zone; output is still formatted in the
+    /// command's effective zone.
+    input_tz: Option<TimeZone>,
 }
 
 impl ParsedDate {
     /// An operand whose base is the current instant (parse-datetime.y
     /// `rel` with no date part).
-    fn anchored_on_now(rels: Vec<RelAmount>) -> Self {
+    fn anchored_on_now(rels: Vec<RelAmount>, input_tz: Option<TimeZone>) -> Self {
         ParsedDate {
             y: 1970,
             m: 1,
@@ -763,7 +784,9 @@ impl ParsedDate {
             from_now: true,
             rels,
             time_only: None,
+            now_date_override: None,
             zone_override: None,
+            input_tz,
         }
     }
 }
@@ -1067,15 +1090,28 @@ fn parse_date_token(tok: &str) -> Option<(i64, i64, i64)> {
     Some((y, m, d))
 }
 
-/// Strip an optional trailing explicit zone (`UTC`, `GMT`, `UT`, `±hhmm`,
-/// `±hh:mm`) from a base date+time string. Returns `(trimmed, Some(offset_sec))`
-/// or `(s, None)`.
+/// Strip an optional trailing explicit zone (`UTC`, `GMT`, `UT`, `Z`, common
+/// US abbreviations, `±hhmm`, `±hh:mm`) from a base date+time string.
+/// Returns `(trimmed, Some(offset_sec))` or `(s, None)`.
 fn strip_trailing_zone(s: &str) -> (&str, Option<i64>) {
     let s = s.trim_end();
     let lower = s.to_ascii_lowercase();
-    for suffix in [" utc", " gmt", " ut"] {
+    for (suffix, off) in [
+        (" utc", 0),
+        (" gmt", 0),
+        (" ut", 0),
+        (" z", 0),
+        (" est", -5 * 3600),
+        (" edt", -4 * 3600),
+        (" cst", -6 * 3600),
+        (" cdt", -5 * 3600),
+        (" mst", -7 * 3600),
+        (" mdt", -6 * 3600),
+        (" pst", -8 * 3600),
+        (" pdt", -7 * 3600),
+    ] {
         if lower.ends_with(suffix) {
-            return (s[..s.len() - suffix.len()].trim_end(), Some(0));
+            return (s[..s.len() - suffix.len()].trim_end(), Some(off));
         }
     }
     let b = s.as_bytes();
@@ -1120,6 +1156,183 @@ fn strip_trailing_zone(s: &str) -> (&str, Option<i64>) {
     (s, None)
 }
 
+/// Strip leading `TZ="..."` prefix (parse-datetime.y `parse_datetime2`).
+/// Returns `Err(())` if `TZ=` is malformed, `Ok(Some((tz, rest)))` if present,
+/// or `Ok(None)` if absent.
+fn parse_tz_prefix(s: &str) -> Result<Option<(TimeZone, &str)>, ()> {
+    let Some(after_eq) = s.strip_prefix("TZ=") else {
+        return Ok(None);
+    };
+    let Some(inside) = after_eq.strip_prefix('"') else {
+        return Err(());
+    };
+    let Some(end_quote) = inside.find('"') else {
+        return Err(());
+    };
+    let tz_str = &inside[..end_quote];
+    let rest = &inside[end_quote + 1..];
+    if !rest.is_empty() && !rest.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return Err(());
+    }
+    Ok(Some((TimeZone::parse(tz_str), rest.trim())))
+}
+
+/// Strip parenthesized comments such as `Thu, 01 Jan 1970 00:00:00 +0000 (UTC)`.
+fn strip_paren_comments(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('(') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0usize;
+    for ch in s.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                if depth > 0 {
+                    depth -= 1;
+                    out.push(' ');
+                } else {
+                    out.push(ch);
+                }
+            }
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+fn parse_weekday_name(tok: &str) -> Option<i64> {
+    let clean = tok.trim_end_matches(['.', ',']).to_ascii_lowercase();
+    match clean.as_str() {
+        "sun" | "sunday" => Some(0),
+        "mon" | "monday" => Some(1),
+        "tue" | "tues" | "tuesday" => Some(2),
+        "wed" | "wednes" | "wednesday" => Some(3),
+        "thu" | "thur" | "thurs" | "thursday" => Some(4),
+        "fri" | "friday" => Some(5),
+        "sat" | "saturday" => Some(6),
+        _ => None,
+    }
+}
+
+fn parse_month_name(tok: &str) -> Option<i64> {
+    let clean = tok.trim_end_matches(['.', ',']).to_ascii_lowercase();
+    match clean.as_str() {
+        "jan" | "january" => Some(1),
+        "feb" | "february" => Some(2),
+        "mar" | "march" => Some(3),
+        "apr" | "april" => Some(4),
+        "may" => Some(5),
+        "jun" | "june" => Some(6),
+        "jul" | "july" => Some(7),
+        "aug" | "august" => Some(8),
+        "sep" | "sept" | "september" => Some(9),
+        "oct" | "october" => Some(10),
+        "nov" | "november" => Some(11),
+        "dec" | "december" => Some(12),
+        _ => None,
+    }
+}
+
+/// Match a weekday expression at the start of `tokens`:
+/// `<weekday>`, `this|next|last <weekday>`, or `<N> <weekday>` (`N >= 0`).
+/// Returns `(target_wd, ordinal, tokens_consumed)`.
+fn parse_weekday_expr(tokens: &[&str]) -> Option<(i64, i64, usize)> {
+    let first = *tokens.first()?;
+    if let Some(wd) = parse_weekday_name(first) {
+        return Some((wd, 0, 1));
+    }
+    if tokens.len() >= 2 {
+        if let Some(wd) = parse_weekday_name(tokens[1]) {
+            let ord = match first.to_ascii_lowercase().as_str() {
+                "this" => 0,
+                "next" => 1,
+                "last" => -1,
+                _ => {
+                    if !first.bytes().all(|b| b.is_ascii_digit()) {
+                        return None;
+                    }
+                    first.parse::<i64>().ok()?
+                }
+            };
+            return Some((wd, ord, 2));
+        }
+    }
+    None
+}
+
+fn parse_pos_day(tok: &str) -> Option<i64> {
+    let clean = tok.strip_suffix(',').unwrap_or(tok);
+    if clean.is_empty() || clean.len() > 2 || !clean.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let d: i64 = clean.parse().ok()?;
+    (1..=31).contains(&d).then_some(d)
+}
+
+fn parse_year_tok(tok: &str) -> Option<i64> {
+    if tok.len() != 4 || !tok.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let y: i64 = tok.parse().ok()?;
+    (1..=9999).contains(&y).then_some(y)
+}
+
+/// Match a month-name date at the start of `tokens`:
+/// - `DD-Month-YYYY` (1 token)
+/// - `Month DD[,] YYYY` (3 tokens)
+/// - `DD Month[,] YYYY` (3 tokens)
+/// - `Month DD` or `DD Month` (2 tokens, `year = None`)
+/// Returns `(Option<year>, month, day, tokens_consumed)`.
+fn parse_month_date(tokens: &[&str]) -> Option<(Option<i64>, i64, i64, usize)> {
+    let first = *tokens.first()?;
+    if first.contains('-') {
+        let mut parts = first.split('-');
+        let ds = parts.next()?;
+        let ms = parts.next()?;
+        let ys = parts.next()?;
+        if parts.next().is_none() {
+            if let (Some(d), Some(m), Some(y)) =
+                (parse_pos_day(ds), parse_month_name(ms), parse_year_tok(ys))
+            {
+                if d <= days_in_month(y, m) {
+                    return Some((Some(y), m, d, 1));
+                }
+            }
+        }
+    }
+    if tokens.len() >= 3 {
+        if let Some(m) = parse_month_name(tokens[0]) {
+            if let (Some(d), Some(y)) = (parse_pos_day(tokens[1]), parse_year_tok(tokens[2])) {
+                if d <= days_in_month(y, m) {
+                    return Some((Some(y), m, d, 3));
+                }
+            }
+        }
+        if let Some(m) = parse_month_name(tokens[1]) {
+            if let (Some(d), Some(y)) = (parse_pos_day(tokens[0]), parse_year_tok(tokens[2])) {
+                if d <= days_in_month(y, m) {
+                    return Some((Some(y), m, d, 3));
+                }
+            }
+        }
+    }
+    if tokens.len() >= 2 {
+        if let Some(m) = parse_month_name(tokens[0]) {
+            if let Some(d) = parse_pos_day(tokens[1]) {
+                return Some((None, m, d, 2));
+            }
+        }
+        if let Some(m) = parse_month_name(tokens[1]) {
+            if let Some(d) = parse_pos_day(tokens[0]) {
+                return Some((None, m, d, 2));
+            }
+        }
+    }
+    None
+}
+
 /// Split `<base> <relative groups>` at the first whitespace whose suffix is a
 /// well-formed relative list. Used for hybrid forms like
 /// `2020-01-02 03:04:05 UTC +1 day` (the sign may be glued to the number).
@@ -1142,8 +1355,15 @@ fn split_base_rels(s: &str) -> Option<(&str, Vec<RelAmount>)> {
 
 fn parse_date_string(s: &str) -> Option<ParsedDate> {
     let s = s.trim();
-    // GNU: an empty -d operand is today at midnight (parse-datetime.y
-    // accepts the empty grammar and 00:00 is the default time).
+    let (input_tz, s) = match parse_tz_prefix(s) {
+        Ok(Some((tz, rest))) => (Some(tz), rest),
+        Ok(None) => (None, s),
+        Err(()) => return None,
+    };
+    let cleaned = strip_paren_comments(s);
+    let s = cleaned.trim();
+    // GNU: an empty -d operand (or `TZ="..."` alone) is today at midnight
+    // (parse-datetime.y accepts the empty grammar and 00:00 is the default time).
     if s.is_empty() {
         return Some(ParsedDate {
             y: 1970,
@@ -1157,70 +1377,83 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
             from_now: false,
             rels: Vec::new(),
             time_only: Some((0, 0, 0)),
+            now_date_override: None,
             zone_override: None,
+            input_tz,
         });
     }
-    // @EPOCH (probed @0/@1234567890/@-1)
-    let parse_epoch = |expr: &str, rels: Vec<RelAmount>| -> Option<ParsedDate> {
-        let rest = expr.strip_prefix('@')?.trim();
-        let (epoch_str, ns) = if let Some((whole, frac)) = rest.split_once('.') {
-            if frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
+    // @EPOCH (probed @0/@1234567890/@-1/@0.5/@-0.5)
+    let parse_epoch =
+        |expr: &str, rels: Vec<RelAmount>, itz: Option<TimeZone>| -> Option<ParsedDate> {
+            let rest = expr.strip_prefix('@')?.trim();
+            let is_neg = rest.starts_with('-');
+            let (epoch_str, mut ns) = if let Some((whole, frac)) = rest.split_once('.') {
+                if frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                let mut acc = 0u32;
+                let fb = frac.as_bytes();
+                for i in 0..9 {
+                    let d = if i < fb.len() {
+                        (fb[i] - b'0') as u32
+                    } else {
+                        0
+                    };
+                    acc = acc * 10 + d;
+                }
+                (whole, acc)
+            } else {
+                (rest, 0u32)
+            };
+            let mut epoch: i64 = epoch_str.parse().ok()?;
+            if is_neg && ns > 0 {
+                epoch = epoch.checked_sub(1)?;
+                ns = 1_000_000_000 - ns;
             }
-            let mut acc = 0u32;
-            let fb = frac.as_bytes();
-            for i in 0..9 {
-                let d = if i < fb.len() {
-                    (fb[i] - b'0') as u32
-                } else {
-                    0
-                };
-                acc = acc * 10 + d;
-            }
-            (whole, acc)
-        } else {
-            (rest, 0u32)
+            let days = epoch.div_euclid(86400);
+            let secs = epoch.rem_euclid(86400);
+            let (y, m, d) = civil_from_days(days);
+            Some(ParsedDate {
+                y,
+                m,
+                d,
+                hh: secs / 3600,
+                mm: (secs % 3600) / 60,
+                ss: secs % 60,
+                ns,
+                force_utc: true,
+                from_now: false,
+                rels,
+                time_only: None,
+                now_date_override: None,
+                zone_override: Some(0),
+                input_tz: itz,
+            })
         };
-        let epoch: i64 = epoch_str.parse().ok()?;
-        let days = epoch.div_euclid(86400);
-        let secs = epoch.rem_euclid(86400);
-        let (y, m, d) = civil_from_days(days);
-        Some(ParsedDate {
-            y,
-            m,
-            d,
-            hh: secs / 3600,
-            mm: (secs % 3600) / 60,
-            ss: secs % 60,
-            ns,
-            force_utc: true,
-            from_now: false,
-            rels,
-            time_only: None,
-            zone_override: Some(0),
-        })
-    };
     if s.starts_with('@') {
-        if let Some(pd) = parse_epoch(s, Vec::new()) {
+        if let Some(pd) = parse_epoch(s, Vec::new(), input_tz.clone()) {
             return Some(pd);
         }
     }
     if s.eq_ignore_ascii_case("now") {
-        return Some(ParsedDate::anchored_on_now(Vec::new()));
+        return Some(ParsedDate::anchored_on_now(Vec::new(), input_tz));
     }
     // A lone relative expression: "+1 day", "1 day", "+1 day +2 hours", "1 day 2 hours ago".
     if let Some(rels) = parse_rel_groups(s) {
-        return Some(ParsedDate::anchored_on_now(rels));
+        return Some(ParsedDate::anchored_on_now(rels, input_tz));
     }
     if let Some(named) = parse_named_relative(s) {
-        return Some(ParsedDate::anchored_on_now(named));
+        return Some(ParsedDate::anchored_on_now(named, input_tz));
     }
     if let Some(days) = keyword_day(s) {
-        return Some(ParsedDate::anchored_on_now(vec![RelAmount {
-            count: days,
-            unit_seconds: 86400,
-            calendar: CalUnit::Day,
-        }]));
+        return Some(ParsedDate::anchored_on_now(
+            vec![RelAmount {
+                count: days,
+                unit_seconds: 86400,
+                calendar: CalUnit::Day,
+            }],
+            input_tz,
+        ));
     }
     // time-of-day only (digits_to_date_time / iso time rules)
     if let Some(((hh, mm, ss, ns), zone_seen, zone_override)) = parse_time_expr(s, true) {
@@ -1236,7 +1469,9 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
             from_now: false,
             rels: Vec::new(),
             time_only: Some((hh, mm, ss)),
+            now_date_override: None,
             zone_override,
+            input_tz,
         });
     }
     // "<base> [+-] N unit[ ...]": the relative tail may be glued to its sign
@@ -1249,11 +1484,11 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
         base = b;
         rels = r;
         if base.starts_with('@') {
-            return parse_epoch(base, rels);
+            return parse_epoch(base, rels, input_tz);
         }
         // base keywords share the now anchor with any tail groups
         if base.eq_ignore_ascii_case("now") {
-            return Some(ParsedDate::anchored_on_now(rels));
+            return Some(ParsedDate::anchored_on_now(rels, input_tz));
         }
         if let Some(days) = keyword_day(base) {
             let mut all = vec![RelAmount {
@@ -1262,12 +1497,12 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
                 calendar: CalUnit::Day,
             }];
             all.extend(rels);
-            return Some(ParsedDate::anchored_on_now(all));
+            return Some(ParsedDate::anchored_on_now(all, input_tz));
         }
         if let Some(named) = parse_named_relative(base) {
             let mut all = named;
             all.extend(rels);
-            return Some(ParsedDate::anchored_on_now(all));
+            return Some(ParsedDate::anchored_on_now(all, input_tz));
         }
         if let Some(((hh, mm, ss, ns), zone_seen, zone_override)) = parse_time_expr(base, true) {
             return Some(ParsedDate {
@@ -1282,7 +1517,9 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
                 from_now: false,
                 rels,
                 time_only: Some((hh, mm, ss)),
+                now_date_override: None,
                 zone_override,
+                input_tz,
             });
         }
     }
@@ -1290,43 +1527,96 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
     // Explicit trailing zone suffix ("... UTC", "... GMT", "... +08:00")
     let (base_no_zone, mut zone_override) = strip_trailing_zone(base);
 
-    // Tokenize `base_no_zone`, splitting ISO `YYYY-M-D[T|t]HH...` per token so
-    // any trailing zone or meridian stays intact, and accept the date token
-    // in either first or last position ("2026-01-01 10:00 PM" and "10:00 PM 2026-01-01").
+    // Tokenize `base_no_zone`:
+    // - `YYYY-M-D[T|t]HH:MM...` (has `-` or `/`): `T` is ISO separator, tail must contain `:`.
+    // - `YYYYMMDD[T|t]HHMM` (8 digits + T + digits): `T` is military zone (-7h).
     let mut tokens: Vec<&str> = Vec::new();
     for raw_tok in base_no_zone.split_whitespace() {
         if let Some(idx) = raw_tok.find(|c| c == 'T' || c == 't') {
             let head = &raw_tok[..idx];
             let tail = &raw_tok[idx + 1..];
             if parse_date_token(head).is_some() && tail.starts_with(|c: char| c.is_ascii_digit()) {
-                tokens.push(head);
-                tokens.push(tail);
-                continue;
+                let is_compact_8 = head.len() == 8 && head.bytes().all(|b| b.is_ascii_digit());
+                if is_compact_8 {
+                    if zone_override.is_some() {
+                        return None;
+                    }
+                    zone_override = Some(-7 * 3600);
+                    tokens.push(head);
+                    tokens.push(tail);
+                    continue;
+                } else if tail.contains(':') {
+                    tokens.push(head);
+                    tokens.push(tail);
+                    continue;
+                }
             }
         }
         tokens.push(raw_tok);
     }
 
+    // Optional RFC 2822 leading weekday with comma (`Thu, 01 Jan 1970 ...`)
+    let mut tok_slice: &[&str] = &tokens;
+    if tok_slice.len() >= 2
+        && tok_slice[0].ends_with(',')
+        && parse_weekday_name(tok_slice[0]).is_some()
+    {
+        tok_slice = &tok_slice[1..];
+    }
+
     let mut date_vals: Option<(i64, i64, i64)> = None;
+    let mut now_date_override: Option<NowDateRule> = None;
     let mut time_tokens: Vec<&str> = Vec::new();
-    for tok in tokens {
-        if date_vals.is_none() {
-            if let Some(d) = parse_date_token(tok) {
+
+    let mut i = 0usize;
+    while i < tok_slice.len() {
+        if date_vals.is_none() && now_date_override.is_none() {
+            if let Some(d) = parse_date_token(tok_slice[i]) {
                 date_vals = Some(d);
+                i += 1;
+                continue;
+            }
+            if let Some((opt_y, m, d, used)) = parse_month_date(&tok_slice[i..]) {
+                if let Some(y) = opt_y {
+                    date_vals = Some((y, m, d));
+                } else {
+                    now_date_override = Some(NowDateRule::MonthDay { month: m, day: d });
+                }
+                i += used;
+                continue;
+            }
+            if let Some(days) = keyword_day(tok_slice[i]) {
+                now_date_override = Some(NowDateRule::DayShift(days));
+                i += 1;
+                continue;
+            }
+            if let Some((target_wd, ordinal, used)) = parse_weekday_expr(&tok_slice[i..]) {
+                now_date_override = Some(NowDateRule::Weekday { target_wd, ordinal });
+                i += used;
                 continue;
             }
         }
-        time_tokens.push(tok);
+        time_tokens.push(tok_slice[i]);
+        i += 1;
     }
-    let (y, m, d) = date_vals?;
-    if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
+
+    let (y, m, d) = if let Some((y, m, d)) = date_vals {
+        if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
+            return None;
+        }
+        (y, m, d)
+    } else if now_date_override.is_some() {
+        (1970, 1, 1)
+    } else {
         return None;
-    }
+    };
 
     let (mut hh, mut mm, mut ss, mut ns) = (0i64, 0i64, 0i64, 0u32);
     if !time_tokens.is_empty() {
         let time_str = time_tokens.join(" ");
-        let ((th, tm, ts, tns), time_zone_seen, time_zone_off) = parse_time_expr(&time_str, false)?;
+        let allow_bare = date_vals.is_some();
+        let ((th, tm, ts, tns), time_zone_seen, time_zone_off) =
+            parse_time_expr(&time_str, allow_bare)?;
         hh = th;
         mm = tm;
         ss = ts;
@@ -1351,18 +1641,21 @@ fn parse_date_string(s: &str) -> Option<ParsedDate> {
         from_now: false,
         rels,
         time_only: None,
+        now_date_override,
         zone_override,
+        input_tz,
     })
 }
 
 /// Build the epoch of a parsed date under `zone` and apply the relative
 /// adjustments.
 fn resolve_parsed(p: &ParsedDate, zone: &TimeZone, now_epoch: i64) -> Option<DateTime> {
-    if let Some((hh, mm, ss)) = p.time_only {
-        // Time-of-day-only: take the civil date from `now`, then apply the
-        // operand's own zone (military letter) before converting back to
-        // the output zone (probed: TZ=UTC `-d 1024t` = 17:24:00).
-        let (off_now, name_now) = zone.at(now_epoch);
+    let input_zone = p.input_tz.as_ref().unwrap_or(zone);
+    let mut dt = if let Some((hh, mm, ss)) = p.time_only {
+        // Time-of-day-only: take the civil date from `now` in `input_zone`,
+        // then apply the operand's own zone (military letter) before
+        // converting back to the output zone (probed: TZ=UTC `-d 1024t` = 17:24:00).
+        let (off_now, name_now) = input_zone.at(now_epoch);
         let now_dt = DateTime::from_epoch(now_epoch, off_now, name_now);
         let wall = days_from_civil(now_dt.year, now_dt.month, now_dt.day) * 86400
             + hh * 3600
@@ -1370,40 +1663,68 @@ fn resolve_parsed(p: &ParsedDate, zone: &TimeZone, now_epoch: i64) -> Option<Dat
             + ss;
         let parsed_off = p.zone_override.unwrap_or(off_now);
         let epoch = wall - parsed_off;
-        let (off, name) = zone.at(epoch);
-        return apply_rels(
+        let (off, name) = input_zone.at(epoch);
+        apply_rels(
             DateTime::from_epoch_ns(epoch, off, name, p.ns),
             &p.rels,
-            zone,
-        );
-    }
-    if p.from_now {
-        let (off, name) = zone.at(now_epoch);
-        return apply_rels(
+            input_zone,
+        )?
+    } else if p.from_now {
+        let (off, name) = input_zone.at(now_epoch);
+        apply_rels(
             DateTime::from_epoch_ns(now_epoch, off, name, p.ns),
             &p.rels,
-            zone,
-        );
-    }
-    let epoch0 = if let Some(z_off) = p.zone_override {
-        days_from_civil(p.y, p.m, p.d) * 86400 + p.hh * 3600 + p.mm * 60 + p.ss - z_off
-    } else if p.force_utc {
-        // @EPOCH and explicit-zone forms: the wall fields already ARE UTC
-        days_from_civil(p.y, p.m, p.d) * 86400 + p.hh * 3600 + p.mm * 60 + p.ss
+            input_zone,
+        )?
     } else {
-        // bare wall time interpreted in `zone`
-        let days = days_from_civil(p.y, p.m, p.d);
+        let days = if let Some(rule) = p.now_date_override {
+            let (off_now, name_now) = input_zone.at(now_epoch);
+            let now_dt = DateTime::from_epoch(now_epoch, off_now, name_now);
+            let now_days = days_from_civil(now_dt.year, now_dt.month, now_dt.day);
+            match rule {
+                NowDateRule::DayShift(shift) => now_days + shift,
+                NowDateRule::Weekday { target_wd, ordinal } => {
+                    let today_wd = weekday_from_days(now_days);
+                    let diff = (target_wd - today_wd).rem_euclid(7);
+                    let adjust = if ordinal > 0 && today_wd != target_wd {
+                        ordinal - 1
+                    } else {
+                        ordinal
+                    };
+                    now_days + diff + 7 * adjust
+                }
+                NowDateRule::MonthDay { month, day } => {
+                    if day < 1 || day > days_in_month(now_dt.year, month) {
+                        return None;
+                    }
+                    days_from_civil(now_dt.year, month, day)
+                }
+            }
+        } else {
+            days_from_civil(p.y, p.m, p.d)
+        };
         let wall = days * 86400 + p.hh * 3600 + p.mm * 60 + p.ss;
-        let west = zone.std_offset_west();
-        let (off, _) = zone.at(wall - west);
-        wall - off
+        let epoch0 = if let Some(z_off) = p.zone_override {
+            wall - z_off
+        } else if p.force_utc {
+            wall
+        } else {
+            let west = input_zone.std_offset_west();
+            let (off, _) = input_zone.at(wall - west);
+            wall - off
+        };
+        let (off, name) = input_zone.at(epoch0);
+        apply_rels(
+            DateTime::from_epoch_ns(epoch0, off, name, p.ns),
+            &p.rels,
+            input_zone,
+        )?
     };
-    let (off, name) = zone.at(epoch0);
-    apply_rels(
-        DateTime::from_epoch_ns(epoch0, off, name, p.ns),
-        &p.rels,
-        zone,
-    )
+    if p.input_tz.is_some() {
+        let (out_off, out_name) = zone.at(dt.epoch);
+        dt = DateTime::from_epoch_ns(dt.epoch, out_off, out_name, dt.ns);
+    }
+    Some(dt)
 }
 
 fn apply_rels(dt: DateTime, rels: &[RelAmount], zone: &TimeZone) -> Option<DateTime> {
@@ -2647,9 +2968,183 @@ mod tests {
             fmt_at("2020-01-02 1 day").as_deref(),
             Some("2020-01-03_00:00:00")
         );
-        // documented unsupported subset: weekday names stay invalid
-        assert_eq!(fmt_at("next monday"), None);
-        assert_eq!(fmt_at("monday"), None);
+    }
+
+    #[test]
+    fn parse_datetime_issue_1813_families() {
+        // Pinned now: 2020-01-02 03:04:05 UTC (Thursday, weekday 4).
+        // 1. Weekday names (midnight default, plus optional wall time)
+        let weekday_cases = [
+            ("thursday", "2020-01-02_00:00:00"),
+            ("this thursday", "2020-01-02_00:00:00"),
+            ("next thursday", "2020-01-09_00:00:00"),
+            ("last thursday", "2019-12-26_00:00:00"),
+            ("monday", "2020-01-06_00:00:00"),
+            ("next monday", "2020-01-06_00:00:00"),
+            ("this monday", "2020-01-06_00:00:00"),
+            ("2 monday", "2020-01-13_00:00:00"),
+            ("last friday", "2019-12-27_00:00:00"),
+            ("friday", "2020-01-03_00:00:00"),
+            ("next Fri", "2020-01-03_00:00:00"),
+            ("monday 10:00", "2020-01-06_10:00:00"),
+            ("10:00 next monday", "2020-01-06_10:00:00"),
+            ("next monday +1 hour", "2020-01-06_01:00:00"),
+        ];
+        for (input, want) in weekday_cases {
+            assert_eq!(fmt_at(input).as_deref(), Some(want), "{input}");
+        }
+        assert_eq!(fmt_at("-1 monday"), None);
+
+        // 2. Month-name dates
+        let month_cases = [
+            ("Jan 2 2020", "2020-01-02_00:00:00"),
+            ("2 Jan 2020", "2020-01-02_00:00:00"),
+            ("January 2, 2020", "2020-01-02_00:00:00"),
+            ("Jan 2, 2020 03:04:05", "2020-01-02_03:04:05"),
+            ("10:00 Jan 2 2020", "2020-01-02_10:00:00"),
+            ("2-Jan-2020", "2020-01-02_00:00:00"),
+            ("Jan 2", "2020-01-02_00:00:00"),
+            ("2 Jan", "2020-01-02_00:00:00"),
+            ("Jan 2 2020 +1 day", "2020-01-03_00:00:00"),
+        ];
+        for (input, want) in month_cases {
+            assert_eq!(fmt_at(input).as_deref(), Some(want), "{input}");
+        }
+        assert_eq!(fmt_at("2020 Jan 2"), None);
+        assert_eq!(fmt_at("Feb 30 2020"), None);
+
+        // 3. Combined day keyword + wall time
+        let day_time_cases = [
+            ("today 10:00", "2020-01-02_10:00:00"),
+            ("tomorrow 10:00", "2020-01-03_10:00:00"),
+            ("yesterday 14:30:00", "2020-01-01_14:30:00"),
+            ("10:00 tomorrow", "2020-01-03_10:00:00"),
+            ("14:30:00 yesterday", "2020-01-01_14:30:00"),
+        ];
+        for (input, want) in day_time_cases {
+            assert_eq!(fmt_at(input).as_deref(), Some(want), "{input}");
+        }
+
+        // 4. TZ="..." prefix (POSIX TZ strings + IANA fallback to UTC)
+        assert_eq!(
+            tz(
+                "UTC",
+                &["-u", "-d", r#"TZ="UTC" 2020-01-02 03:04"#, "+%F_%T"]
+            )
+            .1,
+            "2020-01-02_03:04:00\n"
+        );
+        assert_eq!(
+            tz(
+                "UTC",
+                &["-u", "-d", r#"TZ="EST5EDT" 2020-01-02 09:00"#, "+%F_%T"]
+            )
+            .1,
+            "2020-01-02_14:00:00\n"
+        );
+        assert_eq!(
+            tz(
+                "UTC",
+                &["-u", "-d", r#"TZ="PST8PDT" 2020-07-02 09:00"#, "+%F_%T"]
+            )
+            .1,
+            "2020-07-02_16:00:00\n"
+        );
+        // IANA zone falls back to UTC (documented boundary) without failing
+        assert_eq!(
+            tz(
+                "UTC",
+                &[
+                    "-u",
+                    "-d",
+                    r#"TZ="America/Los_Angeles" 09:00 next Fri"#,
+                    "+%H:%M"
+                ]
+            )
+            .0,
+            0
+        );
+        assert_eq!(tz("UTC", &["-u", "-d", "TZ='UTC' 09:00"]).0, 1);
+        assert_eq!(tz("UTC", &["-u", "-d", "TZ=UTC 09:00"]).0, 1);
+
+        // 5. @fraction (positive, negative, truncation)
+        assert_eq!(
+            tz("UTC", &["-u", "-d", "@0.5", "+%F %T.%N %s"]).1,
+            "1970-01-01 00:00:00.500000000 0\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-u", "-d", "@-0.5", "+%F %T.%N %s"]).1,
+            "1969-12-31 23:59:59.500000000 -1\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-u", "-d", "@-1.25", "+%F %T.%N %s"]).1,
+            "1969-12-31 23:59:58.750000000 -2\n"
+        );
+        assert_eq!(
+            tz("UTC", &["-u", "-d", "@1700000000.123456789", "+%s.%N"]).1,
+            "1700000000.123456789\n"
+        );
+        assert_eq!(tz("UTC", &["-u", "-d", "@.5"]).0, 1);
+        assert_eq!(tz("UTC", &["-u", "-d", "@0."]).0, 1);
+
+        // 6. RFC 2822 style
+        assert_eq!(
+            tz("UTC", &["-u", "-d", "Thu, 01 Jan 1970 00:00:00 GMT", "+%s"]).1,
+            "0\n"
+        );
+        assert_eq!(
+            tz(
+                "UTC",
+                &["-u", "-d", "Thu, 01 Jan 1970 00:00:00 +0200", "+%F_%T %s"]
+            )
+            .1,
+            "1969-12-31_22:00:00 -7200\n"
+        );
+        assert_eq!(
+            tz(
+                "UTC",
+                &["-u", "-d", "Mon, 2 Jan 2020 03:04:05 -0500", "+%F_%T"]
+            )
+            .1,
+            "2020-01-02_08:04:05\n"
+        );
+        assert_eq!(
+            tz(
+                "UTC",
+                &["-u", "-d", "Fri, 02 Jan 2020 03:04:05 EST", "+%F_%T"]
+            )
+            .1,
+            "2020-01-02_08:04:05\n"
+        );
+        assert_eq!(
+            tz(
+                "UTC",
+                &["-u", "-d", "Thu, 01 Jan 1970 00:00:00 +0000 (UTC)", "+%s"]
+            )
+            .1,
+            "0\n"
+        );
+
+        // 7. Numeric date + military T + HHMM
+        assert_eq!(
+            fmt_at("20200102T0304").as_deref(),
+            Some("2020-01-02_10:04:00")
+        );
+        assert_eq!(
+            fmt_at("20200102t0304").as_deref(),
+            Some("2020-01-02_10:04:00")
+        );
+        assert_eq!(
+            fmt_at("20200102T03:04").as_deref(),
+            Some("2020-01-02_10:04:00")
+        );
+        assert_eq!(
+            fmt_at("20200102 0304").as_deref(),
+            Some("2020-01-02_03:04:00")
+        );
+        assert_eq!(fmt_at("20200102T030405"), None);
+        assert_eq!(fmt_at("20200102T0304Z"), None);
+        assert_eq!(fmt_at("2020-01-02T0304"), None);
     }
 
     #[test]
