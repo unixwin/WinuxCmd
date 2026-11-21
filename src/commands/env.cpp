@@ -642,6 +642,67 @@ auto print_env(const EnvEntries& vars, bool null_terminated) -> void {
   }
 }
 
+// Length of the well-formed UTF-8 sequence starting at text[pos], or 0
+// when the bytes there do not form one.  Acceptance rules are
+// is_valid_utf8's (no overlongs, surrogates, or out-of-range scalars),
+// checked on the lead-byte-dictated slice so stray continuation bytes
+// and truncated tails count as invalid.
+auto utf8_sequence_length(std::string_view text, size_t pos) -> size_t {
+  const auto lead = static_cast<unsigned char>(text[pos]);
+  const size_t need = lead < 0x80        ? 1
+                      : (lead & 0xE0) == 0xC0 ? 2
+                      : (lead & 0xF0) == 0xE0 ? 3
+                      : (lead & 0xF8) == 0xF0 ? 4
+                                           : 0;
+  if (need == 0 || pos + need > text.size()) return 0;
+  return is_valid_utf8(text.substr(pos, need)) ? need : 0;
+}
+
+// Decode a byte run that is not valid UTF-8 through the system ANSI
+// code page — the encoding .env/INI files conventionally use on
+// Windows — so e.g. a Latin-1/CP1252 0xFF arrives as U+00FF instead of
+// collapsing to U+FFFD.  The run goes through MultiByteToWideChar as a
+// unit so double-byte ACP characters stay intact; a run the ACP cannot
+// map at all falls back to the historical UTF-8 lossy conversion
+// (U+FFFD per bad sequence).
+auto acp_bytes_to_wstring(std::string_view bytes) -> std::wstring {
+  const int size_needed = MultiByteToWideChar(
+      CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
+  if (size_needed <= 0) return utf8_to_wstring(bytes);
+  std::wstring wide(static_cast<size_t>(size_needed), L'\0');
+  MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()),
+                      wide.data(), size_needed);
+  return wide;
+}
+
+// Best-effort narrowing for the UTF-16 child environment block: valid
+// UTF-8 segments pass through untouched and invalid runs go through the
+// ANSI code page.  Arbitrary bytes still cannot round-trip — the Windows
+// environment block is UTF-16 — so this preserves character identity
+// under the system code page rather than the byte sequence itself
+// (#1840).  The byte-faithful print path (env with no command) is
+// unaffected.
+auto env_bytes_to_wstring(std::string_view text) -> std::wstring {
+  std::wstring out;
+  size_t pos = 0;
+  while (pos < text.size()) {
+    const size_t seqlen = utf8_sequence_length(text, pos);
+    if (seqlen != 0) {
+      out.append(utf8_to_wstring(text.substr(pos, seqlen)));
+      pos += seqlen;
+      continue;
+    }
+    size_t run_end = pos + 1;
+    while (run_end < text.size() &&
+           utf8_sequence_length(text, run_end) == 0) {
+      ++run_end;
+    }
+    out.append(acp_bytes_to_wstring(text.substr(pos, run_end - pos)));
+    pos = run_end;
+  }
+  return out;
+}
+
 auto build_environment_block(const EnvEntries& vars) -> std::vector<wchar_t> {
   std::vector<wchar_t> block;
   for (const auto& [key, value] : vars) {
@@ -654,24 +715,17 @@ auto build_environment_block(const EnvEntries& vars) -> std::vector<wchar_t> {
     // failing the spawn (the assignment itself stays accepted; the empty
     // block entry is a documented platform divergence).
     if (key.empty()) continue;
-    auto entry = utf8_to_wstring(key + "=" + value);
-    block.insert(block.end(), entry.begin(), entry.end());
+    // Key and value narrow independently so a non-UTF-8 value cannot
+    // drag a valid-UTF-8 key through the ANSI fallback (and vice versa).
+    const auto wide_key = env_bytes_to_wstring(key);
+    const auto wide_value = env_bytes_to_wstring(value);
+    block.insert(block.end(), wide_key.begin(), wide_key.end());
+    block.push_back(L'=');
+    block.insert(block.end(), wide_value.begin(), wide_value.end());
     block.push_back(L'\0');
   }
   block.push_back(L'\0');
   return block;
-}
-
-auto make_working_directory_arg(const std::string& chdir, std::wstring& storage)
-    -> LPCWSTR {
-  if (chdir.empty()) return nullptr;
-  storage = utf8_to_wstring(native_path::normalize_api_operand(chdir));
-  DWORD attrs = GetFileAttributesW(storage.c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES ||
-      (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-    return nullptr;
-  }
-  return storage.c_str();
 }
 
 // [GNU] -v/--debug traces each processing step on stderr in GNU's format:
@@ -725,13 +779,57 @@ auto env_windows_error_text(DWORD error) -> std::string {
   return win32_posix_error_text(error, options);
 }
 
+// [GNU] env.c:896-899: an execvp failure is reported as
+// "env: '<program>': <strerror>", and a whitespace-bearing program name
+// that is not found additionally gets the shebang hint.  Exit statuses
+// (127 for ENOENT, 126 otherwise) are unchanged.
+auto report_exec_error(const std::string& command, DWORD error) -> int {
+  const int status = env_command_status_from_create_error(error);
+  safeErrorPrintLn(
+      "env: " +
+      winux::i18n::format("command.env.error.exec_failed", "{}: {}",
+                          gnu_quotearg::shell_escape_quote_always(command),
+                          env_windows_error_text(error)));
+  if (status == 127 &&
+      command.find_first_of(" \t\n\v\f\r") != std::string::npos) {
+    safeErrorPrintLn(
+        "env: " +
+        winux::i18n::translate("command.env.error.shebang_hint",
+                               "use -[v]S to pass options in shebang lines"));
+  }
+  return status;
+}
+
 auto run_command(const Config& cfg, const EnvEntries& vars) -> int {
-  if (cfg.debug) {
-    // [GNU] trace order: chdir, argv0, then executing + quoted args
-    // (env.c:902-923, uutils #14171).
-    if (!cfg.chdir.empty()) {
-      safeErrorPrint("chdir:    '" + cfg.chdir + "'\n");
+  // [GNU] env.c:879-896 order: -C is traced and chdir() attempted before
+  // the "executing:" trace and before execvp's PATH search, so a bad
+  // directory is diagnosed (125) even when the command itself would not
+  // resolve, and relative PATH entries resolve in the new directory
+  // exactly like GNU's own chdir-then-execvp.  env is a leaf process
+  // about to spawn its child, so chdir'ing itself is safe: the child
+  // inherits the directory and no later env code depends on the old cwd.
+  if (cfg.debug && !cfg.chdir.empty()) {
+    safeErrorPrint("chdir:    " +
+                   gnu_quotearg::shell_escape_quote_always(cfg.chdir) + "\n");
+  }
+  if (!cfg.chdir.empty()) {
+    const std::wstring dir =
+        utf8_to_wstring(native_path::normalize_api_operand(cfg.chdir));
+    if (!SetCurrentDirectoryW(dir.c_str())) {
+      safeErrorPrintLn(
+          "env: " +
+          winux::i18n::format("command.env.error.chdir_failed",
+                              "cannot change directory to {}: {}",
+                              gnu_quotearg::shell_escape_quote_always(
+                                  cfg.chdir),
+                              env_windows_error_text(GetLastError())));
+      return 125;
     }
+  }
+
+  if (cfg.debug) {
+    // [GNU] trace order after chdir: argv0, then executing + quoted args
+    // (env.c:888-891, uutils #14171).
     if (!cfg.argv0.empty()) {
       safeErrorPrint("argv0:     '" + cfg.argv0 + "'\n");
     }
@@ -749,7 +847,7 @@ auto run_command(const Config& cfg, const EnvEntries& vars) -> int {
   // honoring the modified PATH this env invocation is about to install.
   std::optional<std::wstring> path_override;
   if (auto path_value = find_env_value(vars, "PATH"); path_value.has_value()) {
-    path_override = utf8_to_wstring(*path_value);
+    path_override = env_bytes_to_wstring(*path_value);
   }
   winux::childproc::ChildLaunchRequest env_launch_request;
   env_launch_request.command = cfg.command.front();
@@ -765,21 +863,12 @@ auto run_command(const Config& cfg, const EnvEntries& vars) -> int {
   if (launch.status != winux::childproc::ChildResolveStatus::Found) {
     const DWORD error =
         winux::childproc::child_status_to_win32_error(launch.status);
-    safeErrorPrint("env: failed to run command '" + cfg.command.front() +
-                   "': " + env_windows_error_text(error) + "\n");
-    return env_command_status_from_create_error(error);
+    return report_exec_error(cfg.command.front(), error);
   }
   std::optional<std::wstring> application_name =
       std::move(launch.application_name);
   auto cmd_line = std::move(launch.command_line);
   auto env_block = build_environment_block(vars);
-  std::wstring working_directory;
-  LPCWSTR working_directory_arg =
-      make_working_directory_arg(cfg.chdir, working_directory);
-  if (!cfg.chdir.empty() && working_directory_arg == nullptr) {
-    cp::report_custom_error(L"env", L"cannot change directory");
-    return 125;
-  }
 
   STARTUPINFOW si{sizeof(si)};
   si.dwFlags = STARTF_USESTDHANDLES;
@@ -788,15 +877,14 @@ auto run_command(const Config& cfg, const EnvEntries& vars) -> int {
   si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
   PROCESS_INFORMATION pi{};
+  // lpCurrentDirectory stays null: the chdir above already moved this
+  // process and the child inherits it.
   BOOL ok = CreateProcessW(
       application_name.has_value() ? application_name->c_str() : nullptr,
       cmd_line.data(), nullptr, nullptr, TRUE, CREATE_UNICODE_ENVIRONMENT,
-      env_block.data(), working_directory_arg, &si, &pi);
+      env_block.data(), nullptr, &si, &pi);
   if (!ok) {
-    DWORD error = GetLastError();
-    safeErrorPrint("env: failed to run command '" + cfg.command.front() +
-                   "': " + env_windows_error_text(error) + "\n");
-    return env_command_status_from_create_error(error);
+    return report_exec_error(cfg.command.front(), GetLastError());
   }
 
   WaitForSingleObject(pi.hProcess, INFINITE);
@@ -816,6 +904,13 @@ auto run(const Config& cfg) -> int {
 
   if (cfg.command.empty() && !cfg.chdir.empty()) {
     cp::report_custom_error(L"env", L"must specify command with --chdir");
+    return 125;
+  }
+
+  // [GNU] env.c:1204-1207 (coreutils >= 9.5, which added -a/--argv0):
+  // argv0 without a command is a usage error, exit 125.
+  if (cfg.command.empty() && !cfg.argv0.empty()) {
+    cp::report_custom_error(L"env", L"must specify command with --argv0 (-a)");
     return 125;
   }
 
