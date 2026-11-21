@@ -323,6 +323,24 @@ constexpr CommandCategory kCommandCategories[] = {
      "Terminal & documentation:", kTerminalDocumentationCommands},
 };
 
+/// Stem of the running image's file name. Unlike argv[0], a spawner cannot
+/// rewrite it: `env -a/--argv0` (#1839) leaves the launched <cmd>.exe — a
+/// link of this same binary — as the authoritative applet name.
+static std::string moduleExecutableStem() noexcept {
+  std::wstring buffer(MAX_PATH, L'\0');
+  for (;;) {
+    const DWORD size = GetModuleFileNameW(nullptr, buffer.data(),
+                                          static_cast<DWORD>(buffer.size()));
+    if (size == 0) return {};
+    if (size < buffer.size()) {
+      buffer.resize(size);
+      return wstring_to_utf8(
+          std::filesystem::path(buffer).stem().wstring());
+    }
+    buffer.resize(buffer.size() * 2);
+  }
+}
+
 void printGuideLine(std::string_view key, std::string_view fallback) {
   safePrintLn(winux::i18n::translate(key, fallback));
 }
@@ -500,6 +518,21 @@ int wmain(int argc, wchar_t* wargv[]) noexcept {
   args.reserve(owned_args.size() - 1);
   for (size_t i = 1; i < owned_args.size(); ++i) {
     args.emplace_back(owned_args[i]);
+  }
+
+  // #1839: env -a/--argv0 (and any other argv[0] rewrite) decouples argv[0]
+  // from the launched image. argv[0] stays authoritative while it names a
+  // registered command — that preserves `env -a <applet> ...` overrides —
+  // but a foreign argv[0] cannot dispatch the multicall binary, so fall back
+  // to the module filename: the <cmd>.exe entry the launcher resolved is a
+  // link of this same image and still names the applet. A module stem of
+  // "winuxcmd" routes back to the verb form below, which is also what
+  // `env -a <x> winuxcmd <cmd>` needs.
+  if (!CommandRegistry::hasCommand(self_name)) {
+    const std::string module_name = moduleExecutableStem();
+    if (!module_name.empty() && module_name != self_name) {
+      self_name = module_name;
+    }
   }
 
   if (self_name == "winuxcmd") {
