@@ -41,6 +41,267 @@ repository release tags.
   month-name forms, day+time composites, `TZ=` prefixes, `@`-epoch
   fractions, RFC 2822 dates, and `YYYYMMDDTHHMM`, matching the GNU
   coreutils parser shapes verified against coreutils 9.4.
+
+### Full list
+
+All 127 issues closed in the window (2026-11-03 – 11-22), grouped by command/theme (mechanical classification, one group per issue; titles verbatim):
+
+#### bsdtar (1)
+
+- #1530 [bsdtar] 解 winlibs 发行 zip 在特定条目失败：Unsupported ZIP compression method (8: deflation)
+
+#### cat (2)
+
+- #1803 cat: reading a directory on stdin must report EISDIR (rc 1), not silent EOF (rc 0)
+- #1807 cat 读目录 stdin 静默 rc=0，应报 `cat: -: Is a directory`、rc=1
+
+#### chown (3)
+
+- #1701 chown: no-op ownership change fails with "Operation not permitted" (rc 1) where GNU retains (rc 0)
+- #1702 chown: -v reports on stderr and -c prints "retained" lines (GNU: stdout, -c silent)
+- #1703 chown: empty user spec '' is rejected (GNU treats it as a no-op, rc 0)
+
+#### cksum (3)
+
+- #1709 cksum -c accepts CRC/untagged-CRC checksum lines that GNU 9.4 rejects
+- #1710 cksum: -a crc32b is accepted (GNU 9.4 has no such algorithm)
+- #1752 cksum --base64 -a sha256 check file rejected (GNU accepts)
+
+#### comm (1)
+
+- #1712 comm - -: exits 0 without GNU's "Bad file descriptor" diagnostic (residual #429)
+
+#### cp (5)
+
+- #1647 [cp] 任何符号链接源都无法复制：cannot open ... Invalid argument（默认/-d/-L/-r/-a）
+- #1648 [cp] -i 拒绝复制时退出码为 0（GNU 为 1）
+- #1693 [cp] -r -H <dir-symlink> 失败：rc=1，目标目录未创建（GNU 跟随复制；#1647 拆出）
+- #1757 cp no-dereference symlink recreation regressed after #1743 (rust2 cp wire)
+- #1788 cp -n warning matches GNU 9.4 oracle — audit ruling (niubash#993 S10)
+
+#### csplit (1)
+
+- #1591 csplit/pathchk/ptx bare -h is misrouted to --help (GNU: invalid option)
+
+#### cut (1)
+
+- #1511 [C2] cut field mode breaks when field delimiter == record delimiter
+
+#### date (2)
+
+- #1813 rust2 date: parse-datetime subset still outside the port (weekday/month names, combined day+time, TZ= prefixes, @fraction, RFC 2822)
+- #1847 [gnu-baseline] date 解析覆盖缺口：Jan-2-2020（Mon-D-Y 连字符形）与裸 monday 0304 被拒，GNU 接受
+
+#### dd (2)
+
+- #1707 dd: status summary lacks GNU's FULL+PARTIAL record shape and time/rate suffix
+- #1708 dd: conv=ascii/ebcdic/ibm/block/unblock/ucase/lcase/swab rejected as "not supported on Windows"
+
+#### df (1)
+
+- #1657 [df] --output 末列尾随空格、表头未按列宽对齐
+
+#### diff (1)
+
+- #1527 diff: optional context forms (--unified=/--context=, -c/-u) still error past UINT64_MAX — needs OptionalUIntClamp
+
+#### du (5)
+
+- #1656 [du] -L 不跟随目录符号链接参数，错误行缺原因
+- #1670 [du] -L 下同一目录经链接名与实名到达时去重失效（dirlink + dir 打印两行，GNU 仅一行）
+- #1748 du: -L 对目录符号链接操作数不跟随遍历目标
+- #1754 du accepts --summarize together with --all (GNU rejects)
+- #1755 du accepts --threshold -0 (GNU rejects)
+
+#### echo (1)
+
+- #1621 [bug] echo -r/--repeat 仍被 int 解析拒收：退役扩展拼写下 rc 1，GNU rc 0
+
+#### env (5)
+
+- #1622 [packaging] 默认版剥离 env 入口链接是误归类：env 不是 bash 内建，#!/usr/bin/env 的 git hook 无 env.exe 可用（niubash#1002）
+- #1623 [bug] env 启动 #! 脚本失败（Permission denied/126）：未接入 execvp 形 childproc 解析，#!/usr/bin/env 的 git hook 依赖它（niubash#1002）
+- #1836 env: options after the first assignment are treated as the command (no getopt permutation)
+- #1838 env: no env.exe in the installed link set — nested env broken once the shell builtin is gone
+- #1839 env: -a/--argv0 cannot dispatch any suite command (multicall argv0 conflict)
+
+#### factor (1)
+
+- #1814 rust2 factor: operands and stdin tokens above u64::MAX are rejected (u64-only number theory boundary)
+
+#### find (3)
+
+- #1617 [compat] find 不认 --help/--version 双横线拼法：被当谓词报 unknown predicate（GNU 双拼法同义注册）
+- #1633 [compat] find --help/--version 优先级偏差：预扫描先于表达式解析，错误 + help 组合时 GNU 报错优先（wc-b3 3a76db02 后续）
+- #1718 [find] -foo -context（裸）先报 ctx 缺操作数，GNU 先报 -foo 未知谓词
+
+#### fold (1)
+
+- #342 [candidate] fold: bug(fold): when passing $'\xFF' it reports incorrect error messages (uutils#12806)
+
+#### grep (10)
+
+- #1507 [G11] grep: binary detection samples only the first 64 KiB on the streaming path
+- #1508 [G12] grep -o with multiple patterns prints overlapping pieces instead of leftmost-longest
+- #1509 [G18] grep count options above INT_MAX rejected instead of ceilinged (shared parser INT_TYPE)
+- #1510 [G19] grep missing-pattern diagnostic shape (usage-text plumbing)
+- #1515 [A5-G13 residual] grep context line numbers are never width-padded like GNU
+- #1516 [A5-G17 residual] grep: an invalid --color value makes GNU print help to stdout and exit 0; ours errors
+- #1521 grep/diff numeric options: (INT64_MAX, UINT64_MAX] band should clamp like GNU (residual of #1519)
+- #1531 grep's default engine is ~73x slower than --no-pcre, and that flag is undocumented
+- #1722 [grep] egrep/fgrep print the obsolescent warning on every call; GNU 3.11 prints none
+- #1723 [grep] `grep x ''` reports 'Is a directory'; GNU reports 'No such file or directory'
+
+#### hexdump (1)
+
+- #1522 Text-mode narrow-ctor operand readers (dircolors, hexdump -f, hostname -F) share the #342 filename class
+
+#### hostid (1)
+
+- #1802 hostid: -h must be an invalid option (rc 1), like -v/-V — ho12 sibling gap
+
+#### hostname (1)
+
+- #1526 hostname: -F is advertised in help, rejected by the parser, and its read branch is dead code
+
+#### join (1)
+
+- #1713 join -z still splits newline-terminated input (residual #1008)
+
+#### ln (3)
+
+- #1609 [ln] create_symlink absolutizes the link TARGET
+- #1651 [ln] -i/-f 顺序未遵循 last-wins：-i -f 仍提示并拒绝
+- #1675 [ln] -b 与 -i 同用时提示顺序与 GNU 不符（未提示直接备份）
+
+#### locale (1)
+
+- #1549 locale 值模型重做（跟踪单）：以 locale-database 模拟层替代 keyword_value() 值表
+
+#### ls (15)
+
+- #1396 [perf] unsigned applets pay a per-spawn AV scan on security-software machines: git 20ms vs ls/which 0.9s (warm)
+- #1504 ls: COLUMNS env var ignored when stdout is not a terminal (GNU uses it as the width fallback)
+- #1536 [ls] COLUMNS face merged via #1534 diverges from GNU in five recorded ways
+- #1542 ls: grid takes 2 columns at exact width where GNU takes 1 (<= vs strict <)
+- #1543 [ls] grid column fit accepts an exact-fit layout (total == width) where GNU calculate_columns requires strict <
+- #1572 [compat] ls/stat 对裸名缺 .exe 后缀透明：引擎 test/exec 已透明，同一文件多种答案（niubash#993 §3 stat 家族合并建议）
+- #1639 [ls] -l 符号链接行缺 ` -> target`，链接 size 恒为 0
+- #1640 [ls] -L 无法解引用符号链接：文件/目录链接均报 cannot access，rc=2
+- #1641 [ls] 列填充偏差：-s 大小列不右对齐；-x/--format=across 列距多 1 空格、窄宽度少一列
+- #1642 [ls] --group-directories-first 未把指向目录的符号链接归入目录组
+- #1643 [ls] -Z 直接报 not supported 并 rc=1（GNU 非 SELinux 环境输出 '?' 且 rc=0）
+- #1644 [ls/du] --si 未生效：仍按 1024 计算并输出大写 K（GNU 1000 进制、小写 k）
+- #1645 [ls] 非法 --sort 值退出码 2 且候选表含 name/type（GNU rc=1，候选表不同）
+- #1646 [ls] 引用风格差异：-b 不转义空格/非 ASCII；--quoting-style=shell 给 bak~ 多加引号并用 '\'' 转撇号
+- #1777 [compat] 权限模型不自洽：ls -l 恒 777、stat 不认可执行扩展、find/test 已按 0755 判定 —— 需统一为单一 mode 值模型（niubash#993 §3 收尾，#1572 姊妹面）
+
+#### mv (2)
+
+- #374 [candidate] mv: minorbug(mv): when -m is \x01 it do not quote it like gnu (uutils#13834)
+- #1649 [mv] 目录覆盖普通文件时静默替换整个文件（GNU 拒绝，rc=1）
+
+#### printf (1)
+
+- #471 [wording] bug(printf): big hex values, lead to mismatch in outputs last two digits when paired with rounding (uutils#13867)
+
+#### realpath (1)
+
+- #1783 Unify realpath/readlink -f/pwd on the shell display spelling (niubash#993 §7)
+
+#### rm (2)
+
+- #1650 [rm] 空操作数 '' 被当成缺操作数（GNU 报 cannot remove ''）
+- #1672 [native_path] 空操作数经 to_extended_path 被绝对化成 CWD（共享层隐患，rm 面已坐实 #1650）
+
+#### shred (1)
+
+- #917 [wording] shred should treat - as standard output (uutils#12288)
+
+#### sort (1)
+
+- #1812 rust2 sort: --debug accepted but emits no GNU key annotation or ordering diagnostics
+
+#### split (3)
+
+- #289 [candidate] split:  invalid number of chunks: '18446744073709551616' (uutils#10389)
+- #1524 split numeric overflow deaths miss GNU's ': Numerical result out of range' suffix (residual of #289)
+- #1711 split: -a overflow diagnostic drops the argument and ERANGE suffix (residual #1524)
+
+#### stat (6)
+
+- #1611 [stat] %s for a symlink reports 0 instead of the target-name length
+- #1652 [stat] -L 对符号链接报 ENOENT（GNU 解引用并输出目标信息）
+- #1653 [stat] '-' 操作数不支持（回归 #1089）
+- #1654 [stat] %N/默认头缺 ` -> target`，符号链接 %s 为 0（回归 #1058/#1611）
+- #1655 [stat] TZ 环境变量被忽略：时间恒为本地 +0800
+- #1787 stat %F: 'regular empty file' vs 'regular file' — audit ruling (niubash#993 S9)
+
+#### tail (3)
+
+- #1513 [T1/SH1] bare tail --follow fails 'ambiguous argument' — shared parser collapses bare vs empty OptionalString
+- #1637 tail follow unit test hangs on non-Windows: sys::Pid::dead() stub always returns false and the test is not cfg-gated
+- #1638 tail/sys.rs FFI redeclarations conflict with du.rs/who.rs signatures (-D warnings hygiene)
+
+#### timeout (1)
+
+- #1587 timeout: non-PE targets exit 126 with an empty stderr (no diagnostic)
+
+#### touch (3)
+
+- #1704 touch: "-a -m" together drops the atime update
+- #1705 touch -d/-t date grammar residual: bare fortnight, a fortnight, EST, leap second, year 0000 rejected
+- #1706 touch: empty operand '' is treated as a missing operand
+
+#### tr (1)
+
+- #1512 [R2] tr accepts a class/repeat construct as a range endpoint
+
+#### uniq (1)
+
+- #1523 uniq counts: GNU clamps past UINT64_MAX, WinuxCmd parse-errors (residual of #1519)
+
+#### wpm (2)
+
+- #1535 [wpm] shim 布局非 adapter 命令硬链接 payload：带私有 DLL 的包在 bin/ 启动 0xC0000135
+- #1537 [wpm] shim 布局目录级映射安装不写 shims.map 注册：mingw 18 条命令装完即哑
+
+#### CI & tests (8)
+
+- #1602 [ci] no workflow runs `cargo test` or `run-gate.sh` — Rust unit tests and gate rows never execute in CI
+- #1604 [ci] cargo test and run-gate.sh are never executed by any CI job
+- #1607 [test] canon dangling test asserts on its own scratch-dir name
+- #1608 [test] chown from_filter assumes Administrators never owns the file
+- #1610 [test] nice no-command test assumes the test process runs at Normal priority
+- #1616 [ci] run-gate.sh is never executed by any CI job
+- #1692 [CI] rust2-gate 在 main 上失败：GNU 侧零输出（81× g_rc=MISSING）
+- #1761 [test] W 波接线后的陈旧 C++ pin 家族：mktemp/find/dir/cp-symlink 共 10 例在 main 上持续红
+
+#### Audits & tracking (2)
+
+- #1462 逐命令对照 Oracle 源码审计：全命令面行为契约核验与修复（用户 2026-10-31 令）
+- #1517 [实验 Q4] WinuxCmd 镜像关闭 193 条的分层抽验（win 侧需 1.5 天运行时复核）
+
+#### Cross-cutting & other (17)
+
+- #1487 [ffi] winuxcore.dll 产品路径实证：调用不应用 shell 重定向（数据丢失）+ dispatch 期不轮询取消 + 出货认领面为空（niubash#727 门①③ 皆红）
+- #1488 [2.0 长线] 命令库化：显式 IO 的库形态命令集（Rust 重写候选）与机械替换路线
+- #1519 [G18 后续] 共享选项解析器缺无符号路径：(INT64_MAX, UINT64_MAX] 对 uintmax 类选项仍解析失败
+- #1552 arm64 full 构建 LNK2001：rust2_bridge 引用 winuxcmd_abi_version/winuxcmd_run/winuxcmd_free_buf 未解析
+- #1573 argopt: --help/--version 之后的未知选项未按 getopt_long 短路（GNU 先出帮助 rc 0）
+- #1581 dispatcher: --help/--version 拦截扫描不按 argv 顺序终结（先出现的非法选项被后面的 --help 覆盖；--help --version 出顶层 banner）
+- #1590 rust2/gate/run-gate.sh is a syntax error on master (missing done, POSIX_MODE guard dropped)
+- #1595 childproc: shebang interpreter that is itself a script gets a duplicated argv token
+- #1714 dispatcher: -V is intercepted as --version for every applet; GNU coreutils rejects -V
+- #1726 [native_path] empty operand still absolutized to CWD via to_extended_path (shared layer; stat-only fix #1725)
+- #1753 dead HashAlgorithm::Crc32b remains in src/utils/digest.cppm after #1747
+- #1758 [bug] i18n-drift CI gate crashes in i18n_rust.py tokenizer on winuxcmd-driver/src/main.rs — gate permanently red, real drift unchecked
+- #1767 [gate] GNU 9.4 首次诚实打分行清零：六分片分歧行清单（distro pin 后暴露）
+- #1769 [bug] 1.x C++ tmp_base_w 的 /tmp 解析在 Git Bash 父进程下循环映射（TEMP=/tmp → /tmp）
+- #1779 Synthesize /dev/zero, /dev/random, /dev/urandom, /dev/full for all tools (niubash#993 §5)
+- #1785 ps: Git-Bash-compatible listing face + -W/--windows (WINPID column) (niubash#993 S5)
+- #1791 mvn via junction reports SDKMAN-canonical Maven home — mechanism is rubash spawn canonicalization (niubash#993 S11)
+
 ## [2.0.0] - unreleased (WP-R draft, 2026-11-14)
 
 > Draft for captain review. The wiring waves that land between this snapshot
