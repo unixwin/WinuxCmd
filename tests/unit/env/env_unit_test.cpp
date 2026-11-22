@@ -862,3 +862,126 @@ TEST(env, env_argv0_applet_name_takes_precedence_over_image) {
   EXPECT_EQ_TEXT(r.stdout_text, "HOME\n");
 }
 
+
+// #1837: `env -i` with no assignments hands the child a zero-entry
+// environment block.  On the installed 1.2.1 suite that launch failed
+// for some applets (printenv, od, hostname, winuxcmd) with
+// ERROR_INVALID_PARAMETER -- "env: failed to run command '<name>':
+// Invalid argument", rc126 -- while any single block entry (even `A=`)
+// made the same launch succeed.  These pins stage the applet entries in
+// a temp dir on env's own process PATH (the block itself stays empty,
+// so command resolution reads the process PATH exactly like the
+// reported shape) and assert the launches succeed with the empty block.
+TEST(env, env_empty_environment_block_launches_printenv) {
+  TempDir tmp;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"printenv.exe"),
+                             tmp.path / "printenv.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_env(L"PATH", tmp.wpath());
+  p.add(L"env.exe", {L"-i", L"printenv"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("failed to run command") ==
+              std::string::npos);
+}
+
+TEST(env, env_empty_environment_block_launches_hostname) {
+  TempDir tmp;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"hostname.exe"),
+                             tmp.path / "hostname.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_env(L"PATH", tmp.wpath());
+  p.add(L"env.exe", {L"-i", L"hostname"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_FALSE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("failed to run command") ==
+              std::string::npos);
+}
+
+TEST(env, env_empty_environment_block_launches_od) {
+  TempDir tmp;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"od.exe"),
+                             tmp.path / "od.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+  {
+    std::ofstream out(tmp.path / "data.bin", std::ios::binary);
+    out << "AB";
+  }
+  const std::wstring data_arg = (tmp.path / "data.bin").wstring();
+
+  Pipeline p;
+  p.set_env(L"PATH", tmp.wpath());
+  p.add(L"env.exe", {L"-i", L"od", L"-c", data_arg});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find("A") != std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("failed to run command") ==
+              std::string::npos);
+}
+
+TEST(env, env_empty_environment_block_launches_winuxcmd) {
+  TempDir tmp;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
+                             tmp.path / "winuxcmd.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_env(L"PATH", tmp.wpath());
+  p.add(L"env.exe", {L"-i", L"winuxcmd", L"env"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("failed to run command") ==
+              std::string::npos);
+}
+
+// #1837 / differential env/03 child half: the empty-name assignment is
+// accepted and dropped from the child block (see build_environment_block),
+// which leaves the child block empty; launching the child must still
+// succeed instead of failing the spawn.
+TEST(env, env_empty_name_assignment_child_block_launches) {
+  TempDir tmp;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"printenv.exe"),
+                             tmp.path / "printenv.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_env(L"PATH", tmp.wpath());
+  p.add(L"env.exe", {L"-i", L"=x", L"printenv"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+  EXPECT_TRUE(r.stderr_text.find("failed to run command") ==
+              std::string::npos);
+}
+
+// #1838 / differential env/70: the child `env` is resolved by bare name
+// through the entry-link set, so `env ... env` chains work end to end.
+// The block carries the two assignments; resolution of the bare name
+// reads env's process PATH (staged here), as in the shipped suite where
+// usr/bin is on PATH.
+TEST(env, env_nested_env_by_bare_name_prints_child_block) {
+  TempDir tmp;
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"env.exe"),
+                             tmp.path / "env.exe",
+                             std::filesystem::copy_options::overwrite_existing);
+
+  Pipeline p;
+  p.set_env(L"PATH", tmp.wpath());
+  p.add(L"env.exe", {L"-i", L"Z=1", L"A=2", L"env"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "Z=1\nA=2\n");
+}
