@@ -103,8 +103,19 @@ jobs:
       - name: Build native Windows Release
         shell: pwsh
         run: |
-          ./scripts/build-with-vs.ps1 -Configuration Release -Target winuxcmd -CMakeExtraArgs @('-DBUILD_MODE=RELEASE', '-DENABLE_TESTS=OFF', '-DCMAKE_CXX_MODULE_STD=ON')
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $log = Join-Path $env:RUNNER_TEMP "build.log"
+          (Get-Command cmake -All | ForEach-Object Source) -join ';' | Tee-Object -FilePath $log
+          ./scripts/build-with-vs.ps1 -Configuration Release -Target winuxcmd -CMakeExtraArgs @('-DBUILD_MODE=RELEASE', '-DENABLE_TESTS=OFF', '-DCMAKE_CXX_MODULE_STD=ON') *>&1 | Tee-Object -FilePath $log -Append
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) {
+            $lines = Get-Content $log
+            $hits = $lines | Select-String -Pattern 'error|FAILED|CMake [0-9]|cmake.exe|import std|LNK|warning: ' | ForEach-Object Line | Select-Object -First 40
+            $tail = $lines | Select-Object -Last 60
+            $msg = (@($lines[0]) + @('--- hits ---') + $hits + @('--- tail ---') + $tail) -join "`n"
+            $msg = $msg.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+            Write-Host "::error title=build-diag::$msg"
+            exit $rc
+          }
       - name: Compare stdout, stderr and exit status
         shell: pwsh
         run: |
