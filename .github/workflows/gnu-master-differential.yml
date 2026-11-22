@@ -109,8 +109,8 @@ jobs:
           $rc = $LASTEXITCODE
           if ($rc -ne 0) {
             $lines = Get-Content $log
-            $hits = $lines | Select-String -Pattern 'error|FAILED|CMake [0-9]|cmake.exe|import std|LNK|warning: ' | ForEach-Object Line | Select-Object -First 40
-            $tail = $lines | Select-Object -Last 60
+            $hits = $lines | Select-String -Pattern ' error |error:|error\[|FAILED|LNK[0-9]|fatal|ninja: build stopped' | ForEach-Object Line | Select-Object -Last 25
+            $tail = $lines | Select-Object -Last 12
             $msg = (@($lines[0]) + @('--- hits ---') + $hits + @('--- tail ---') + $tail) -join "`n"
             $msg = $msg.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
             Write-Host "::error title=build-diag::$msg"
