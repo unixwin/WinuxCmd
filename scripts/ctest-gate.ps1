@@ -113,8 +113,14 @@ try {
         }
     }
 
+    $stillFailing = $failedTests
+    if (Test-Path $failedLog) {
+        $stillFailing = @(Get-Content $failedLog |
+            ForEach-Object { $_ -replace '^\d+:', '' } |
+            Where-Object { $_ })
+    }
     Write-GateAnnotation "error" `
-        "serial retry still failing after $SerialRetries attempt(s); treating as real regression"
+        "serial retry still failing after $SerialRetries attempt(s); treating as real regression: $($stillFailing -join ', ')"
     exit 1
 } finally {
     Pop-Location
