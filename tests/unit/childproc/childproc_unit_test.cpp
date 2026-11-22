@@ -328,6 +328,32 @@ TEST(childproc,
   EXPECT_TRUE(r.stdout_text.find(kMarker) != std::string::npos);
 }
 
+TEST(childproc,
+     env_shebang_script_with_posix_interpreter_resolves_via_path_without_shell_root) {
+  FakeBin fake;
+  // Native launcher git-hook shape (#1848): `env .git/hooks/pre-commit`
+  // invoked outside any shell (no NIU_ROOT / WINUXSH_ROOT), with
+  // `#!/usr/bin/env ...` resolved through PATH leaf fallback (Pass C).
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
+                             fake.dir.path / L"env.exe");
+  std::filesystem::copy_file(ProjectPaths::entry_binary(L"winuxcmd.exe"),
+                             fake.dir.path / L"echo.exe");
+  std::filesystem::create_directories(fake.dir.path / L".git" / L"hooks");
+  fake.dir.write(".git/hooks/pre-commit", "#!/usr/bin/env echo\n");
+  Pipeline p;
+  p.set_env(L"PATH", fake.windows_form());
+  p.set_env(L"NIU_ROOT", L"");
+  p.set_env(L"WINUXSH_ROOT", L"");
+  p.set_env(L"RUBASH_ROOT", L"");
+  p.set_env(L"__RUBASH_SHELL_ROOT", L"");
+  p.set_cwd(fake.dir.wpath());
+  p.add(L"env.exe", {L".git/hooks/pre-commit", L"WINUXCMD-SPAWN-RESOLVED"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.find(kMarker) != std::string::npos);
+}
+
 TEST(childproc, env_shebang_script_missing_interpreter_reports_127) {
   FakeBin fake;
   fake.dir.write("s1.sh", "#!./no-such-interp\n");
