@@ -39,18 +39,22 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::argopt::{self, OptSpec};
+use crate::fsutil::quotef;
 use crate::gnuhelp;
 use winux_core::{CmdResult, Ctx, Io};
 
+// GNU pathchk.c longopts holds only --portability (plus help/version):
+// -p and -P are short-only, so `--p` abbreviates --portability and
+// `--posix-portable` is an unrecognized option (probed 9.4).
 const OPTS: &[OptSpec] = &[
     OptSpec {
         short: Some('p'),
-        long: "posix-portable",
+        long: "",
         takes_value: false,
     },
     OptSpec {
         short: Some('P'),
-        long: "extra-portability",
+        long: "",
         takes_value: false,
     },
     OptSpec {
@@ -271,8 +275,8 @@ pub fn pathchk_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         });
     }
 
-    let check_basic = p.has("posix-portable") || p.has("portability");
-    let check_extra = p.has("extra-portability") || p.has("portability");
+    let check_basic = p.has("p") || p.has("portability");
+    let check_extra = p.has("P") || p.has("portability");
 
     if p.positionals.is_empty() {
         let _ = writeln!(io.stderr, "pathchk: missing operand");
@@ -330,11 +334,17 @@ fn check_name(name: &str, check_basic: bool, check_extra: bool, ctx: &Ctx) -> Op
         };
         match probe {
             ProbeOutcome::Exists => file_exists = true,
+            // pathchk.c:304 `error (0, errno, "%s", quotef (file))`: plain
+            // names print bare, the empty name as '' (probed 9.4:
+            // "pathchk: regfile/file: Not a directory").
             ProbeOutcome::Error(text) => {
-                return Some(format!("pathchk: '{name}': {text}"));
+                return Some(format!("pathchk: {}: {text}", quotef(name)));
             }
             ProbeOutcome::NotThere if name.is_empty() => {
-                return Some(format!("pathchk: '{name}': No such file or directory"));
+                return Some(format!(
+                    "pathchk: {}: No such file or directory",
+                    quotef(name)
+                ));
             }
             ProbeOutcome::NotThere => {}
         }
@@ -385,7 +395,7 @@ fn check_name(name: &str, check_basic: bool, check_extra: bool, ctx: &Ctx) -> Op
     // (probed: `pathchk -p CON` passes).
     if !check_basic {
         if let Some(reason) = windows_path_error(name) {
-            return Some(format!("pathchk: '{name}': {reason}"));
+            return Some(format!("pathchk: {}: {reason}", quotef(name)));
         }
     }
     None
@@ -545,6 +555,38 @@ mod tests {
         let (r, _, err) = run_in(&sc, &["okname", "regfile/file"]);
         assert_eq!(r, 1);
         assert!(err.contains("Not a directory"));
+    }
+
+    #[test]
+    fn lstat_diagnostics_use_quotef() {
+        // GNU 9.4 probed: bare for plain names, quoted when shell-unsafe.
+        let sc = ScratchCtx::new("pathchk-quotef");
+        std::fs::write(sc.path("regfile"), "x").unwrap();
+        std::fs::write(sc.path("sp ace"), "x").unwrap();
+        let (r, _, err) = run_in(&sc, &["regfile/file"]);
+        assert_eq!(r, 1);
+        assert_eq!(err, "pathchk: regfile/file: Not a directory\n");
+        let (r, _, err) = run_in(&sc, &["sp ace/f"]);
+        assert_eq!(r, 1);
+        assert_eq!(err, "pathchk: 'sp ace/f': Not a directory\n");
+        let (r, _, err) = run(&["CON"]);
+        assert_eq!(r, 1);
+        assert_eq!(err, "pathchk: CON: invalid Windows filename\n");
+    }
+
+    #[test]
+    fn p_and_cap_p_are_short_only() {
+        // GNU longopts has only --portability: `--p` abbreviates it and the
+        // old internal long names are unrecognized (probed 9.4).
+        let (r, _, err) = run(&["--p", "--", "-x"]);
+        assert_eq!(r, 1);
+        assert!(err.contains("leading '-' in a component of file name '-x'"));
+        let (r, _, err) = run(&["--posix-portable", "x"]);
+        assert_eq!(r, 1);
+        assert_eq!(
+            err,
+            "pathchk: unrecognized option '--posix-portable'\nTry 'pathchk --help' for more information.\n"
+        );
     }
 
     #[test]

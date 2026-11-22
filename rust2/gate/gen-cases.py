@@ -3851,6 +3851,9 @@ pathchk_rows = [
     ("pk29-two-one-bad", "strict", PK_SETUP_REG, "", "", ["okname", "regfile/file"]),
     ("pk30-reserved-stem", "win", "", "", "", ["con.txt"]),
     ("pk31-short-h-rejected", "strict", "", "", "", ["-h"]),
+    ("pk32-long-p-abbrev", "strict", "", "", "", ["--p", "--", "-x"]),
+    ("pk33-no-posix-portable-long", "strict", "", "", "", ["--posix-portable", "x"]),
+    ("pk34-unsafe-name-enotdir", "strict", PK_SETUP_REG + "; touch 'sp ace'", "", "", ["sp ace/f"]),
 ]
 
 ptx_rows = [

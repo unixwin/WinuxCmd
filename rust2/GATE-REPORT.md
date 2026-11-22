@@ -1611,3 +1611,19 @@ came with #1715. `scripts/i18n_batch.py extract` (3806 keys) and
 `catalog/make-cp-patch.py` -> `validate` = `valid`; patch, filtered base
 and the key list live under `catalog/`. The shared
 `unixwin/winuxcmd-i18n` repository was not touched by this lane.
+
+## pathchk wire (#1488, 2026-11-22)
+
+Library fixes before wiring, both probed against WSL GNU coreutils 9.4:
+
+- lstat-failure and Windows-rule diagnostics go through `quotef` like
+  pathchk.c (`pathchk: regfile/file: Not a directory`, bare; `'sp ace/f'`
+  quoted). The library printed every name single-quoted, which the
+  differential corpus `pathchk/01-not-a-directory` compares on stderr.
+- `-p`/`-P` are short-only (GNU longopts holds only `--portability`):
+  `--p` abbreviates `--portability`, `--posix-portable` is unrecognized.
+
+New gate rows pk32-pk34. `src/commands/pathchk.cpp` keeps its
+`REGISTER_COMMAND` metadata and routes through `rust2_bridge`; the C++
+name checks and lstat probe are deleted. Built and gated in CI only (the
+authoring host had no MSVC toolchain).
