@@ -31,6 +31,8 @@ use winux_core::stream::{StreamReadFn, StreamReader};
 use winux_core::{Ctx, Io, MapEnv};
 
 #[cfg(test)]
+mod panic_tests;
+#[cfg(test)]
 mod stream_tests;
 #[cfg(test)]
 mod tests;
@@ -138,6 +140,8 @@ fn dispatch_and_collect(
             stdout: &mut out,
             stderr: &mut err_out,
         };
+        #[cfg(test)]
+        panic_tests::maybe_panic(&h.name, &mut io);
         match winux_cmds::dispatch(&h.name, &h.args, &mut io, &ctx) {
             None => return Err(()),
             Some(Ok(s)) => s,
