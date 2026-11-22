@@ -346,8 +346,9 @@ TEST(env, env_chdir_rejects_missing_directory) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 125);
-  EXPECT_TRUE(r.stderr_text.find("cannot change directory") !=
-              std::string::npos);
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "env: cannot change directory to 'missing': No such file or "
+                 "directory\n");
 }
 
 TEST(env, env_chdir_requires_command) {
@@ -505,10 +506,8 @@ TEST(env, env_missing_command_reports_gnu_style_error_and_127) {
 
   EXPECT_EQ(r.exit_code, 127);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(
-      r.stderr_text,
-      "env: failed to run command 'definitely-not-a-command': No such file or "
-      "directory\n");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "env: 'definitely-not-a-command': No such file or directory\n");
 }
 
 TEST(env, env_ignore_environment_missing_command_reports_gnu_style_error) {
@@ -522,10 +521,8 @@ TEST(env, env_ignore_environment_missing_command_reports_gnu_style_error) {
 
   EXPECT_EQ(r.exit_code, 127);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(
-      r.stderr_text,
-      "env: failed to run command 'definitely-not-a-command': No such file or "
-      "directory\n");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "env: 'definitely-not-a-command': No such file or directory\n");
 }
 
 TEST(env, env_non_executable_command_returns_126) {
@@ -540,9 +537,8 @@ TEST(env, env_non_executable_command_returns_126) {
 
   EXPECT_EQ(r.exit_code, 126);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(
-      r.stderr_text,
-      "env: failed to run command '.\\not-executable': Permission denied\n");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "env: '.\\not-executable': Permission denied\n");
 }
 
 TEST(env, env_argv0_non_executable_command_returns_126) {
@@ -557,9 +553,8 @@ TEST(env, env_argv0_non_executable_command_returns_126) {
 
   EXPECT_EQ(r.exit_code, 126);
   EXPECT_TRUE(r.stdout_text.empty());
-  EXPECT_EQ_TEXT(
-      r.stderr_text,
-      "env: failed to run command '.\\not-executable': Permission denied\n");
+  EXPECT_EQ_TEXT(r.stderr_text,
+                 "env: '.\\not-executable': Permission denied\n");
 }
 
 TEST(env, env_invalid_option_returns_125_with_help_hint) {
@@ -728,8 +723,7 @@ TEST(env, env_dash_token_after_assignment_is_command) {
   EXPECT_EQ(r.exit_code, 127);
   EXPECT_TRUE(r.stdout_text.empty());
   EXPECT_EQ_TEXT(r.stderr_text,
-                 "env: failed to run command '-i': No such file or "
-                 "directory\n");
+                 "env: '-i': No such file or directory\n");
 }
 
 // #1303: --version after the command name belongs to the command, not
@@ -767,8 +761,7 @@ TEST(env, env_option_scan_ends_at_first_assignment) {
   auto r = p.run();
 
   EXPECT_NE(r.exit_code, 0);
-  EXPECT_TRUE(r.stderr_text.find("failed to run command '--help'") !=
-              std::string::npos);
+  EXPECT_TRUE(r.stderr_text.find("env: '--help':") != std::string::npos);
 }
 
 // #1839: env -a/--argv0 replaces the child's argv[0]. Suite applets are
