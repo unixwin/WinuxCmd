@@ -1611,3 +1611,25 @@ came with #1715. `scripts/i18n_batch.py extract` (3806 keys) and
 `catalog/make-cp-patch.py` -> `validate` = `valid`; patch, filtered base
 and the key list live under `catalog/`. The shared
 `unixwin/winuxcmd-i18n` repository was not touched by this lane.
+
+## comm (#1488 wave3, port + wiring)
+
+`rust2/crates/winux-cmds/src/comm.rs` ports GNU comm.c 9.4 (merge,
+`-1/-2/-3`, `--check-order`/`--nocheck-order` last-wins, the default
+warn-after-unpairable order check with the EOF re-check,
+`--output-delimiter` conflict/empty-NUL rules, `--total`, `-z`, and the
+`comm - -` EBADF exit from #1712). `src/commands/comm.cpp` keeps the
+`REGISTER_COMMAND` metadata and routes through the rust2 bridge
+(stdin entry only for a `-` operand); `comm` joins
+`WINUXCMD_RUST2_COMMANDS`.
+
+| command | cases | strict | exit | win | note | GNU-gated result |
+|---|---|---|---|---|---|---|
+| comm | 47 | 47 | 0 | 0 | 0 | GREEN |
+
+`bash rust2/gate/run-gate.sh comm` = 47 PASS / 0 FAIL against WSL
+coreutils 9.4 (Ubuntu 24.04). The C++ side was not measured: this host
+had no Visual Studio toolchain, so `build-vs` was not built.
+
+I18N: two new runtime keys (`command.comm.error.multiple_output_delimiters`,
+`command.comm.total`); the existing `command.comm.error.*` keys are reused.
