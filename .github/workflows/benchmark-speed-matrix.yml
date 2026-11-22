@@ -42,6 +42,21 @@ jobs:
           }
           "vcvars_path=$vcvarsPath" >> $env:GITHUB_OUTPUT
 
+      # Pin CMake 4.4.5 (same pin and reason as build-windows in
+      # build-winuxcmd.yml, #1855): the windows-2025 image ships CMake
+      # 4.5.0, which removed the experimental import std model that
+      # cmake/enable_import_std.cmake is wired against. The GITHUB_PATH
+      # prepend applies to every later step in this job.
+      - name: Pin CMake 4.4.5
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "cmake-4.4.5-windows-x86_64.zip"
+          $dest = Join-Path $env:RUNNER_TEMP "cmake-4.4.5"
+          Invoke-WebRequest -Uri "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-windows-x86_64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          Join-Path $dest "cmake-4.4.5-windows-x86_64\bin" >> $env:GITHUB_PATH
+          & (Join-Path $dest "cmake-4.4.5-windows-x86_64\bin\cmake.exe") --version
+
       - name: Configure CMake (Release, x64)
         shell: cmd
         run: |
