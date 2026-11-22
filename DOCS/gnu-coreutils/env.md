@@ -114,4 +114,4 @@ env [选项]... [-] [名称=值]... [命令 [参数]...]
 
 **已实现**
 
-核心功能（`-i`、`-u`、`-0`、`-C`、`NAME=VALUE`、命令执行）已实现。`-S/--split-string`、`-a/--argv0`、debug 和信号控制（`--default-signal`、`--ignore-signal`、`--block-signal`、`--list-signal-handling`）仍待补齐。
+核心功能（`-i`、`-u`、`-0`、`-C`、`-S/--split-string`、`-v/--debug`、`-a/--argv0`（外部程序）、`NAME=VALUE`、命令执行）已实现。信号控制（`--default-signal`、`--ignore-signal`、`--block-signal`、`--list-signal-handling`）仍待补齐；`-a/--argv0` 对套件内 multicall applet 的分发冲突见 #1839。
