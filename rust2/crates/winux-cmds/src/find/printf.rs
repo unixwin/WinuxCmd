@@ -396,8 +396,7 @@ pub fn format_date(run: &Run, ts: Ts, k: u8) -> String {
         _ => "",
     };
     let mut s = if f.is_empty() {
-        let one = format!("%{}", k as char);
-        crate::date::strftime(&dt, &one)
+        strftime_letter(&dt, k)
     } else {
         crate::date::strftime(&dt, f)
     };
@@ -405,6 +404,19 @@ pub fn format_date(run: &Run, ts: Ts, k: u8) -> String {
         s.push_str(&ns);
     }
     s
+}
+
+/// One `%k` letter as glibc strftime renders it. find calls the C
+/// library strftime, not gnulib's nstrftime that date(1) uses, so the
+/// gnulib-only extensions `%q` (quarter) and `%N` (nanoseconds) are
+/// unknown conversions that glibc echoes verbatim (probed WSL findutils
+/// 4.9.0 / glibc 2.39: `%Tq|%TN` prints `%q|%N`).
+fn strftime_letter(dt: &crate::date::DateTime, k: u8) -> String {
+    let one = format!("%{}", k as char);
+    if matches!(k, b'q' | b'N') {
+        return one;
+    }
+    crate::date::strftime(dt, &one)
 }
 
 /// GNU base_name: last component, keeping one trailing slash.
@@ -753,6 +765,15 @@ mod tests {
             String::from_utf8(o).unwrap(),
             "819.2|1|0.0001234|1.23457e+07"
         );
+    }
+
+    #[test]
+    fn time_letters_follow_glibc_strftime() {
+        let dt = crate::date::DateTime::from_epoch(1577836800, 0, "UTC".to_string());
+        assert_eq!(strftime_letter(&dt, b'q'), "%q");
+        assert_eq!(strftime_letter(&dt, b'N'), "%N");
+        assert_eq!(strftime_letter(&dt, b'Y'), "2020");
+        assert_eq!(strftime_letter(&dt, b'j'), "001");
     }
 
     #[test]
