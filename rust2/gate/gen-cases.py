@@ -5682,6 +5682,9 @@ find_rows = [
     ("fd268-printf-l-nonlink-empty", "strict", FIND_FX, "", "", ["t/a/f5", "-printf", "[%l][%5l]\\n"]),
     ("fd269-printf-depth-dirs", "sorted", FIND_FX, "", "", ["t", "-type", "d", "-printf", "%d %p\\n"]),
     ("fd270-printf-no-newline", "strict", FIND_FX, "", "", ["t/a/f5", "t/e", "-printf", "%f,"]),
+    # find renders %Tk through glibc strftime: gnulib-only %q/%N stay literal
+    ("fd271-printf-time-glibc-unknown", "strict", FIND_FX, FIND_TZ, "",
+     ["t/a/f5", "-printf", "%Tq|%TN|%AN|%Cq\\n"]),
     # ---- platform-inherent metadata (win: Rust vs C++ rc; stdout recorded) ----
     ("fd280-printf-ids", "win", FIND_FX, "", "", ["t/a/f5", "-printf", "%u %g %U %G\\n"]),
     ("fd281-printf-inode-dev-links", "win", FIND_FX, "", "", ["t/a/f5", "-printf", "%i %D %n\\n"]),
