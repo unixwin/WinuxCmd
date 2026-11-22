@@ -691,8 +691,11 @@ if(WINUXCMD_ENABLE_RUST2)
             # Windows libs the command cores bind via extern blocks (WTS
             # sessions for who, NetUserGetGroups for groups) must be linked
             # by the consumer. Interface propagates to both winuxcmd.exe and
-            # the stream driver.
-            INTERFACE_LINK_LIBRARIES "advapi32;kernel32;ntdll;userenv;ws2_32;dbghelp;wtsapi32;netapi32")
+            # the stream driver. synchronization: newer Rust std binds
+            # WaitOnAddress/WakeByAddress* through it (LNK2001
+            # __imp_WakeByAddressSingle with the windows-2025 image's
+            # default toolchain); harmless where std does not need it.
+            INTERFACE_LINK_LIBRARIES "advapi32;kernel32;ntdll;userenv;ws2_32;dbghelp;wtsapi32;netapi32;synchronization")
     add_dependencies(winuxcmd-commands winuxcmd-rust2)
     target_link_libraries(winuxcmd-commands PRIVATE winuxcmd-rust2-lib)
     message(STATUS "rust2 command library: ON (${WINUXCMD_RUST2_COMMANDS}) via ${WINUXCMD_CARGO_EXECUTABLE}")
