@@ -94,7 +94,7 @@ numfmt	1130	mixed(crt-stdio+iostream+win32-console)	errno	none	audited:clean	uni
 od	1028	mixed(crt-stdio+iostream+win32-console)	locale/setmode	none	audited:clean	unit+differential:3	W2	wired	rust2-wired	rust2	#1488 (wave-W2 wired; GATE-REPORT.md)
 paste	417	mixed(iostream+win32-console)	none	none	audited:notes	unit+differential:3	3	wired	rust2-wired	rust2	#1488 (wave3a wired; GATE-REPORT.md)
 patch	2366	mixed(iostream+win32-console+win32-direct)	none	none	audited:deviates	unit	3	c++-only	deferred(#1488)	c++-1.x	#1488 (wave3)
-pathchk	345	win32-console	none	none	audited:notes	unit+differential:9	2	rust-ready	deferred(#1488)	rust2-ready	#1488 (wave2 gate green; wiring pending)
+pathchk	345	win32-console	none	none	audited:notes	unit+differential:9	2	wired	rust2-wired	rust2	#1488 (wired; quotef + short-only -p/-P fix)
 pgrep	299	win32-console	none	none	audited:deviates	unit	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 pidof	76	win32-console	none	none	audited:deviates	unit	2	c++-only	deferred(#1488)	c++-1.x	#1488 (wave2)
 pinky	302	win32-console	none	none	unreviewed	unit	2	rust-ready	deferred(#1488)	rust2-ready	#1488 (wave2 gate green; wiring pending)
