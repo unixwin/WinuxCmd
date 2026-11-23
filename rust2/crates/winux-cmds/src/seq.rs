@@ -1678,6 +1678,61 @@ mod tests {
     }
 
     #[test]
+    fn huge_integer_shapes_terminate_exact() {
+        // #1860: the reported shape — equal huge integer operands print
+        // the value once and stop (GNU fast path, exact digits).
+        assert_eq!(
+            run(&["999999999999999999999", "999999999999999999999"], "").1,
+            "999999999999999999999\n"
+        );
+        // Huge unequal operands step by exact digits.
+        assert_eq!(
+            run(&["999999999999999999999", "1000000000000000000005"], "").1,
+            "999999999999999999999\n1000000000000000000000\n1000000000000000000001\n\
+             1000000000000000000002\n1000000000000000000003\n1000000000000000000004\n\
+             1000000000000000000005\n"
+        );
+        // A step past the fast-path bound (200) must not eject integer
+        // operands into the float loop: equal ends print once, a range
+        // steps in exact integer arithmetic.
+        assert_eq!(
+            run(&["999999999999999999999", "201", "999999999999999999999"], "").1,
+            "999999999999999999999\n"
+        );
+        assert_eq!(
+            run(&["999999999999999999999", "201", "1000000000000000000600"], "").1,
+            "999999999999999999999\n1000000000000000000200\n1000000000000000000401\n"
+        );
+        // Negative huge operands: equal ends print once, a decreasing
+        // range steps exactly.
+        assert_eq!(
+            run(&["-999999999999999999999", "-999999999999999999999"], "").1,
+            "-999999999999999999999\n"
+        );
+        assert_eq!(
+            run(
+                &["-999999999999999999999", "-201", "-1000000000000000000600"],
+                ""
+            )
+            .1,
+            "-999999999999999999999\n-1000000000000000000200\n-1000000000000000000401\n"
+        );
+        // -w and a multi-byte separator take the same exact domain.
+        assert_eq!(
+            run(&["-w", "999999999999999999999", "999999999999999999999"], "").1,
+            "999999999999999999999\n"
+        );
+        assert_eq!(
+            run(
+                &["-s", ", ", "999999999999999999999", "999999999999999999999"],
+                ""
+            )
+            .1,
+            "999999999999999999999\n"
+        );
+    }
+
+    #[test]
     fn format_flags() {
         assert_eq!(run(&["-f", "%.2f", "1", "3"], "").1, "1.00\n2.00\n3.00\n");
         assert_eq!(
