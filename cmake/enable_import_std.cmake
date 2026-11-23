@@ -6,6 +6,21 @@ if(CMAKE_VERSION VERSION_LESS "3.30")
     return()
 endif()
 
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.5")
+    # CMake 4.5 graduated `import std` out of the experimental model:
+    # there is no UUID gate to satisfy, CMAKE_CXX_MODULE_STD no longer
+    # has any effect, and CMAKE_CXX_COMPILER_IMPORT_STD is no longer
+    # defined. `import std;` is handled automatically on every source
+    # with module scanning enabled (CXX_SCAN_FOR_MODULES, on by default
+    # for C++20 and later), using the stdlib module metadata CMake
+    # discovers from the compiler. Nothing to configure here -- and
+    # nothing that can half-configure: a toolchain without stdlib
+    # modules fails inside CMake at generate time, not at link time
+    # with LNK1181 (the #1855 failure shape this file used to allow).
+    message(STATUS "CMake ${CMAKE_VERSION} — import std is native in CMake >= 4.5, no experimental gate")
+    return()
+endif()
+
 include(${CMAKE_CURRENT_LIST_DIR}/import_std.cmake)
 
 set(_ver "${CMAKE_MAJOR_VERSION}_${CMAKE_MINOR_VERSION}")
