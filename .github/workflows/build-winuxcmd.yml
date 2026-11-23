@@ -176,6 +176,30 @@ jobs:
       # that includes github.sha and no restore-keys, and never in the
       # release/tag job. See DOCS/ci-x64-leg-timeout-analysis.md.
 
+      # Pin CMake 4.4.5 for this job. The import std wiring has been
+      # adapted to the CMake 4.5 model (cmake/enable_import_std.cmake
+      # takes the native path on >= 4.5), but the unpin is blocked
+      # upstream: CMake 4.5.0's generated graph on this image (MSVC
+      # 14.52) emits only BMI edges for the synthesized std targets --
+      # the std.compat.ixx.obj compile edge is missing while link lines
+      # still reference it, so every leg dies with LNK1181 exactly as in
+      # the original #1855 failure (trial unpin: PR #1867 run
+      # 45226913688, configure green on 4.5.0, 6 BMI edges, 0 obj
+      # edges). Remove this pin once a CMake/MSVC roll fixes the graph;
+      # the test is a trial unpin run with all four legs green.
+      # 4.4.5 is the last combination proven green on this image (runs
+      # 44234935370 and 44696552427). The GITHUB_PATH prepend applies to
+      # every later step in this job, PGO configures included.
+      - name: Pin CMake 4.4.5
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "cmake-4.4.5-windows-x86_64.zip"
+          $dest = Join-Path $env:RUNNER_TEMP "cmake-4.4.5"
+          Invoke-WebRequest -Uri "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-windows-x86_64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          Join-Path $dest "cmake-4.4.5-windows-x86_64\bin" >> $env:GITHUB_PATH
+          & (Join-Path $dest "cmake-4.4.5-windows-x86_64\bin\cmake.exe") --version
+
       - name: Configure CMake (Release Mode)
         shell: cmd
         run: |
@@ -193,6 +217,8 @@ jobs:
             -DENABLE_TESTS=${{ matrix.package_arch == 'x64' && matrix.edition == 'default' && 'ON' || 'OFF' }} ^
             -DCMAKE_CXX_STANDARD=23 ^
             -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
+            -DCMAKE_EXPERIMENTAL_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_MODULE_STD=ON ^
             -DCMAKE_CXX_FLAGS="/std:c++latest /EHsc"
 
       - name: Build Project
@@ -264,6 +290,8 @@ jobs:
             -DENABLE_TESTS=OFF ^
             -DCMAKE_CXX_STANDARD=23 ^
             -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
+            -DCMAKE_EXPERIMENTAL_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_MODULE_STD=ON ^
             -DCMAKE_CXX_FLAGS="/std:c++latest /EHsc" ^
             -DWINUXCMD_PGO_INSTRUMENT=ON
           cmake --build build-x64-pgo-train --config Release --parallel %NUMBER_OF_PROCESSORS%
@@ -304,6 +332,8 @@ jobs:
             -DENABLE_TESTS=ON ^
             -DCMAKE_CXX_STANDARD=23 ^
             -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
+            -DCMAKE_EXPERIMENTAL_CXX_MODULE_STD=ON ^
+            -DCMAKE_CXX_MODULE_STD=ON ^
             -DCMAKE_CXX_FLAGS="/std:c++latest /EHsc" ^
             -DWINUXCMD_PGO_USE=ON
           copy /Y build-x64-pgo-train\pgo\*.pgc build-x64\ >NUL
