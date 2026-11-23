@@ -30,7 +30,9 @@
 //!   long-double mantissa GNU itself prints float artifacts (probed:
 //!   `2 1e-19 2.0000000000000000005` duplicates lines; `-1.5 0.9999999999999999999
 //!   1.5` drifts a final ulp) — those shapes keep exact output, a
-//!   documented divergence from GNU's broken bytes.
+//!   documented divergence from GNU's broken bytes. Integer stepping
+//!   (print precision 0) is exempt from the mantissa parity guard
+//!   entirely — see try_exact_run (#1860).
 //! * Long-double path: operands parsed as floats (f64 here; GNU uses
 //!   80-bit long double, so >16-significant-digit float inputs may round
 //!   differently — documented divergence). Default format is `%.<prec>f`
@@ -757,6 +759,19 @@ fn try_exact_run(
     // 0.99999999999999999999 (9.99e19 units) parses in long double to 1.0
     // and GNU prints 1.00000000000000000000 — that shape keeps the float
     // path, which rounds the same way.
+    //
+    // Integer stepping is exempt (prec == 0: first and step are integer
+    // texts; a fractional LAST only bounds the range). GNU keeps integer
+    // text exact on its fast path, and the shapes that reach this path
+    // instead — step past the fast bound, a minus sign, -w, a multi-byte
+    // separator — fall into GNU's long-double loop, whose output there is
+    // parse-rounding artifacts: the operands print rounded (999...9 as
+    // 1e21) and repeat until i*step crosses the ulp. The exact domain
+    // keeps the digits and the count: a documented divergence from those
+    // artifacts, the same class as the sub-ulp shapes in the module
+    // comment. Ejecting these cases was #1860: in f64 the ulp at 1e21 is
+    // 2048x the long-double one, so the "repeats" ran to ~65537 lines
+    // (and the pre-rust2 engine never terminated at all).
     let grid64 = 18_446_744_073_709_551_616u128; // 2^64
                                                  // magnitude measured in 10^-prec units (a normalized zero has scale 0
                                                  // while its scan precision keeps the fraction digits, so prec > t is
@@ -769,9 +784,10 @@ fn try_exact_run(
         }
     };
     let in_ld_grid = |m: u128| -> bool { in_prec_units(m).map_or(false, |v| v <= grid64) };
-    if !in_ld_grid(fm.unsigned_abs())
-        || !in_ld_grid(lm.unsigned_abs())
-        || !in_ld_grid(fm.abs_diff(lm))
+    if prec != 0
+        && (!in_ld_grid(fm.unsigned_abs())
+            || !in_ld_grid(lm.unsigned_abs())
+            || !in_ld_grid(fm.abs_diff(lm)))
     {
         return None;
     }
@@ -1674,6 +1690,73 @@ mod tests {
             )
             .1,
             "0.0000000000000000000,0.0000000000000000001,0.0000000000000000002,0.0000000000000000003\n"
+        );
+    }
+
+    #[test]
+    fn huge_integer_shapes_terminate_exact() {
+        // #1860: the reported shape — equal huge integer operands print
+        // the value once and stop (GNU fast path, exact digits).
+        assert_eq!(
+            run(&["999999999999999999999", "999999999999999999999"], "").1,
+            "999999999999999999999\n"
+        );
+        // Huge unequal operands step by exact digits.
+        assert_eq!(
+            run(&["999999999999999999999", "1000000000000000000005"], "").1,
+            "999999999999999999999\n1000000000000000000000\n1000000000000000000001\n\
+             1000000000000000000002\n1000000000000000000003\n1000000000000000000004\n\
+             1000000000000000000005\n"
+        );
+        // A step past the fast-path bound (200) must not eject integer
+        // operands into the float loop: equal ends print once, a range
+        // steps in exact integer arithmetic.
+        assert_eq!(
+            run(
+                &["999999999999999999999", "201", "999999999999999999999"],
+                ""
+            )
+            .1,
+            "999999999999999999999\n"
+        );
+        assert_eq!(
+            run(
+                &["999999999999999999999", "201", "1000000000000000000600"],
+                ""
+            )
+            .1,
+            "999999999999999999999\n1000000000000000000200\n1000000000000000000401\n"
+        );
+        // Negative huge operands: equal ends print once, a decreasing
+        // range steps exactly.
+        assert_eq!(
+            run(&["-999999999999999999999", "-999999999999999999999"], "").1,
+            "-999999999999999999999\n"
+        );
+        assert_eq!(
+            run(
+                &["-999999999999999999999", "-201", "-1000000000000000000600"],
+                ""
+            )
+            .1,
+            "-999999999999999999999\n-1000000000000000000200\n-1000000000000000000401\n"
+        );
+        // -w and a multi-byte separator take the same exact domain.
+        assert_eq!(
+            run(
+                &["-w", "999999999999999999999", "999999999999999999999"],
+                ""
+            )
+            .1,
+            "999999999999999999999\n"
+        );
+        assert_eq!(
+            run(
+                &["-s", ", ", "999999999999999999999", "999999999999999999999"],
+                ""
+            )
+            .1,
+            "999999999999999999999\n"
         );
     }
 
