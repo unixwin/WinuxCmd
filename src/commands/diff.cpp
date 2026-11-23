@@ -228,8 +228,26 @@ namespace cp = core::pipeline;
 std::string paginate_buffer;
 bool buffering_output = false;
 
+// Scoped capture of everything dput would emit. Directory comparison
+// uses it to learn a pair's body before deciding whether the GNU
+// per-pair header precedes it (#1861). While a capture is active it
+// takes over the sink entirely; nested scopes restore the outer sink.
+std::string *capture_sink = nullptr;
+
+struct CaptureScope {
+  std::string *previous;
+  explicit CaptureScope(std::string &sink) : previous(capture_sink) {
+    capture_sink = &sink;
+  }
+  ~CaptureScope() { capture_sink = previous; }
+  CaptureScope(const CaptureScope &) = delete;
+  CaptureScope &operator=(const CaptureScope &) = delete;
+};
+
 void dput(std::string_view s) {
-  if (buffering_output) {
+  if (capture_sink) {
+    capture_sink->append(s);
+  } else if (buffering_output) {
     paginate_buffer.append(s);
   } else {
     safePrint(s);
@@ -1786,15 +1804,64 @@ auto compare_file_pair(const std::string &file1, const std::string &file2,
   return no_real_changes ? 0 : 1;
 }
 
-// One directory-pair level: compare same-named files (with the "diff
-// <cmdline>" header GNU prints under -r), report "Only in", and recurse
-// into common subdirectories. diffutils processes files before dirs.
+// [GNU dir.c] The per-pair header of a directory comparison is a
+// reconstructed invocation — "diff <options> <file1> <file2>" — where
+// <options> are the option tokens as given on the command line (the
+// program name and the two directory operands are not part of it).
+// Tokens containing characters outside a shell-safe set are quoted the
+// way GNU quotes them ('--unified=2' takes single quotes); pair names
+// take double quotes when they need quoting ("E E/f f").
+auto shell_quote_option_token(const std::string &token) -> std::string {
+  auto safe_char = [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' ||
+           c == '/' || c == ':' || c == ',' || c == '+' || c == '%' ||
+           c == '@';
+  };
+  if (!token.empty() && std::all_of(token.begin(), token.end(), safe_char)) {
+    return token;
+  }
+  std::string out = "'";
+  for (char c : token) {
+    if (c == '\'') {
+      out += "'\\''";
+    } else {
+      out += c;
+    }
+  }
+  out += "'";
+  return out;
+}
+
+auto quote_pair_name(const std::string &name) -> std::string {
+  auto safe_char = [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' ||
+           c == '/' || c == ':' || c == ',' || c == '+' || c == '%' ||
+           c == '@' || c == '=' || c == '\\';
+  };
+  if (!name.empty() && std::all_of(name.begin(), name.end(), safe_char)) {
+    return name;
+  }
+  std::string out = "\"";
+  for (char c : name) {
+    if (c == '"' || c == '\\') out += '\\';
+    out += c;
+  }
+  out += "\"";
+  return out;
+}
+
+// One directory-pair level: compare same-named files (each preceded by
+// the per-pair header above when it emits a body), report "Only in",
+// and recurse into common subdirectories. diffutils processes files
+// before dirs.
 auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
                             const PairConfig &cfg, bool recursive,
                             const std::vector<std::string> &exclude_pats,
                             const std::vector<std::string> &exclude_dir_pats,
                             const std::string &starting_file,
-                            const std::string &command_tail) -> int {
+                            const std::string &header_prefix) -> int {
   namespace fs = std::filesystem;
   auto list_directory =
       [](const std::string &dir) -> std::optional<std::vector<std::string>> {
@@ -1832,6 +1899,38 @@ auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
       return dir + "/" + member;
     }
     return dir + member;
+  };
+
+  // [GNU] A pair's header is printed only when the pair actually emits
+  // a diff body, so the body is captured first and the header is
+  // prepended when it qualifies: identical pairs stay silent, brief
+  // mode never prints one, and the lone --report-identical-files notice
+  // ("Files ... are identical") is not a body. The header names the
+  // pair in operand order (hdr1/hdr2) even when -N compares an existing
+  // file (cmp1) against a missing counterpart (cmp2).
+  auto compare_pair_with_header =
+      [&](const std::string &cmp1, const std::string &cmp2,
+          const std::string &hdr1, const std::string &hdr2,
+          const PairConfig &pair_cfg) -> int {
+    if (pair_cfg.brief || !pair_cfg.diff_program.empty()) {
+      return compare_file_pair(cmp1, cmp2, DiffLabel{cmp1, false},
+                               DiffLabel{cmp2, false}, pair_cfg);
+    }
+    std::string body;
+    int status;
+    {
+      CaptureScope capture(body);
+      status = compare_file_pair(cmp1, cmp2, DiffLabel{cmp1, false},
+                                 DiffLabel{cmp2, false}, pair_cfg);
+    }
+    const std::string identical_notice =
+        "Files " + cmp1 + " and " + cmp2 + " are identical\n";
+    if (!body.empty() && body != identical_notice) {
+      dput(header_prefix + " " + quote_pair_name(hdr1) + " " +
+           quote_pair_name(hdr2) + "\n");
+    }
+    dput(body);
+    return status;
   };
 
   auto entries1 = list_directory(dir1);
@@ -1893,7 +1992,7 @@ auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
           if (recursive) {
             int status = compare_directory_pair(full1, full2, cfg, recursive,
                                                 exclude_pats, exclude_dir_pats,
-                                                starting_file, command_tail);
+                                                starting_file, header_prefix);
             if (status == 2) return 2;
             worst = std::max(worst, status);
           } else {
@@ -1901,11 +2000,8 @@ auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
             worst = std::max(worst, 1);
           }
         } else {
-          if (recursive) {
-            dput("diff " + command_tail + " " + full1 + " " + full2 + "\n");
-          }
-          int status = compare_file_pair(full1, full2, DiffLabel{full1, false},
-                                         DiffLabel{full2, false}, cfg);
+          int status =
+              compare_pair_with_header(full1, full2, full1, full2, cfg);
           if (status == 2) return 2;
           worst = std::max(worst, status);
         }
@@ -1918,15 +2014,10 @@ auto compare_directory_pair(const std::string &dir1, const std::string &dir2,
         if (treat_as_empty && !both_dirs) {
           std::string existing = take1 ? full1 : full2;
           std::string missing = take1 ? full2 : full1;
-          if (recursive) {
-            dput("diff " + command_tail + " " + existing + " " + missing +
-                 "\n");
-          }
           PairConfig empty_cfg = cfg;
           empty_cfg.new_file = true;
-          int status =
-              compare_file_pair(existing, missing, DiffLabel{existing, false},
-                                DiffLabel{missing, false}, empty_cfg);
+          int status = compare_pair_with_header(existing, missing, full1,
+                                                full2, empty_cfg);
           if (status == 2) return 2;
           worst = std::max(worst, status);
         } else {
@@ -2390,11 +2481,35 @@ REGISTER_COMMAND(
     file2 = join_dir_member(file2, base_name_of(file1));
   }
 
+  // [GNU dir.c] The per-pair header of a directory comparison echoes
+  // the option tokens as given on the command line; the program name
+  // and the two operands are excluded. Operands are matched from the
+  // end of the raw argument list so an option value that happens to be
+  // spelled like an operand is kept.
+  std::string header_prefix = "diff";
+  {
+    std::vector<std::string> tokens;
+    for (const auto arg : ctx.raw_args) tokens.emplace_back(arg);
+    for (size_t k = ctx.positionals.size(); k-- > 0;) {
+      const std::string operand(ctx.positionals[k]);
+      for (size_t i = tokens.size(); i-- > 0;) {
+        if (tokens[i] == operand) {
+          tokens.erase(tokens.begin() + static_cast<long>(i));
+          break;
+        }
+      }
+    }
+    for (const auto &token : tokens) {
+      header_prefix += " ";
+      header_prefix += shell_quote_option_token(token);
+    }
+  }
+
   // -- Two directory operands: per-level listing, -r recursion --
   if (file1_is_dir && file2_is_dir) {
     int status = compare_directory_pair(file1, file2, cfg, recursive,
                                         exclude_pats, exclude_dir_pats,
-                                        starting_file_str, command_tail);
+                                        starting_file_str, header_prefix);
     return finish(status);
   }
 
