@@ -280,10 +280,20 @@ if (WINUXCMD_CXX_DIALECT STREQUAL "23")
     set(WINUXCMD_CXX_STANDARD 23)
     set(WINUXCMD_CXX_DIALECT_NOTE "CMake CXX23")
 elseif (WINUXCMD_CXX_DIALECT STREQUAL "26")
-    if (NOT DEFINED CMAKE_CXX_COMPILER_IMPORT_STD)
-        set(CMAKE_CXX_COMPILER_IMPORT_STD "")
+    if (CMAKE_VERSION VERSION_GREATER_EQUAL "4.5")
+        # CMake 4.5 removed CMAKE_CXX_COMPILER_IMPORT_STD: the levels
+        # list no longer exists, so levels must not be decided from it
+        # (it is undefined by design, not by a missing toolchain).
+        # Keep the proven canary outcome below until the CXX26 dialect
+        # is graduated separately; `import std` itself is native on
+        # CMake >= 4.5 and needs no levels check.
+        set(_WINUXCMD_IMPORT_STD_CXX26_INDEX -1)
+    else()
+        if (NOT DEFINED CMAKE_CXX_COMPILER_IMPORT_STD)
+            set(CMAKE_CXX_COMPILER_IMPORT_STD "")
+        endif()
+        list(FIND CMAKE_CXX_COMPILER_IMPORT_STD 26 _WINUXCMD_IMPORT_STD_CXX26_INDEX)
     endif()
-    list(FIND CMAKE_CXX_COMPILER_IMPORT_STD 26 _WINUXCMD_IMPORT_STD_CXX26_INDEX)
     if (_WINUXCMD_IMPORT_STD_CXX26_INDEX GREATER_EQUAL 0)
         set(WINUXCMD_CXX_STANDARD 26)
         set(WINUXCMD_CXX_DIALECT_NOTE "native CMake CXX26 import std")
