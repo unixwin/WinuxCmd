@@ -2100,7 +2100,17 @@ fn lex_collapse(path: &str) -> String {
         }
     }
     let mut joined = stack.join("\\");
-    if root_trailing && stack.len() <= min_comps && !joined.ends_with('\\') {
+    // A collapse that LANDS on a drive root must keep the root's
+    // separator too: "C:\.", "C:\.." and "C:\dir\.." name the root,
+    // but the joined stack is the bare "C:", which is the
+    // drive-RELATIVE spelling (that drive's current directory) and
+    // \\?\C: is rejected by the attribute probes — with a root cwd
+    // every "." operand failed with ENOENT (#1862). This is the same
+    // rule root_trailing applies to an input that arrived carrying
+    // the separator; the landing shape must not depend on which
+    // spelling the caller used.
+    let drive_root = stack.len() == 1 && stack[0].len() == 2 && stack[0].ends_with(':');
+    if (drive_root || (root_trailing && stack.len() <= min_comps)) && !joined.ends_with('\\') {
         joined.push('\\');
     }
     format!("{}{}", prefix, joined)
@@ -5457,4 +5467,98 @@ pub fn ls_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         return Ok(2);
     }
     Ok(if minor { 1 } else { 0 })
+}
+
+// ======================================================================
+// Regression pins (#1862): ls at a drive-root cwd.
+// ======================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winux_core::test_support::{MemIo, ScratchCtx};
+    use winux_core::MapEnv;
+
+    /// The collapse must never hand the probes the bare drive
+    /// spelling: "C:" is drive-relative and \\?\C: is rejected, so
+    /// every spelling that lands on the root keeps "C:\".
+    #[cfg(windows)]
+    #[test]
+    fn lex_collapse_never_emits_a_bare_drive_root() {
+        assert_eq!(lex_collapse(r"\\?\C:\"), r"\\?\C:\");
+        // The shape the operand boundary produces for "." with a
+        // root cwd (fs_win's trailing-dot cleanup strips "\.").
+        assert_eq!(lex_collapse(r"\\?\C:"), r"\\?\C:\");
+        assert_eq!(lex_collapse(r"\\?\C:\."), r"\\?\C:\");
+        assert_eq!(lex_collapse(r"\\?\C:\.."), r"\\?\C:\");
+        assert_eq!(lex_collapse(r"\\?\C:\Users\.."), r"\\?\C:\");
+        assert_eq!(lex_collapse(r"\\?\F:\."), r"\\?\F:\");
+        // Non-root collapses are untouched.
+        assert_eq!(lex_collapse(r"\\?\C:\Users\."), r"\\?\C:\Users");
+        assert_eq!(lex_collapse(r"\\?\C:\Users\..\Windows"), r"\\?\C:\Windows");
+        assert_eq!(lex_collapse(r"\\?\C:\Users"), r"\\?\C:\Users");
+    }
+
+    /// End to end through ls_cmd with the Ctx cwd pinned to a drive
+    /// root: no operand, ".", ".." and the explicit root spelling
+    /// all list the root (GNU lists it; the pre-fix build answered
+    /// every relative form with "cannot access '.'", rc 2).
+    #[cfg(windows)]
+    #[test]
+    fn drive_root_cwd_lists_the_root() {
+        // The root of the volume the test temp dir lives on ("C:\").
+        let tmp = std::env::temp_dir();
+        let root = tmp.ancestors().last().unwrap().to_path_buf();
+        let root_spelling = root.to_string_lossy().into_owned();
+        assert!(root_spelling.ends_with('\\'), "root: {root_spelling}");
+        let env = MapEnv::new();
+        let ctx = Ctx::new(root, &env);
+        let run = |args: &[&str]| {
+            let owned: Vec<OsString> = args.iter().map(OsString::from).collect();
+            let mut io = MemIo::new("");
+            let r = ls_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            (r, io.out(), io.err())
+        };
+        let (rc, out, err) = run(&["-1"]);
+        assert_eq!(rc, 0, "no operand at drive root: {err}");
+        assert_eq!(err, "");
+        assert!(!out.is_empty(), "a drive root always has entries");
+        for args in [
+            vec!["-1", "."],
+            vec!["-1", ".."],
+            vec!["-1", root_spelling.as_str()],
+        ] {
+            let (rc, o, err) = run(&args);
+            assert_eq!(rc, 0, "{args:?} at drive root: {err}");
+            assert_eq!(err, "");
+            assert_eq!(o, out, "{args:?} must list the same root");
+        }
+    }
+
+    /// Control: the same operand forms in an ordinary directory
+    /// (the shape that always worked) still list it.
+    #[cfg(windows)]
+    #[test]
+    fn dot_operands_in_a_plain_directory_still_list() {
+        let sc = ScratchCtx::new("ls1862");
+        std::fs::write(sc.path("marker.txt"), "x").unwrap();
+        let ctx = sc.ctx();
+        let dir_spelling = sc.dir.to_string_lossy().into_owned();
+        let run = |args: &[&str]| {
+            let owned: Vec<OsString> = args.iter().map(OsString::from).collect();
+            let mut io = MemIo::new("");
+            let r = ls_cmd(&owned, &mut io.split(), &ctx).unwrap();
+            (r, io.out(), io.err())
+        };
+        for args in [
+            vec!["-1"],
+            vec!["-1", "."],
+            vec!["-1", dir_spelling.as_str()],
+        ] {
+            let (rc, out, err) = run(&args);
+            assert_eq!(rc, 0, "{args:?}: {err}");
+            assert_eq!(err, "");
+            assert_eq!(out, "marker.txt\n", "{args:?}");
+        }
+    }
 }
