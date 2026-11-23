@@ -486,6 +486,89 @@ TEST(diff, diff_recursive_missing_directory_exits_2_issue1344) {
   EXPECT_EQ(r.exit_code, 2);
 }
 
+// [#1861] A directory comparison must not echo the raw command line as
+// a per-pair header ("diff diff -rq A B A/f B/f" on every pair, identical
+// ones included). GNU prints no header for identical pairs and none in
+// brief mode; for a differing pair the header is a reconstructed
+// invocation naming just the pair ("diff -r A/f B/f").
+TEST(diff, diff_recursive_brief_identical_quiet_issue1861) {
+  TempDir tmp;
+  tmp.write("A/f.txt", "same\n");
+  tmp.write("B/f.txt", "same\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-rq", L"A", L"B"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(diff, diff_recursive_brief_different_reports_pair_only_issue1861) {
+  TempDir tmp;
+  tmp.write("A/f.txt", "hello\n");
+  tmp.write("B/f.txt", "world\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-rq", L"A", L"B"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text, "Files A/f.txt and B/f.txt differ\n");
+}
+
+TEST(diff, diff_recursive_identical_quiet_issue1861) {
+  TempDir tmp;
+  tmp.write("A/f.txt", "same\n");
+  tmp.write("B/f.txt", "same\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-r", L"A", L"B"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_TRUE(r.stdout_text.empty());
+}
+
+TEST(diff, diff_recursive_different_pair_header_issue1861) {
+  TempDir tmp;
+  tmp.write("A/f.txt", "hello\n");
+  tmp.write("B/f.txt", "world\n");
+  tmp.write("A/same.txt", "same\n");
+  tmp.write("B/same.txt", "same\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"-r", L"A", L"B"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text,
+            "diff -r A/f.txt B/f.txt\n1c1\n< hello\n---\n> world\n");
+}
+
+TEST(diff, diff_nonrecursive_pair_has_no_header_issue1861) {
+  TempDir tmp;
+  tmp.write("file1.txt", "hello\n");
+  tmp.write("file2.txt", "world\n");
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"diff.exe", {L"file1.txt", L"file2.txt"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.stdout_text, "1c1\n< hello\n---\n> world\n");
+}
+
 TEST(diff, diff_ignore_matching_lines_regex_issue1449) {
   TempDir tmp;
   tmp.write("f1.txt", "keep\nskip-1\nend\n");
