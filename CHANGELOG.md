@@ -6,6 +6,40 @@ repository release tags.
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-11-24
+
+### Fixed
+
+- **env -i empty-environment launch (#1837, PR #1841)**: `env -i` no longer fails to launch commands whose environment block reduces to a single empty entry (rc 126 was returned instead); the fix carries regression pins, and the env suite passes 54/54 with the captain-run GNU coreutils 9.4 end-to-end shapes matching.
+- **diff -r spurious command echo (#1861)**: recursive diff no longer prints a spurious command line for every compared file pair, including identical files; exit codes were already correct — the pollution was output-only.
+- **ls at a drive root (#1862)**: `ls` no longer fails with `cannot access '.'` when the process working directory is a drive root (the niubash #1082 field report).
+- **seq with huge equal arguments (#1860)**: `seq` no longer loops forever printing the value when start and stop are huge and equal; it prints the single line GNU prints.
+
+### Changed
+
+- **CMake 4.5 build wiring (#1865, PR #1867)**: the import-std wiring adapts to CMake 4.5's shipped model instead of the ≤4.4 experimental UUID table, which dead-ended into LNK1181 once the windows-2025 runner image rolled to CMake 4.5. #1865 stays open for the toolchain unpin retry once the image rolls again.
+
+### Full list
+
+All 5 issues closed in the window (2026-11-22 – 11-24) that are new to this release (one further closure, #1847, was already listed under 1.2.2), grouped by command (mechanical classification, one group per issue; titles verbatim):
+
+#### diff (1)
+
+- #1861 diff -r / -rq prints a spurious command line for every file pair, including identical files
+
+#### env (2)
+
+- #1837 env: env -i fails to launch some commands with an empty environment block (rc126)
+- #1840 env polish: child-block U+FFFD byte loss, message forms, stale env.md status
+
+#### ls (1)
+
+- #1862 ls: cannot access '.' when the process cwd is a drive root
+
+#### seq (1)
+
+- #1860 [bug] seq with huge equal args loops forever printing 1e21 instead of one line
+
 ## [1.2.2] - 2026-11-22
 
 ### Changed
