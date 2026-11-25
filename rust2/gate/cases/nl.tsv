@@ -1,0 +1,23 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+nl01-basic	strict	printf 'a\n\nb\n' > n0			n0
+nl02-stdin	strict			line1\nline2\n	
+nl03-dash	strict			line1\nline2\n	-
+nl04-empty	strict	: > n1			n1
+nl05-style-a	strict	printf 'a\n\nb\n' > n2			-b	a	n2
+nl06-style-n	strict	printf 'a\nb\n' > n3			-b	n	n3
+nl07-style-pattern	strict	printf 'ERR 1\nok\nERR 2\n' > n4			-b	p^ERR	n4
+nl08-format-ln	strict	printf 'x\n' > n5			-n	ln	-w	3	n5
+nl09-format-rz	strict	printf 'x\ny\n' > n6			-n	rz	-w	3	-v	-1	-i	-2	-s	:	n6
+nl10-join-blank	strict	printf 'a\n\n\n\nb\n' > n7			-b	a	-l	2	-w	1	-s	:	n7
+nl11-sections	strict	printf '\\:\\:\\:\nhead\n\\:\\:\nbody\n\\:\nfoot\n' > n8			-h	a	-f	a	-w	1	-s	:	n8
+nl12-no-renumber	strict	printf '\\:\\:\\:\nhead\n\\:\\:\nbody\n' > n9			-p	-h	a	-w	1	-s	:	n9
+nl13-custom-delim	strict	printf '##\nbody\n' > n10			-d	#	-w	1	n10
+nl14-empty-sep	strict	printf 'line\n' > n11			-w	1	-s	@EMPTY@	n11
+nl15-zero-inc	strict	printf 'a\nb\n' > n12			-i	0	n12
+nl16-unterminated	strict	printf 'a\nb' > n13			n13
+nl17-missing-file	exit				no_such_file
+nl18-invalid-inc	exit				-i	1x
+nl19-invalid-width	exit				-w	0
+nl20-invalid-style	exit				-b	z
+nl21-help	win				--help
+nl22-version	win				--version

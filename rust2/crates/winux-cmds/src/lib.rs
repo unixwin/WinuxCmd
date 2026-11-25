@@ -58,6 +58,7 @@ pub mod mktemp;
 pub mod modemap;
 pub mod mv;
 pub mod nice;
+pub mod nl;
 pub mod nohup;
 
 pub mod nproc;
@@ -191,6 +192,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("sum", sum::sum_cmd),
         ("mktemp", mktemp::mktemp_cmd),
         ("nice", nice::nice_cmd),
+        ("nl", nl::nl_cmd),
         // #1587: nohup lands with its spawn family — it shares the
         // childproc resolver with timeout (same non-PE child surface).
         // wave4b (#1488)
