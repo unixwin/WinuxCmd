@@ -4680,3 +4680,39 @@ TEST(ls, ls_dereference_dangling_entry_error_path_elides_dot_issue1640) {
   EXPECT_EQ_TEXT(r.stderr_text,
                  "ls: cannot access 'dangling': No such file or directory\n");
 }
+
+// ===== #1874: non-final colon components fold at the operand boundary =====
+// The on-disk tree is the carrier spelling x<F03A>y/z (what the shell's
+// per-component creation puts down); every literal spelling of the
+// operand — relative, ./-prefixed, native absolute — must resolve it.
+// Before the per-component fold only the final component was encoded,
+// so all three literal shapes missed the tree entirely.
+
+TEST(ls, issue_1874_nonfinal_colon_operand_lists_carrier_tree) {
+  TempDir tmp;
+  const std::wstring carrier_dir = std::wstring(L"x") + L'\uF03A' + L"y";
+  temp_dir_detail::create_directories(tmp.path / carrier_dir / L"z");
+  temp_dir_detail::write_all(tmp.path / carrier_dir / L"z" / L"inner.txt",
+                              "hi\n", 3);
+
+  for (const std::wstring& operand :
+       {std::wstring(L"x:y/z"), std::wstring(L"./x:y/z"),
+        tmp.wpath() + L"\\x:y\\z"}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"ls.exe", {operand});
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_NE(r.stdout_text.find("inner.txt"), std::string::npos);
+  }
+
+  // The already-encoded spelling keeps working (guard).
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {carrier_dir + L"/z"});
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_NE(r.stdout_text.find("inner.txt"), std::string::npos);
+}

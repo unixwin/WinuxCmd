@@ -1300,10 +1300,59 @@ mod tests {
             fold_carrier_colons(r"C:\dir\a:b:c"),
             Some(format!("C:\\dir\\a\u{F03A}b\u{F03A}c"))
         );
-        assert_eq!(fold_carrier_colons("D:"), None);
+        // #1874 re-baseline: a bare "D:" is a relative colon name under
+        // the per-component contract (see the per-component test below),
+        // no longer the drive itself.
+        assert_eq!(fold_carrier_colons("D:"), Some("D\u{F03A}".to_string()));
         assert_eq!(fold_carrier_colons(r"C:\dir\nocolon"), None);
         assert_eq!(fold_carrier_colons(r"\\?\D:\a:b"), None);
         assert_eq!(fold_carrier_colons(r"\\.\NUL"), None);
+    }
+
+    // ---- carrier colons, per-component (#1874) ----
+
+    #[test]
+    fn carrier_colon_folds_per_component() {
+        let f = |s: &str| fold_carrier_colons(s);
+        // Non-final components fold like the final one (the #1874
+        // shapes): the on-disk tree is x<F03A>y/z, and every literal
+        // spelling of the operand must resolve it.
+        assert_eq!(f("x:y/z").as_deref(), Some("x\u{F03A}y/z"));
+        assert_eq!(f("./x:y/z").as_deref(), Some("./x\u{F03A}y/z"));
+        assert_eq!(
+            f(r"C:\x:y\z").as_deref(),
+            Some("C:\\x\u{F03A}y\\z"),
+            "native absolute: the drive designator is exempt, components fold"
+        );
+        assert_eq!(
+            f(r"a:b\c:d\e:f").as_deref(),
+            Some("a\u{F03A}b\\c\u{F03A}d\\e\u{F03A}f")
+        );
+        // An ADS-shaped spelling is a carrier name in every component,
+        // never a stream (MSYS probe, #1874): one encoded file on disk,
+        // no base file.
+        assert_eq!(
+            f("plain.txt:stream").as_deref(),
+            Some("plain.txt\u{F03A}stream")
+        );
+        // A designator-shaped component mid-path is an ordinary colon
+        // component; only the path's own absolute designator is exempt.
+        assert_eq!(
+            f(r"Z:\nope\D:\repo\x").as_deref(),
+            Some("Z:\\nope\\D\u{F03A}\\repo\\x")
+        );
+        assert_eq!(f("a/D:/b").as_deref(), Some("a/D\u{F03A}/b"));
+        // Guards: already-encoded spellings and colon-free operands are
+        // not claimed; the absolute designator alone does not claim.
+        assert_eq!(f("x\u{F03A}y/z"), None);
+        assert_eq!(f(r"D:\plain\path"), None);
+        assert_eq!(f(r"C:\"), None);
+        assert_eq!(f(r"\\srv\share\plain"), None);
+        // UNC components fold (server/share carry no colon here).
+        assert_eq!(
+            f(r"\\srv\share\a:b\c").as_deref(),
+            Some("\\\\srv\\share\\a\u{F03A}b\\c")
+        );
     }
 
     // ---- UNC roots and trailing separators ----

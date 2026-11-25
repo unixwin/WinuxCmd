@@ -769,3 +769,25 @@ TEST(stat, stat_timestamps_follow_the_tz_environment) {
   EXPECT_EQ(west.exit_code, 0);
   EXPECT_EQ(west.stdout_text, "2020-01-01 22:04:05.000000000 -0500\n");
 }
+
+// ===== #1874: non-final colon components fold at the operand boundary =====
+// Spot family for ls's three shapes: a file under a carrier directory
+// (x<F03A>y/z on disk) must stat by its literal spelling.
+
+TEST(stat, issue_1874_nonfinal_colon_operand_stats_carrier_tree) {
+  TempDir tmp;
+  const std::wstring carrier_dir = std::wstring(L"x") + L'\uF03A' + L"y";
+  temp_dir_detail::create_directories(tmp.path / carrier_dir);
+  temp_dir_detail::write_all(tmp.path / carrier_dir / L"z", "hello\n", 6);
+
+  for (const std::wstring& operand :
+       {std::wstring(L"x:y/z"), std::wstring(L"./x:y/z"),
+        tmp.wpath() + L"\\x:y\\z"}) {
+    Pipeline p;
+    p.set_cwd(tmp.wpath());
+    p.add(L"stat.exe", {operand});
+    auto r = p.run();
+
+    EXPECT_EQ(r.exit_code, 0);
+  }
+}
