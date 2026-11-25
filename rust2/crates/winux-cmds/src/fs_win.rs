@@ -1530,6 +1530,48 @@ mod api_path_probes {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn issue1869_root_cwd_dot_operand() {
+        // cwd IS the drive root and the operand is ".": the join spells
+        // "C:\.", the tail truncation shaves it to the bare drive, and
+        // api_path used to emit the invalid "\\?\C:" — every consumer
+        // then failed with ERROR_INVALID_PARAMETER where GNU stats the
+        // root (#1869).
+        let ctx = plain_ctx(Path::new(r"C:\"));
+        assert_eq!(imp::api_path(&ctx, "."), r"\\?\C:\");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1869_drive_root_dot_suffix() {
+        // The absolute spelling of the same landing: "C:\." itself.
+        let ctx = plain_ctx(Path::new(r"D:\wd"));
+        assert_eq!(imp::api_path(&ctx, r"C:\."), r"\\?\C:\");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1869_root_cwd_dot_backslash_dot() {
+        // ".\." from the root: the "\.\" collapse leaves "C:\.", which
+        // the tail truncation then shaves to the bare drive as well.
+        let ctx = plain_ctx(Path::new(r"C:\"));
+        assert_eq!(imp::api_path(&ctx, r".\."), r"\\?\C:\");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1869_drive_root_guards() {
+        // Shapes that already land on the root (or below it) must not
+        // move: the plain root spelling, a non-root cwd's ".", and a
+        // root cwd's "./x".
+        let root = plain_ctx(Path::new(r"C:\"));
+        assert_eq!(imp::api_path(&root, r"C:\"), r"\\?\C:\");
+        let sub = plain_ctx(Path::new(r"C:\dir"));
+        assert_eq!(imp::api_path(&sub, "."), r"\\?\C:\dir");
+        assert_eq!(imp::api_path(&root, "./x"), r"\\?\C:\x");
+    }
+
+    #[test]
     fn dos_device_names_resolve() {
         // POSIX pseudo-devices and bare reserved names (1.x
         // resolve_pseudo_device_w / is_dos_device_name_w; the table moved
