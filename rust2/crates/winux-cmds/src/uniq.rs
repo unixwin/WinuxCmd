@@ -534,6 +534,16 @@ pub fn uniq_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         _ => unreachable!(),
                     }
                 }
+                '0'..='9' => {
+                    let mut val: usize = 0;
+                    while ci < chars.len() && chars[ci].is_ascii_digit() {
+                        val = val
+                            .saturating_mul(10)
+                            .saturating_add((chars[ci] as u8 - b'0') as usize);
+                        ci += 1;
+                    }
+                    cfg.check_chars = Some(val);
+                }
                 _ => {
                     let _ = usage_error(ctx, io, "uniq", &argopt::invalid_option(ctx, &c.to_string()));
                     return Ok(1);
@@ -710,7 +720,11 @@ mod tests {
 
         let (rc, out, _) = run_mem(&["-1", "+1"], "x aa\ny ab\n");
         assert_eq!(rc, 0);
-        assert_eq!(out, "x aa\n");
+        assert_eq!(out, "x aa\ny ab\n");
+
+        let (rc, out, _) = run_mem(&["-D5"], "abcdefX\nabcdefY\n");
+        assert_eq!(rc, 0);
+        assert_eq!(out, "abcdefX\nabcdefY\n");
     }
 
     #[test]
