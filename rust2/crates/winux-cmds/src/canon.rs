@@ -252,10 +252,28 @@ mod tests {
         assert_eq!(p("/mnt", &none), "/mnt");
         assert_eq!(p("/usr/bin", &none), "/usr/bin");
         assert_eq!(p("C:\\x", &none), "C:\\x");
-        // "D:name" carries the carrier-colon encoding; bare "D:" stays a drive.
+        // "D:name" carries the carrier-colon encoding (#1283). Since
+        // #1874 the fold is per-component and a bare "D:" is a relative
+        // colon name at this boundary too (the MSYS contract: Git Bash
+        // creates and looks up the carrier file in the cwd; its `ls D:`
+        // does not name the drive) — only the path's own absolute drive
+        // designator ("D:\") is exempt. This pin pair is re-baselined
+        // together with the C++ fold_carrier_colons_w boundary.
         assert_eq!(p("D:name", &none), format!("D{}name", '\u{F03A}' as char));
-        assert_eq!(p("D:", &none), "D:");
+        assert_eq!(p("D:", &none), format!("D{}", '\u{F03A}' as char));
         assert_eq!(p("a/D:b", &none), format!("a/D{}b", '\u{F03A}' as char));
+        // #1874: non-final components fold at the same boundary — the
+        // three issue shapes (relative, ./-prefixed, native absolute)
+        // and a designator-shaped component mid-path.
+        assert_eq!(p("x:y/z", &none), format!("x{}y/z", '\u{F03A}' as char));
+        assert_eq!(p("./x:y/z", &none), format!("./x{}y/z", '\u{F03A}' as char));
+        assert_eq!(
+            p(r"C:\x:y\z", &none),
+            format!("C:\\x{}y\\z", '\u{F03A}' as char)
+        );
+        assert_eq!(p("a/D:/b", &none), format!("a/D{}/b", '\u{F03A}' as char));
+        // already-encoded spellings pass through verbatim.
+        assert_eq!(p("x\u{F03A}y/z", &none), "x\u{F03A}y/z");
         // Trailing separators strip before the folds; the unchanged operand
         // falls through verbatim.
         assert_eq!(p("a/b/", &none), "a/b/");
