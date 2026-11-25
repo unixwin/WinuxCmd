@@ -120,6 +120,20 @@ pub fn open_write_operand(
     }
 }
 
+/// Whether `operand` names a directory — the probe the read-side
+/// applets (fmt/fold/paste) use to translate a failed open into the
+/// GNU error class. Windows refuses to open a directory as a file,
+/// and the failure kind depends on the spelling: ERROR_ACCESS_DENIED
+/// for an ordinary directory but ERROR_PATH_NOT_FOUND for a drive
+/// root ("C:\", probed on a real host, #1872), so the translation
+/// cannot gate on the error kind — the attribute decides, through
+/// the one operand boundary (fs_win::file_meta / api_path).
+pub fn failed_open_is_directory(ctx: &Ctx, operand: &str) -> bool {
+    crate::fs_win::file_meta(ctx, operand, true)
+        .map(|m| m.is_dir)
+        .unwrap_or(false)
+}
+
 pub fn open_read_operand(ctx: &Ctx, operand: &str) -> io::Result<Box<dyn std::io::Read>> {
     if let Some(dev) = winux_core::path::synthesized_device(operand) {
         return Ok(Box::new(SynthDeviceReader::new(dev)));

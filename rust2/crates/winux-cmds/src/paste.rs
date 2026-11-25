@@ -419,14 +419,11 @@ pub fn paste_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 Err(e) => {
                     // [GNU] a directory operand reads EISDIR (probed
                     // coreutils 9.4: `paste indir` -> "paste: indir: Is a
-                    // directory" rc 1); Windows opens fail with
-                    // ERROR_ACCESS_DENIED before any read, so the
-                    // directory attribute supplies the POSIX shape
-                    let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
-                        && crate::fs_win::file_meta(ctx, op, true)
-                            .map(|m| m.is_dir)
-                            .unwrap_or(false)
-                    {
+                    // directory" rc 1); Windows opens fail before any
+                    // read, so the directory attribute supplies the
+                    // POSIX shape (fsutil::failed_open_is_directory —
+                    // the open's error kind varies by spelling, #1872)
+                    let reason = if crate::fsutil::failed_open_is_directory(ctx, op) {
                         "Is a directory"
                     } else {
                         reason_str(&e)

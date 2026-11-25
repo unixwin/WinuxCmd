@@ -909,15 +909,12 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     // READ fails, so fmt reports its bare read-error line
                     // (probed coreutils 9.4 2026-11-11: `fmt indir` ->
                     // "fmt: read error" rc 1, no operand name, no errno
-                    // text); Windows fails the OPEN with
-                    // ERROR_ACCESS_DENIED, so the directory attribute
-                    // routes to the GNU shape here. A missing file keeps
-                    // the probed cannot-open shape.
-                    let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
-                        && crate::fs_win::file_meta(ctx, op, true)
-                            .map(|m| m.is_dir)
-                            .unwrap_or(false)
-                    {
+                    // text); Windows fails the OPEN instead, so the
+                    // directory attribute routes to the GNU shape here
+                    // (fsutil::failed_open_is_directory — the open's error
+                    // kind varies by spelling, #1872). A missing file
+                    // keeps the probed cannot-open shape.
+                    let reason = if crate::fsutil::failed_open_is_directory(ctx, op) {
                         let _ = writeln!(
                             io.stderr,
                             "fmt: {}",

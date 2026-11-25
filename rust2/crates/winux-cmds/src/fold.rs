@@ -318,14 +318,11 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 Err(e) => {
                     // [GNU] a directory operand reads EISDIR (probed
                     // coreutils 9.4: `fold indir` -> "fold: indir: Is a
-                    // directory" rc 1); Windows fails the OPEN with
-                    // ERROR_ACCESS_DENIED, so the directory attribute
-                    // supplies the POSIX shape
-                    let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
-                        && crate::fs_win::file_meta(ctx, &name, true)
-                            .map(|m| m.is_dir)
-                            .unwrap_or(false)
-                    {
+                    // directory" rc 1); Windows fails the OPEN instead,
+                    // so the directory attribute supplies the POSIX
+                    // shape (fsutil::failed_open_is_directory — the
+                    // open's error kind varies by spelling, #1872)
+                    let reason = if crate::fsutil::failed_open_is_directory(ctx, &name) {
                         "Is a directory"
                     } else {
                         reason_str(&e)
