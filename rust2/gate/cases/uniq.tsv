@@ -1,0 +1,28 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+uq01-basic	strict	printf 'a\na\nb\nc\nc\nc\n' > u0			u0
+uq02-stdin	strict			a\na\nb\n	
+uq03-dash	strict			a\na\nb\n	-
+uq04-count	strict	printf 'a\na\nb\n' > u1			-c	u1
+uq05-repeated	strict	printf 'a\na\nb\nc\nc\n' > u2			-d	u2
+uq06-unique	strict	printf 'a\na\nb\nc\nc\n' > u3			-u	u3
+uq07-all-rep	strict	printf 'a\na\nb\nc\nc\n' > u4			-D	u4
+uq08-all-rep-sep	strict	printf 'a\na\nb\nc\nc\n' > u5			--all-repeated=separate	u5
+uq09-all-rep-pre	strict	printf 'a\na\nb\nc\nc\n' > u6			--all-repeated=prepend	u6
+uq10-group-sep	strict	printf 'a\na\nb\n' > u7			--group	u7
+uq11-group-both	strict	printf 'a\na\nb\n' > u8			--group=both	u8
+uq12-group-prefix	strict	printf 'a\na\nb\n' > u9			--group=pre	u9
+uq13-skip-fields	strict	printf '1 a\n2 a\n3 b\n' > u10			-f	1	u10
+uq14-skip-chars	strict	printf 'xa\nya\nzb\n' > u11			-s	1	u11
+uq15-check-chars	strict	printf 'ab1\nab2\nac1\n' > u12			-w	2	u12
+uq16-ignore-case	strict	printf 'Ab\naB\ncd\n' > u13			-i	u13
+uq17-obsolete-num	strict	printf '1 a\n2 a\n3 b\n' > u14			-1	u14
+uq18-obsolete-plus	strict	printf 'xa\nya\nzb\n' > u15			+1	u15
+uq19-zero-term	strict	printf 'a\nb\0a\nb\0c\0' > u16			-z	u16
+uq20-output-file	strict	printf 'a\na\nb\n' > u17			u17	u17_out
+uq21-missing-file	exit				no_such_file
+uq22-extra-operand	exit	printf 'a\n' > u18			u18	u18_out	extra
+uq23-group-conflict	exit	printf 'a\n' > u19			--group	-c	u19
+uq24-count-D-conflict	exit	printf 'a\n' > u20			-c	-D	u20
+uq25-argmatch-empty	exit				--group=
+uq26-help	win				--help
+uq27-version	win				--version

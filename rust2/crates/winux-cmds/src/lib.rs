@@ -98,6 +98,7 @@ pub mod tsort;
 pub mod tty;
 pub mod uname;
 pub mod unexpand;
+pub mod uniq;
 pub mod unlink;
 pub mod users;
 pub mod who;
@@ -181,6 +182,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("timeout", timeout::timeout_cmd),
         ("expand", expand::expand_cmd),
         ("unexpand", unexpand::unexpand_cmd),
+        ("uniq", uniq::uniq_cmd),
         ("numfmt", numfmt::numfmt_cmd),
         // wave4a (#1488): alphabetical insertions
         ("head", head::head_cmd),
