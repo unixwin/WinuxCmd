@@ -1271,6 +1271,20 @@ mod tests {
     }
 
     #[test]
+    fn issue1872_dotdot_operands() {
+        // #1872: any ".." component in the operand failed with Invalid
+        // argument (the verbatim api_path kept the segment and the
+        // attribute layer rejects it); GNU resolves it to the parent.
+        let sc = setup("stat-dotdot");
+        let (r, out, _) = run_sc(&sc, &["-c", "%F", "dir/.."]);
+        assert_eq!((r, out.as_str()), (0, "directory\n"));
+        let (r, out, _) = run_sc(&sc, &["-c", "%F", "dir/../reg"]);
+        assert_eq!((r, out.as_str()), (0, "regular file\n"));
+        let (r, out, _) = run_sc(&sc, &["-c", "%F", "reg/.."]);
+        assert_eq!((r, out.as_str()), (0, "directory\n"));
+    }
+
+    #[test]
     fn format_fields() {
         let sc = setup("stat-fields");
         let (r, out, _) = run_sc(&sc, &["-c", "%n|%s|%b|%B|%o|%F", "reg"]);

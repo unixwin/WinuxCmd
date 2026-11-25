@@ -1998,6 +1998,25 @@ mod tests {
         (r, io.out(), io.err())
     }
 
+    #[test]
+    fn issue1872_dotdot_operands() {
+        // #1872: touch shared stat's api_path face — any ".." component
+        // failed Invalid argument. Creating through a mid ".." and
+        // retiming the parent through a trailing ".." both work in GNU.
+        let sc = ScratchCtx::new("touch-dotdot");
+        std::fs::create_dir(sc.path("dir")).unwrap();
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = ["dir/../newfile"].iter().map(Into::into).collect();
+        let r = touch_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+        assert!(sc.path("newfile").exists());
+        let mut io = MemIo::new("");
+        let owned: Vec<OsString> = ["dir/.."].iter().map(Into::into).collect();
+        let r = touch_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 0);
+    }
+
     fn mtime_epoch(sc: &ScratchCtx, name: &str) -> i64 {
         let m = fs_win::file_meta(&sc.ctx(), name, true).unwrap();
         m.mtime.to_epoch().0

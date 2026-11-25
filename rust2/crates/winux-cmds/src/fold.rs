@@ -409,6 +409,21 @@ mod tests {
     }
 
     #[test]
+    fn issue1872_dotdot_directory_operand() {
+        // #1872: same routing-probe failure as fmt — a directory named
+        // through ".." must report the GNU directory class, not the raw
+        // open error.
+        let sc = ScratchCtx::new("fold-dotdot");
+        std::fs::create_dir(sc.path("dir")).unwrap();
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = ["dir/.."].iter().map(Into::into).collect();
+        let r = fold_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert_eq!(io.err(), "fold: dir/..: Is a directory\n");
+    }
+
+    #[test]
     fn basic_folds() {
         // GNU probed: "aaa bbb ccc" -w 4 keeps the space, then folds
         assert_eq!(run(&["-w", "4"], "aaa bbb ccc\n").1, "aaa \nbbb \nccc\n");

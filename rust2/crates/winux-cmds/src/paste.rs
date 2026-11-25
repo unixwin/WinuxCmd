@@ -502,6 +502,17 @@ mod tests {
     }
 
     #[test]
+    fn issue1872_dotdot_directory_operand() {
+        // #1872: same routing-probe failure as fmt/fold — a directory
+        // named through ".." must report the GNU directory class.
+        let sc = ScratchCtx::new("paste-dotdot");
+        std::fs::create_dir(sc.path("dir")).unwrap();
+        let (r, _, err) = run_sc(&sc, &["dir/.."], "");
+        assert_eq!(r, 1);
+        assert_eq!(err, "paste: dir/..: Is a directory\n");
+    }
+
+    #[test]
     fn parallel_basics() {
         assert_eq!(run(&["f1", "f2"], "").1, "a\t1\nb\t2\nc\t3\n\t4\n");
         assert_eq!(run(&["f1", "f3"], "").1, "a\tx\nb\t\nc\t\n");

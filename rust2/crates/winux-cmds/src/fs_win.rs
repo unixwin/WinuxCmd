@@ -1581,6 +1581,60 @@ mod api_path_probes {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn issue1872_dotdot_trailing_and_mid() {
+        // #1872: a ".." component anywhere in the operand used to reach
+        // the API verbatim ("\\?\C:\l4probe\.."), where the attribute
+        // layer rejects dot segments outright (ERROR_INVALID_FILENAME)
+        // — stat/touch failed with Invalid argument on shapes GNU
+        // resolves to the parent. The collapse is lexical, at this one
+        // operand boundary.
+        // trailing "..", cwd-relative
+        let ctx = plain_ctx(Path::new(r"C:\l4probe\ctrl"));
+        assert_eq!(imp::api_path(&ctx, ".."), r"\\?\C:\l4probe");
+        // trailing "..", absolute
+        let ctx = plain_ctx(Path::new(r"D:\wd"));
+        assert_eq!(imp::api_path(&ctx, r"C:\l4probe\.."), r"\\?\C:\");
+        // mid-path ".."
+        assert_eq!(
+            imp::api_path(&ctx, r"C:\l4probe\..\l4probe"),
+            r"\\?\C:\l4probe"
+        );
+        assert_eq!(imp::api_path(&ctx, r"C:\a\b\..\..\c"), r"\\?\C:\c");
+        // leading ".." against the cwd join
+        let ctx = plain_ctx(Path::new(r"C:\l4probe"));
+        assert_eq!(imp::api_path(&ctx, r"..\ctrl"), r"\\?\C:\ctrl");
+        assert_eq!(imp::api_path(&ctx, r"ctrl\..\ctrl"), r"\\?\C:\l4probe\ctrl");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1872_dotdot_root_climb_clamps() {
+        // Climbing past the drive root stays at the root (the POSIX
+        // rule), and a climb landing exactly on the root keeps the root
+        // separator — the #1869 bare-drive rule.
+        let root = plain_ctx(Path::new(r"C:\"));
+        assert_eq!(imp::api_path(&root, ".."), r"\\?\C:\");
+        assert_eq!(imp::api_path(&root, r"..\.."), r"\\?\C:\");
+        assert_eq!(imp::api_path(&root, r"C:\.."), r"\\?\C:\");
+        assert_eq!(imp::api_path(&root, r"C:\a\..\.."), r"\\?\C:\");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1872_dotdot_guards() {
+        // ".." as part of a longer component is a plain name, not a
+        // segment; non-dot shapes must not move.
+        let ctx = plain_ctx(Path::new(r"C:\wd"));
+        assert_eq!(imp::api_path(&ctx, r"C:\a\..\b"), r"\\?\C:\b");
+        assert_eq!(
+            imp::api_path(&ctx, r"C:\a\..b\c.."),
+            r"\\?\C:\a\..b\c.."
+        );
+        assert_eq!(imp::api_path(&ctx, r"C:\a\b"), r"\\?\C:\a\b");
+    }
+
+    #[test]
     fn dos_device_names_resolve() {
         // POSIX pseudo-devices and bare reserved names (1.x
         // resolve_pseudo_device_w / is_dos_device_name_w; the table moved
