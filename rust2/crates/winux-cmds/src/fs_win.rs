@@ -376,6 +376,15 @@ pub mod imp {
         while s.ends_with(r"\.") {
             s.truncate(s.len() - 2);
         }
+        // #1869: a dot-segment landing on a drive root ("C:\." spelled
+        // outright, or "." / ".\." joined against a root cwd) is shaved
+        // by the truncation above to the bare drive, and "\\?\C:" is not
+        // a path at all — every consumer then fails with
+        // ERROR_INVALID_PARAMETER where GNU stats the root. Restore the
+        // root separator so a bare-drive result spells the root it names.
+        if s.len() == 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic() {
+            s.push('\\');
+        }
         let s = s;
         if let Some(rest) = s.strip_prefix(r"\\?\") {
             return format!(r"\\?\{rest}");
