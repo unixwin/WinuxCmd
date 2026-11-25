@@ -249,7 +249,7 @@ fn run_uniq(cfg: &Config, io: &mut Io, ctx: &Ctx) -> Result<(), (i32, String)> {
 
     let mut file_out = if cfg.output != "-" {
         Some(
-            crate::fsutil::open_write_operand(ctx, &cfg.output).map_err(|e| {
+            crate::fsutil::open_write_operand(ctx, &cfg.output, false).map_err(|e| {
                 let reason = crate::fsutil::gnu_open_reason(ctx, &cfg.output, &e, true);
                 (1, format!("{}: {reason}", cfg.output))
             })?,
@@ -258,7 +258,7 @@ fn run_uniq(cfg: &Config, io: &mut Io, ctx: &Ctx) -> Result<(), (i32, String)> {
         None
     };
 
-    let out: &mut dyn Write = match file_out.as_mut() {
+    let out: &mut dyn Write = match file_out.as_deref_mut() {
         Some(f) => f,
         None => io.stdout,
     };
@@ -535,7 +535,7 @@ pub fn uniq_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     }
                 }
                 _ => {
-                    let _ = usage_error(ctx, io, "uniq", &argopt::invalid_option(ctx, c));
+                    let _ = usage_error(ctx, io, "uniq", &argopt::invalid_option(ctx, &c.to_string()));
                     return Ok(1);
                 }
             }
