@@ -318,14 +318,11 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 Err(e) => {
                     // [GNU] a directory operand reads EISDIR (probed
                     // coreutils 9.4: `fold indir` -> "fold: indir: Is a
-                    // directory" rc 1); Windows fails the OPEN with
-                    // ERROR_ACCESS_DENIED, so the directory attribute
-                    // supplies the POSIX shape
-                    let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
-                        && crate::fs_win::file_meta(ctx, &name, true)
-                            .map(|m| m.is_dir)
-                            .unwrap_or(false)
-                    {
+                    // directory" rc 1); Windows fails the OPEN instead,
+                    // so the directory attribute supplies the POSIX
+                    // shape (fsutil::failed_open_is_directory — the
+                    // open's error kind varies by spelling, #1872)
+                    let reason = if crate::fsutil::failed_open_is_directory(ctx, &name) {
                         "Is a directory"
                     } else {
                         reason_str(&e)
@@ -406,6 +403,21 @@ mod tests {
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
         let r = fold_cmd(&owned, &mut io.split(), &ctx).unwrap();
         (r, io.out(), io.err())
+    }
+
+    #[test]
+    fn issue1872_dotdot_directory_operand() {
+        // #1872: same routing-probe failure as fmt — a directory named
+        // through ".." must report the GNU directory class, not the raw
+        // open error.
+        let sc = ScratchCtx::new("fold-dotdot");
+        std::fs::create_dir(sc.path("dir")).unwrap();
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = ["dir/.."].iter().map(Into::into).collect();
+        let r = fold_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        assert_eq!(r, 1);
+        assert_eq!(io.err(), "fold: dir/..: Is a directory\n");
     }
 
     #[test]

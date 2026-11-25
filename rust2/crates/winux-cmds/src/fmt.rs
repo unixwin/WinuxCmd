@@ -909,15 +909,12 @@ pub fn fmt_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     // READ fails, so fmt reports its bare read-error line
                     // (probed coreutils 9.4 2026-11-11: `fmt indir` ->
                     // "fmt: read error" rc 1, no operand name, no errno
-                    // text); Windows fails the OPEN with
-                    // ERROR_ACCESS_DENIED, so the directory attribute
-                    // routes to the GNU shape here. A missing file keeps
-                    // the probed cannot-open shape.
-                    let reason = if e.kind() == std::io::ErrorKind::PermissionDenied
-                        && crate::fs_win::file_meta(ctx, op, true)
-                            .map(|m| m.is_dir)
-                            .unwrap_or(false)
-                    {
+                    // text); Windows fails the OPEN instead, so the
+                    // directory attribute routes to the GNU shape here
+                    // (fsutil::failed_open_is_directory — the open's error
+                    // kind varies by spelling, #1872). A missing file
+                    // keeps the probed cannot-open shape.
+                    let reason = if crate::fsutil::failed_open_is_directory(ctx, op) {
                         let _ = writeln!(
                             io.stderr,
                             "fmt: {}",
@@ -1003,6 +1000,51 @@ mod tests {
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
         let r = fmt_cmd(&owned, &mut io.split(), &ctx).unwrap();
         (r, io.out(), io.err())
+    }
+
+    fn run_sc(sc: &ScratchCtx, args: &[&str]) -> (u32, String, String) {
+        let mut io = MemIo::new("");
+        let ctx = sc.ctx();
+        let owned: Vec<OsString> = args.iter().map(Into::into).collect();
+        let r = fmt_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        (r, io.out(), io.err())
+    }
+
+    #[test]
+    fn issue1872_dotdot_directory_operand_is_read_error() {
+        // #1872: a directory reached through a ".." component reported
+        // "Permission denied" — the open fails ACCESS_DENIED as for any
+        // directory, but the is_dir routing probe itself went through
+        // api_path, whose verbatim ".." spelling the attribute layer
+        // rejects, so the GNU read-error shape never fired.
+        let sc = ScratchCtx::new("fmt-dotdot");
+        std::fs::create_dir(sc.path("dir")).unwrap();
+        let (r, _, err) = run_sc(&sc, &["dir/.."]);
+        assert_eq!((r, err.as_str()), (1, "fmt: read error\n"));
+        // the absolute trailing form of the same landing
+        let abs = format!("{}\\..", sc.path("dir").to_string_lossy());
+        let (r, _, err) = run_sc(&sc, &[&abs]);
+        assert_eq!((r, err.as_str()), (1, "fmt: read error\n"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1872_drive_root_operand_is_read_error() {
+        // #1872: opening the drive root spelling fails with
+        // ERROR_PATH_NOT_FOUND (not ACCESS_DENIED), so a directory
+        // route gated on PermissionDenied never fired and the root
+        // reported "No such file or directory". The attribute decides,
+        // not the error kind.
+        let sc = ScratchCtx::new("fmt-root");
+        let probe = sc.path("x");
+        let root = probe
+            .ancestors()
+            .last()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let (r, _, err) = run_sc(&sc, &[&root]);
+        assert_eq!((r, err.as_str()), (1, "fmt: read error\n"));
     }
 
     #[test]

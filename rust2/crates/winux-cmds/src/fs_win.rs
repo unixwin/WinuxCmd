@@ -361,27 +361,23 @@ pub mod imp {
             ctx.cwd.join(&operand)
         };
         let s = p.to_string_lossy().replace('/', "\\");
-        // Collapse "." components lexically: the \\?\ prefix gets no
-        // normalization from the NT loader, so a caller-spelled
-        // ".\name" joined against the cwd would reach CreateFileW /
-        // CreateHardLinkW as "...\.\name" and fail with
-        // ERROR_INVALID_PARAMETER (1.x native_path normalized the same
-        // segments at the operand boundary). ".." components are left
-        // alone: collapsing them needs component math the 1.x kept out of
-        // this path too.
+        // Collapse dot segments ("." and "..") lexically: the \\?\
+        // prefix gets no normalization from the NT loader, so a
+        // caller-spelled ".\name" joined against the cwd would reach
+        // CreateFileW / CreateHardLinkW as "...\.\name" and fail with
+        // ERROR_INVALID_FILENAME, and a ".." component fails exactly
+        // the same way (#1872: stat/touch on ANY ".." operand, probed
+        // on a real host — GetFileAttributesW("\\?\C:\dir\..") is
+        // error 123 while the collapsed spelling answers). 1.x
+        // native_path normalized the same segments at the operand
+        // boundary.
+        let s = collapse_dot_segments(&s);
+        // #1869: a result landing on the bare drive ("C:" — however it
+        // got there) is not a path at all: "\\?\C:" fails every
+        // consumer with ERROR_INVALID_PARAMETER where GNU stats the
+        // root. Restore the root separator so a bare-drive result
+        // spells the root it names.
         let mut s = s;
-        while let Some(pos) = s.find(r"\.\") {
-            s.replace_range(pos..pos + 3, r"\");
-        }
-        while s.ends_with(r"\.") {
-            s.truncate(s.len() - 2);
-        }
-        // #1869: a dot-segment landing on a drive root ("C:\." spelled
-        // outright, or "." / ".\." joined against a root cwd) is shaved
-        // by the truncation above to the bare drive, and "\\?\C:" is not
-        // a path at all — every consumer then fails with
-        // ERROR_INVALID_PARAMETER where GNU stats the root. Restore the
-        // root separator so a bare-drive result spells the root it names.
         if s.len() == 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic() {
             s.push('\\');
         }
@@ -394,6 +390,75 @@ pub mod imp {
             return format!(r"\\?\UNC\{rest}");
         }
         format!(r"\\?\{s}")
+    }
+
+    /// Lexically collapse the "." / ".." components of an
+    /// already-absolute, backslash-folded path (the `api_path` input
+    /// domain). Pure string math — no filesystem touch: "." drops,
+    /// ".." pops the previous component, and the pop clamps at the
+    /// root (a drive keeps its letter, a UNC spelling keeps
+    /// server+share), matching how the Win32 layer resolves a plain
+    /// (non-verbatim) path. A climb landing on a bare drive re-gains
+    /// the root separator (the #1869 rule), and a trailing separator
+    /// survives. A spelling with no dot segment returns byte-for-byte:
+    /// doubled separators and other caller spellings stay untouched.
+    fn collapse_dot_segments(s: &str) -> String {
+        if !s.split('\\').any(|c| c == "." || c == "..") {
+            return s.to_string();
+        }
+        // The head is the prefix ".." may never eat into; `floor` is
+        // how many leading components of the rest are the root itself.
+        let (head, rest) = if let Some(r) = s.strip_prefix(r"\\?\UNC\") {
+            (r"\\?\UNC\", r)
+        } else if let Some(r) = s.strip_prefix(r"\\?\") {
+            (r"\\?\", r)
+        } else if let Some(r) = s.strip_prefix(r"\\") {
+            (r"\\", r)
+        } else if let Some(r) = s.strip_prefix('\\') {
+            ("\\", r)
+        } else {
+            ("", s)
+        };
+        let unc = head.ends_with(r"UNC\") || head == r"\\";
+        let drive_led = rest.len() >= 2
+            && rest.as_bytes()[1] == b':'
+            && rest.as_bytes()[0].is_ascii_alphabetic();
+        let floor = if unc {
+            2 // server + share
+        } else if drive_led {
+            1 // the drive letter component
+        } else {
+            0
+        };
+        let trailing = rest.ends_with('\\');
+        let mut stack: Vec<&str> = Vec::new();
+        for part in rest.split('\\') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    if stack.len() > floor {
+                        stack.pop();
+                    }
+                }
+                _ => stack.push(part),
+            }
+        }
+        let mut joined = stack.join("\\");
+        // A landing on the bare drive names the root, not the drive's
+        // current directory (the #1869 rule, applied to the core
+        // before the head goes back on).
+        if stack.len() == 1 && stack[0].len() == 2 && stack[0].ends_with(':') {
+            joined.push('\\');
+        } else if trailing && !joined.is_empty() && !joined.ends_with('\\') {
+            joined.push('\\');
+        }
+        if joined.is_empty() {
+            // Everything popped away under a rooted head: the root
+            // itself (only reachable for a rooted, drive-less head —
+            // the drive and UNC floors keep their root components).
+            return head.to_string();
+        }
+        format!("{head}{joined}")
     }
 
     fn filetime_to_systemtime(ft: i64) -> Option<SystemTime> {
@@ -1578,6 +1643,57 @@ mod api_path_probes {
         let sub = plain_ctx(Path::new(r"C:\dir"));
         assert_eq!(imp::api_path(&sub, "."), r"\\?\C:\dir");
         assert_eq!(imp::api_path(&root, "./x"), r"\\?\C:\x");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1872_dotdot_trailing_and_mid() {
+        // #1872: a ".." component anywhere in the operand used to reach
+        // the API verbatim ("\\?\C:\l4probe\.."), where the attribute
+        // layer rejects dot segments outright (ERROR_INVALID_FILENAME)
+        // — stat/touch failed with Invalid argument on shapes GNU
+        // resolves to the parent. The collapse is lexical, at this one
+        // operand boundary.
+        // trailing "..", cwd-relative
+        let ctx = plain_ctx(Path::new(r"C:\l4probe\ctrl"));
+        assert_eq!(imp::api_path(&ctx, ".."), r"\\?\C:\l4probe");
+        // trailing "..", absolute
+        let ctx = plain_ctx(Path::new(r"D:\wd"));
+        assert_eq!(imp::api_path(&ctx, r"C:\l4probe\.."), r"\\?\C:\");
+        // mid-path ".."
+        assert_eq!(
+            imp::api_path(&ctx, r"C:\l4probe\..\l4probe"),
+            r"\\?\C:\l4probe"
+        );
+        assert_eq!(imp::api_path(&ctx, r"C:\a\b\..\..\c"), r"\\?\C:\c");
+        // leading ".." against the cwd join
+        let ctx = plain_ctx(Path::new(r"C:\l4probe"));
+        assert_eq!(imp::api_path(&ctx, r"..\ctrl"), r"\\?\C:\ctrl");
+        assert_eq!(imp::api_path(&ctx, r"ctrl\..\ctrl"), r"\\?\C:\l4probe\ctrl");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1872_dotdot_root_climb_clamps() {
+        // Climbing past the drive root stays at the root (the POSIX
+        // rule), and a climb landing exactly on the root keeps the root
+        // separator — the #1869 bare-drive rule.
+        let root = plain_ctx(Path::new(r"C:\"));
+        assert_eq!(imp::api_path(&root, ".."), r"\\?\C:\");
+        assert_eq!(imp::api_path(&root, r"..\.."), r"\\?\C:\");
+        assert_eq!(imp::api_path(&root, r"C:\.."), r"\\?\C:\");
+        assert_eq!(imp::api_path(&root, r"C:\a\..\.."), r"\\?\C:\");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1872_dotdot_guards() {
+        // ".." as part of a longer component is a plain name, not a
+        // segment; non-dot shapes must not move.
+        let ctx = plain_ctx(Path::new(r"C:\wd"));
+        assert_eq!(imp::api_path(&ctx, r"C:\a\..\b"), r"\\?\C:\b");
+        assert_eq!(imp::api_path(&ctx, r"C:\a\..b\c.."), r"\\?\C:\a\..b\c..");
+        assert_eq!(imp::api_path(&ctx, r"C:\a\b"), r"\\?\C:\a\b");
     }
 
     #[test]
