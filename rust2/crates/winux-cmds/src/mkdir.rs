@@ -153,6 +153,48 @@ fn create_one(
     }
 }
 
+/// A native drive-absolute spelling ("D:\..." or "D:/..."): its root
+/// is the drive root, never the cwd (#1870). A bare "D:" and the
+/// drive-relative "D:name" form are NOT absolute and keep the
+/// per-drive-cwd reading Win32 gives them.
+fn is_drive_absolute(p: &str) -> bool {
+    let b = p.as_bytes();
+    b.len() >= 3
+        && winux_core::path::is_drive_letter(b[0])
+        && b[1] == b':'
+        && (b[2] == b'\\' || b[2] == b'/')
+}
+
+/// The operand's own display prefixes, cut at its component ends:
+/// "p/q/r" -> ["p", "p/q", "p/q/r"], "D:\a\b" -> ["D:", "D:\a",
+/// "D:\a\b"]. [GNU] mkdir names each created directory by the operand
+/// prefix that produced it, spelled as given, so the prefixes are
+/// sliced from the operand text instead of re-joined (a re-join would
+/// rewrite a backslash operand's separators in messages). A
+/// drive-absolute spelling splits on both separators; any other
+/// spelling keeps the historical '/'-only split.
+fn shown_prefixes(shown_name: &str) -> Vec<String> {
+    let both = is_drive_absolute(shown_name);
+    let mut prefixes = Vec::new();
+    let mut comp_end = 0usize;
+    let mut in_comp = false;
+    for (i, ch) in shown_name.char_indices() {
+        if ch == '/' || (both && ch == '\\') {
+            if in_comp {
+                prefixes.push(shown_name[..comp_end].to_string());
+                in_comp = false;
+            }
+        } else {
+            in_comp = true;
+            comp_end = i + ch.len_utf8();
+        }
+    }
+    if in_comp {
+        prefixes.push(shown_name[..comp_end].to_string());
+    }
+    prefixes
+}
+
 fn create_parents(
     ctx: &Ctx,
     shown_name: &str,
@@ -161,14 +203,26 @@ fn create_parents(
     verbose: bool,
     io: &mut Io,
 ) -> Result<(), ()> {
-    // Display components come from the operand spelling; the walk runs on
+    // Display prefixes come from the operand spelling; the walk runs on
     // the folded path when the #1231 drive dialect renamed the root.
-    let shown_comps = split_slashes(shown_name);
+    let mut shown = shown_prefixes(shown_name);
+    if shown.is_empty() {
+        shown.push(shown_name.to_string());
+    }
     let folded = fs_name != shown_name;
-    if folded {
+    if folded || is_drive_absolute(fs_name) {
         // The fold turns "/e/Data" into "E:\Data": anchor at the drive
         // root and split on both separators. The fold consumes the
         // drive-letter component, so the displayed prefixes drop it.
+        //
+        // A drive-absolute spelling takes the same anchor even when no
+        // fold claimed it (#1870): the cwd walk below re-joins the
+        // "D:" component onto the cwd, the join drops the root, and
+        // Win32 resolves the result against the per-drive cwd — a
+        // same-drive operand lands under the caller's cwd with the
+        // target never created (D1, rc 0), and the backslash spelling
+        // arrives as a single '/'-split component so no parents are
+        // created at all (D2, ENOENT).
         let mut root = PathBuf::from(fs_name);
         let mut fs_comps: Vec<String> = Vec::new();
         while let Some(parent) = root.parent().map(Path::to_path_buf) {
@@ -183,42 +237,24 @@ fn create_parents(
             root = parent;
         }
         fs_comps.reverse();
-        return create_parents_walk(
-            root,
-            fs_comps,
-            &shown_comps,
-            shown_name.starts_with('/'),
-            mode,
-            verbose,
-            io,
-        );
+        return create_parents_walk(root, fs_comps, &shown, mode, verbose, io);
     }
     let fs_comps: Vec<String> = split_slashes(fs_name)
         .into_iter()
         .map(String::from)
         .collect();
-    let mut acc = if fs_name.starts_with('/') {
+    let acc = if fs_name.starts_with('/') {
         Path::new("/").to_path_buf()
     } else {
         ctx.cwd.clone()
     };
-    let _ = &mut acc;
-    create_parents_walk(
-        acc,
-        fs_comps,
-        &shown_comps,
-        shown_name.starts_with('/'),
-        mode,
-        verbose,
-        io,
-    )
+    create_parents_walk(acc, fs_comps, &shown, mode, verbose, io)
 }
 
 fn create_parents_walk(
     root: PathBuf,
     fs_comps: Vec<String>,
-    shown_comps: &[&str],
-    absolute_shown: bool,
+    shown_prefixes: &[String],
     mode: Option<u32>,
     verbose: bool,
     io: &mut Io,
@@ -231,23 +267,19 @@ fn create_parents_walk(
     // The folded shape consumes the operand's drive-letter component in its
     // root ("/e/Data" -> E:\ + [Data]), so the displayed prefix for fs
     // component i is the operand prefix ending at shown index i + offset.
-    let offset = shown_comps.len().saturating_sub(fs_comps.len());
+    let offset = shown_prefixes.len().saturating_sub(fs_comps.len());
     let mut acc = root;
     for (i, comp) in fs_comps.iter().enumerate() {
         acc = acc.join(comp);
-        let shown_end = (i + offset).min(shown_comps.len().saturating_sub(1));
-        let shown = if absolute_shown {
-            format!("/{}", shown_comps[..=shown_end].join("/"))
-        } else {
-            shown_comps[..=shown_end].join("/")
-        };
+        let shown_end = (i + offset).min(shown_prefixes.len().saturating_sub(1));
+        let shown = shown_prefixes[shown_end].as_str();
         match std::fs::symlink_metadata(&acc) {
             Ok(md) => {
                 if md.is_dir() {
                     continue; // existing dir: silent, not "created"
                 }
                 let err = io::Error::from(io::ErrorKind::AlreadyExists);
-                report_error(io, &shown, &err);
+                report_error(io, shown, &err);
                 return Err(());
             }
             Err(_) => match std::fs::create_dir(&acc) {
@@ -262,11 +294,11 @@ fn create_parents_walk(
                         }
                     }
                     if verbose {
-                        verbose_created(io, &shown);
+                        verbose_created(io, shown);
                     }
                 }
                 Err(e) => {
-                    report_error(io, &shown, &e);
+                    report_error(io, shown, &e);
                     return Err(());
                 }
             },
@@ -417,6 +449,152 @@ mod tests {
             .permissions()
             .readonly());
         unset_readonly(&sc.path("par").join("leaf"));
+    }
+
+    // ===== #1870: drive-absolute operands anchor at the drive root =====
+    //
+    // The -p walk used to start from the cwd for every non-folded
+    // operand and re-join the "D:" component onto it: the join drops
+    // the root, Win32 resolves the result against the per-drive cwd,
+    // and the tree lands under the caller's cwd while the target is
+    // never created (D1, rc 0). The backslash spelling arrived as ONE
+    // component (the split knew only '/'), so -p created no parents
+    // at all and the leaf create failed ENOENT (D2).
+
+    #[cfg(windows)]
+    fn run_mkdir_io(sc: &ScratchCtx, args: &[&str]) -> (u32, String, String) {
+        let owned: Vec<std::ffi::OsString> = args.iter().map(std::ffi::OsString::from).collect();
+        let mut io = MemIo::new("");
+        let r = super::mkdir_cmd(&owned, &mut io.split(), &sc.ctx()).unwrap();
+        (r, io.out(), io.err())
+    }
+
+    /// (native spelling, forward-slash spelling) of the scratch root.
+    #[cfg(windows)]
+    fn scratch_spellings(sc: &ScratchCtx) -> (String, String) {
+        let native = sc.dir.to_string_lossy().into_owned();
+        let slashed = native.replace('\\', "/");
+        (native, slashed)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parents_drive_absolute_slash_form_lands_on_the_drive() {
+        // D1: cwd and operand on the same drive — the tree must land
+        // at the operand's absolute target, never under the cwd.
+        let sc = ScratchCtx::new("mkdir1870d1");
+        let (_native, slashed) = scratch_spellings(&sc);
+        let operand = format!("{slashed}/d1/x/y");
+        let (r, _out, err) = run_mkdir_io(&sc, &["-p", &operand]);
+        assert_eq!(r, 0, "stderr: {err}");
+        assert!(
+            sc.path("d1/x/y").is_dir(),
+            "target must exist at the drive-absolute location"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parents_drive_absolute_backslash_form_creates_parents() {
+        // D2: the backslash spelling must create the whole chain; a
+        // pre-existing first parent changes nothing (the old walk
+        // still failed one level down).
+        let sc = ScratchCtx::new("mkdir1870d2");
+        let (native, _slashed) = scratch_spellings(&sc);
+        let operand = format!("{native}\\d2\\sub\\leaf");
+        let (r, out, err) = run_mkdir_io(&sc, &["-pv", &operand]);
+        assert_eq!(r, 0, "stderr: {err}");
+        assert!(sc.path("d2/sub/leaf").is_dir());
+        // [GNU] -v names each created directory by the operand's own
+        // prefixes, spelled as given.
+        assert_eq!(
+            out,
+            format!(
+                "mkdir: created directory '{native}\\d2'\n\
+                 mkdir: created directory '{native}\\d2\\sub'\n\
+                 mkdir: created directory '{native}\\d2\\sub\\leaf'\n"
+            )
+        );
+        let operand2 = format!("{native}\\d2\\sub2\\leaf2");
+        let (r, _out, err) = run_mkdir_io(&sc, &["-p", &operand2]);
+        assert_eq!(r, 0, "stderr: {err}");
+        assert!(sc.path("d2/sub2/leaf2").is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parents_drive_absolute_cross_drive_forms() {
+        // D1b/D2c guards: cross-drive spellings must create at the
+        // named drive's root. The slash form happened to land
+        // correctly before the fix (the other drive's per-drive cwd
+        // is its root); the backslash form failed like D2. Self-skips
+        // when no second writable drive root exists on the host.
+        let sc = ScratchCtx::new("mkdir1870x");
+        let (native, _slashed) = scratch_spellings(&sc);
+        let scratch_drive = native.as_bytes()[0] as char;
+        let other = if scratch_drive.eq_ignore_ascii_case(&'C') {
+            'D'
+        } else {
+            'C'
+        };
+        let uniq = format!("winux1870-{}", std::process::id());
+        let bs_root = format!("{other}:\\{uniq}-bs");
+        if std::fs::create_dir(&bs_root).is_err() {
+            return; // no usable second drive on this host
+        }
+        let operand = format!("{bs_root}\\sub\\leaf");
+        let (r, _out, err) = run_mkdir_io(&sc, &["-p", &operand]);
+        assert_eq!(r, 0, "stderr: {err}");
+        assert!(std::path::Path::new(&operand).is_dir());
+        let sl_root = format!("{other}:/{uniq}-sl");
+        let operand = format!("{sl_root}/sub/leaf");
+        let (r, _out, err) = run_mkdir_io(&sc, &["-p", &operand]);
+        assert_eq!(r, 0, "stderr: {err}");
+        assert!(std::path::Path::new(&sl_root)
+            .join("sub")
+            .join("leaf")
+            .is_dir());
+        let _ = std::fs::remove_dir_all(&bs_root);
+        let _ = std::fs::remove_dir_all(format!("{other}:\\{uniq}-sl"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parents_posix_drive_form_still_folds() {
+        // Guard: the "/c/..." dialect keeps folding onto the drive
+        // (the #1231 face) — the anchor change must not disturb it.
+        let sc = ScratchCtx::new("mkdir1870p");
+        let (native, slashed) = scratch_spellings(&sc);
+        let drive = (native.as_bytes()[0] as char).to_ascii_lowercase();
+        let operand = format!("/{drive}{}/p1/a/b", &slashed[2..]);
+        let (r, _out, err) = run_mkdir_io(&sc, &["-p", &operand]);
+        assert_eq!(r, 0, "stderr: {err}");
+        assert!(sc.path("p1/a/b").is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn no_parents_drive_absolute_keeps_single_create() {
+        // Guard: without -p the drive-absolute spellings keep plain
+        // single-create semantics (missing parent fails, existing
+        // parent creates the leaf only), and -p on a bare drive root
+        // stays a silent no-op.
+        let sc = ScratchCtx::new("mkdir1870np");
+        let (native, slashed) = scratch_spellings(&sc);
+        let operand = format!("{native}\\np-missing\\leaf");
+        let (r, _o, _e) = run_mkdir_io(&sc, &[&operand]);
+        assert_eq!(r, 1);
+        let operand = format!("{slashed}/np-missing/leaf");
+        let (r, _o, _e) = run_mkdir_io(&sc, &[&operand]);
+        assert_eq!(r, 1);
+        std::fs::create_dir(sc.path("np-here")).unwrap();
+        let operand = format!("{native}\\np-here\\leaf");
+        let (r, _o, err) = run_mkdir_io(&sc, &[&operand]);
+        assert_eq!(r, 0, "stderr: {err}");
+        assert!(sc.path("np-here/leaf").is_dir());
+        let root = format!("{}:\\", native.as_bytes()[0] as char);
+        let (r, _o, err) = run_mkdir_io(&sc, &["-p", &root]);
+        assert_eq!(r, 0, "stderr: {err}");
     }
 
     #[cfg(windows)]
