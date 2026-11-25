@@ -522,42 +522,58 @@ auto fold_drive_dialect_w(std::wstring_view normalized)
   return normalize_separators(std::move(folded));
 }
 
-// Fold literal colons in the operand's final component onto the
-// private-use carrier U+F03A (#1283). A ':' in a final component is
-// never a drive colon (those live in earlier components) and Win32
-// reads it as an alternate-data-stream separator, while the shell's
+// Fold literal colons in the operand's components onto the
+// private-use carrier U+F03A (#1283). Win32 reads a ':' in a file
+// name as an alternate-data-stream separator, while the shell's
 // own path layer stores such names on disk with ':' encoded as
 // U+F03A — the spelling redirects actually create and MSYS resolves.
 // Before this fold the same operand spelled three ways across applets:
 // "D:name" resolved drive-relative through GetFullPathNameW (touch,
 // realpath), as the literal carrier file (cat), or not at all (stat,
 // mv, head, tail, grep). Folding here, at the one operand boundary,
-// makes every consumer resolve the one literal file. The bare drive
-// ("D:") keeps its drive meaning, and verbatim/device spellings
-// ("\\?\", "\\.\") are the caller's own responsibility and pass
-// through untouched. Consumers: normalize_api_operand_w (the argv
-// operand boundary) and canonicalize_path_w (the realpath/readlink
-// resolver), mirroring the fold_posix_drive_prefix_w sharing.
+// makes every consumer resolve the one literal file.
+// The fold is per-component (#1874): the shell/MSYS contract encodes
+// every component (the rubash #4198 funnel is the shell-side twin),
+// so a fold that stopped at the final component could not reach a
+// tree the shell itself created ("x:y/z" over the on-disk
+// "x<F03A>y/z"). The one exemption is the path's own drive
+// designator in its absolute form ("D:\" / "D:/"): that colon is
+// drive syntax, not a filename byte. A bare "D:" is a relative
+// colon name under this contract — Git Bash creates and resolves
+// the carrier file in the cwd — and folds like "D:name"; a
+// designator-shaped component mid-path folds like any other
+// component. Verbatim/device spellings ("\\?\", "\\.\") are the
+// caller's own responsibility and pass through untouched.
+// Consumers: normalize_api_operand_w (the argv operand boundary)
+// and canonicalize_path_w (the realpath/readlink resolver),
+// mirroring the fold_posix_drive_prefix_w sharing. The Rust port
+// (winux-core path.rs fold_carrier_colons) is byte-identical.
 auto fold_carrier_colons_w(std::wstring_view normalized)
     -> std::optional<std::wstring> {
   if (normalized.starts_with(L"\\\\?\\") ||
       normalized.starts_with(L"\\\\.\\")) {
     return std::nullopt;
   }
-  const size_t sep = normalized.find_last_of(L"\\/");
-  const std::wstring_view tail =
-      sep == std::wstring_view::npos ? normalized : normalized.substr(sep + 1);
-  if (tail.find(L':') == std::wstring_view::npos) {
+  // Index of the one exempt colon: the path's own drive designator,
+  // only in its absolute form (letter + ':' + separator).
+  size_t exempt = std::wstring_view::npos;
+  if (normalized.size() >= 3 && shell_ns::is_drive_letter(normalized[0]) &&
+      normalized[1] == L':' && is_separator(normalized[2])) {
+    exempt = 1;
+  }
+  bool any = false;
+  for (size_t i = 0; i < normalized.size(); ++i) {
+    if (normalized[i] == L':' && i != exempt) {
+      any = true;
+      break;
+    }
+  }
+  if (!any) {
     return std::nullopt;
   }
-  if (sep == std::wstring_view::npos && normalized.size() == 2) {
-    return std::nullopt;  // bare "D:" — the drive itself, not a file name
-  }
   std::wstring folded(normalized);
-  const size_t tail_begin =
-      sep == std::wstring_view::npos ? 0 : sep + 1;
-  for (size_t i = tail_begin; i < folded.size(); ++i) {
-    if (folded[i] == L':') folded[i] = L'\uF03A';
+  for (size_t i = 0; i < folded.size(); ++i) {
+    if (folded[i] == L':' && i != exempt) folded[i] = L'\uF03A';
   }
   return folded;
 }

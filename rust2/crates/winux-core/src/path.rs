@@ -338,31 +338,43 @@ pub fn fold_drive_dialect(normalized: &str) -> Option<String> {
     Some(folded.replace('/', "\\"))
 }
 
-/// native_path.cppm:484 fold_carrier_colons_w: literal colons in the
-/// operand's final component fold onto the private-use carrier U+F03A
-/// (#1283) — Win32 would read them as an ADS separator, while the shell's
-/// path layer stores such names on disk encoded. The bare drive ("D:")
-/// keeps its drive meaning, and verbatim/device spellings ("\\\\?\\",
-/// "\\\\.\\") pass through untouched.
+/// native_path.cppm:541 fold_carrier_colons_w: literal colons in the
+/// operand's components fold onto the private-use carrier U+F03A
+/// (#1283) — Win32 would read them as an ADS separator, while the
+/// shell's path layer stores such names on disk encoded. The fold is
+/// per-component (#1874): the shell/MSYS contract encodes every
+/// component (the rubash #4198 funnel is the shell-side twin), so a
+/// fold that stopped at the final component could not reach a tree the
+/// shell itself created (`x:y/z` over the on-disk `x<F03A>y/z`). The
+/// one exemption is the path's own drive designator in its absolute
+/// form ("D:\" / "D:/"): that colon is drive syntax, not a filename
+/// byte. A bare "D:" is a relative colon name under this contract —
+/// Git Bash creates and resolves the carrier file in the cwd — and
+/// folds like "D:name"; a designator-shaped component mid-path folds
+/// like any other component. Verbatim/device spellings ("\\\\?\\",
+/// "\\\\.\\") are the caller's own responsibility and pass through
+/// untouched.
 pub fn fold_carrier_colons(normalized: &str) -> Option<String> {
     if normalized.starts_with(r"\\?\") || normalized.starts_with(r"\\.\") {
         return None;
     }
-    let sep = normalized.rfind(|c| c == '\\' || c == '/');
-    let tail = match sep {
-        Some(i) => &normalized[i + 1..],
-        None => normalized,
+    let b = normalized.as_bytes();
+    // Byte index of the one exempt colon: the path's own drive
+    // designator, only in its absolute form (letter + ':' + separator).
+    let exempt = if b.len() >= 3 && is_drive_letter(b[0]) && b[1] == b':' && is_separator(b[2]) {
+        Some(1usize)
+    } else {
+        None
     };
-    if !tail.contains(':') {
+    if !normalized
+        .char_indices()
+        .any(|(i, c)| c == ':' && exempt != Some(i))
+    {
         return None;
     }
-    if sep.is_none() && normalized.chars().count() == 2 {
-        return None; // bare "D:" — the drive itself, not a file name
-    }
-    let tail_begin = sep.map(|i| i + 1).unwrap_or(0);
     let mut folded = String::with_capacity(normalized.len());
     for (i, ch) in normalized.char_indices() {
-        if i >= tail_begin && ch == ':' {
+        if ch == ':' && exempt != Some(i) {
             folded.push('\u{F03A}');
         } else {
             folded.push(ch);
