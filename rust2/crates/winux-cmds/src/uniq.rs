@@ -233,7 +233,7 @@ fn split_records<'a>(content: &'a [u8], delimiter: u8) -> Vec<&'a [u8]> {
     out
 }
 
-fn run_uniq(cfg: &Config, io: &mut Io, ctx: &Ctx) -> Result<(), (i32, String)> {
+fn run_uniq(cfg: &Config, io: &mut Io, ctx: &Ctx) -> Result<(), (u32, String)> {
     let input_bytes = if cfg.input == "-" {
         let mut buf = Vec::new();
         io.stdin
@@ -657,92 +657,85 @@ pub fn uniq_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-    use std::io::Cursor;
+    use winux_core::test_support::{MemIo, ScratchCtx};
 
-    fn run_mem(args: &[&str], stdin_bytes: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
+    fn run_mem(args: &[&str], stdin_str: &str) -> (u32, String, String) {
+        let sc = ScratchCtx::new("uniq");
+        let mut io = MemIo::new(stdin_str);
+        let ctx = sc.ctx();
         let os_args: Vec<OsString> = args.iter().map(OsString::from).collect();
-        let mut stdin = Cursor::new(stdin_bytes.to_vec());
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let mut io = Io {
-            stdin: &mut stdin,
-            stdout: &mut stdout,
-            stderr: &mut stderr,
-        };
-        let ctx = Ctx {
-            cwd: std::path::PathBuf::from("."),
-            env: BTreeMap::new(),
-        };
-        let rc = uniq_cmd(&os_args, &mut io, &ctx).unwrap();
-        (rc, stdout, stderr)
+        let rc = uniq_cmd(&os_args, &mut io.split(), &ctx).unwrap();
+        (rc, io.out(), io.err())
     }
 
     #[test]
     fn basic_and_count() {
-        let (rc, out, err) = run_mem(&[], b"a\na\nb\nc\nc\nc\n");
+        let (rc, out, err) = run_mem(&[], "a\na\nb\nc\nc\nc\n");
         assert_eq!(rc, 0);
         assert!(err.is_empty());
-        assert_eq!(out, b"a\nb\nc\n");
+        assert_eq!(out, "a\nb\nc\n");
 
-        let (rc, out, _) = run_mem(&["-c"], b"a\na\nb\n");
+        let (rc, out, _) = run_mem(&["-c"], "a\na\nb\n");
         assert_eq!(rc, 0);
-        assert_eq!(out, b"      2 a\n      1 b\n");
+        assert_eq!(out, "      2 a\n      1 b\n");
     }
 
     #[test]
     fn repeated_and_unique_and_all_repeated() {
-        let (rc, out, _) = run_mem(&["-d"], b"a\na\nb\nc\nc\n");
+        let (rc, out, _) = run_mem(&["-d"], "a\na\nb\nc\nc\n");
         assert_eq!(rc, 0);
-        assert_eq!(out, b"a\nc\n");
+        assert_eq!(out, "a\nc\n");
 
-        let (rc, out, _) = run_mem(&["-u"], b"a\na\nb\nc\nc\n");
+        let (rc, out, _) = run_mem(&["-u"], "a\na\nb\nc\nc\n");
         assert_eq!(rc, 0);
-        assert_eq!(out, b"b\n");
+        assert_eq!(out, "b\n");
 
-        let (rc, out, _) = run_mem(&["-D"], b"a\na\nb\nc\nc\n");
+        let (rc, out, _) = run_mem(&["-D"], "a\na\nb\nc\nc\n");
         assert_eq!(rc, 0);
-        assert_eq!(out, b"a\na\nc\nc\n");
+        assert_eq!(out, "a\na\nc\nc\n");
 
-        let (rc, out, _) = run_mem(&["--all-repeated=separate"], b"a\na\nb\nc\nc\n");
+        let (rc, out, _) = run_mem(&["--all-repeated=separate"], "a\na\nb\nc\nc\n");
         assert_eq!(rc, 0);
-        assert_eq!(out, b"a\na\n\nc\nc\n");
+        assert_eq!(out, "a\na\n\nc\nc\n");
     }
 
     #[test]
     fn skip_fields_chars_check_and_case() {
-        let (rc, out, _) = run_mem(&["-f", "1", "-s", "1", "-w", "2", "-i"], b"1 aXY\n2 Axy\n3 bXY\n");
+        let (rc, out, _) = run_mem(
+            &["-f", "1", "-s", "1", "-w", "2", "-i"],
+            "1 aXY\n2 Axy\n3 bXY\n",
+        );
         assert_eq!(rc, 0);
-        assert_eq!(out, b"1 aXY\n3 bXY\n");
+        assert_eq!(out, "1 aXY\n3 bXY\n");
 
-        let (rc, out, _) = run_mem(&["-1", "+1"], b"x aa\ny ab\n");
+        let (rc, out, _) = run_mem(&["-1", "+1"], "x aa\ny ab\n");
         assert_eq!(rc, 0);
-        assert_eq!(out, b"x aa\n");
+        assert_eq!(out, "x aa\n");
     }
 
     #[test]
     fn group_modes_and_conflicts() {
-        let (rc, out, _) = run_mem(&["--group=both"], b"a\na\nb\n");
+        let (rc, out, _) = run_mem(&["--group=both"], "a\na\nb\n");
         assert_eq!(rc, 0);
-        assert_eq!(out, b"\na\na\n\nb\n\n");
+        assert_eq!(out, "\na\na\n\nb\n\n");
 
-        let (rc, _, err) = run_mem(&["--group", "-c"], b"a\n");
+        let (rc, _, err) = run_mem(&["--group", "-c"], "a\n");
         assert_eq!(rc, 1);
         assert!(!err.is_empty());
 
-        let (rc, _, err) = run_mem(&["-c", "-D"], b"a\n");
+        let (rc, _, err) = run_mem(&["-c", "-D"], "a\n");
         assert_eq!(rc, 1);
         assert!(!err.is_empty());
     }
 
     #[test]
     fn zero_terminated_and_argmatch_empty() {
-        let (rc, out, _) = run_mem(&["-z"], b"a\nb\0a\nb\0c\0");
+        let (rc, out, _) = run_mem(&["-z"], "a\nb\0a\nb\0c\0");
         assert_eq!(rc, 0);
-        assert_eq!(out, b"a\nb\0c\0");
+        assert_eq!(out, "a\nb\0c\0");
 
-        let (rc, _, err) = run_mem(&["--group="], b"");
+        let (rc, _, err) = run_mem(&["--group="], "");
         assert_eq!(rc, 1);
-        assert!(String::from_utf8_lossy(&err).contains("ambiguous argument ''"));
+        assert!(err.contains("ambiguous argument ''"));
     }
 }
