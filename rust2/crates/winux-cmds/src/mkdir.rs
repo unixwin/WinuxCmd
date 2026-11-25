@@ -153,6 +153,48 @@ fn create_one(
     }
 }
 
+/// A native drive-absolute spelling ("D:\..." or "D:/..."): its root
+/// is the drive root, never the cwd (#1870). A bare "D:" and the
+/// drive-relative "D:name" form are NOT absolute and keep the
+/// per-drive-cwd reading Win32 gives them.
+fn is_drive_absolute(p: &str) -> bool {
+    let b = p.as_bytes();
+    b.len() >= 3
+        && winux_core::path::is_drive_letter(b[0])
+        && b[1] == b':'
+        && (b[2] == b'\\' || b[2] == b'/')
+}
+
+/// The operand's own display prefixes, cut at its component ends:
+/// "p/q/r" -> ["p", "p/q", "p/q/r"], "D:\a\b" -> ["D:", "D:\a",
+/// "D:\a\b"]. [GNU] mkdir names each created directory by the operand
+/// prefix that produced it, spelled as given, so the prefixes are
+/// sliced from the operand text instead of re-joined (a re-join would
+/// rewrite a backslash operand's separators in messages). A
+/// drive-absolute spelling splits on both separators; any other
+/// spelling keeps the historical '/'-only split.
+fn shown_prefixes(shown_name: &str) -> Vec<String> {
+    let both = is_drive_absolute(shown_name);
+    let mut prefixes = Vec::new();
+    let mut comp_end = 0usize;
+    let mut in_comp = false;
+    for (i, ch) in shown_name.char_indices() {
+        if ch == '/' || (both && ch == '\\') {
+            if in_comp {
+                prefixes.push(shown_name[..comp_end].to_string());
+                in_comp = false;
+            }
+        } else {
+            in_comp = true;
+            comp_end = i + ch.len_utf8();
+        }
+    }
+    if in_comp {
+        prefixes.push(shown_name[..comp_end].to_string());
+    }
+    prefixes
+}
+
 fn create_parents(
     ctx: &Ctx,
     shown_name: &str,
@@ -161,14 +203,26 @@ fn create_parents(
     verbose: bool,
     io: &mut Io,
 ) -> Result<(), ()> {
-    // Display components come from the operand spelling; the walk runs on
+    // Display prefixes come from the operand spelling; the walk runs on
     // the folded path when the #1231 drive dialect renamed the root.
-    let shown_comps = split_slashes(shown_name);
+    let mut shown = shown_prefixes(shown_name);
+    if shown.is_empty() {
+        shown.push(shown_name.to_string());
+    }
     let folded = fs_name != shown_name;
-    if folded {
+    if folded || is_drive_absolute(fs_name) {
         // The fold turns "/e/Data" into "E:\Data": anchor at the drive
         // root and split on both separators. The fold consumes the
         // drive-letter component, so the displayed prefixes drop it.
+        //
+        // A drive-absolute spelling takes the same anchor even when no
+        // fold claimed it (#1870): the cwd walk below re-joins the
+        // "D:" component onto the cwd, the join drops the root, and
+        // Win32 resolves the result against the per-drive cwd — a
+        // same-drive operand lands under the caller's cwd with the
+        // target never created (D1, rc 0), and the backslash spelling
+        // arrives as a single '/'-split component so no parents are
+        // created at all (D2, ENOENT).
         let mut root = PathBuf::from(fs_name);
         let mut fs_comps: Vec<String> = Vec::new();
         while let Some(parent) = root.parent().map(Path::to_path_buf) {
@@ -183,42 +237,24 @@ fn create_parents(
             root = parent;
         }
         fs_comps.reverse();
-        return create_parents_walk(
-            root,
-            fs_comps,
-            &shown_comps,
-            shown_name.starts_with('/'),
-            mode,
-            verbose,
-            io,
-        );
+        return create_parents_walk(root, fs_comps, &shown, mode, verbose, io);
     }
     let fs_comps: Vec<String> = split_slashes(fs_name)
         .into_iter()
         .map(String::from)
         .collect();
-    let mut acc = if fs_name.starts_with('/') {
+    let acc = if fs_name.starts_with('/') {
         Path::new("/").to_path_buf()
     } else {
         ctx.cwd.clone()
     };
-    let _ = &mut acc;
-    create_parents_walk(
-        acc,
-        fs_comps,
-        &shown_comps,
-        shown_name.starts_with('/'),
-        mode,
-        verbose,
-        io,
-    )
+    create_parents_walk(acc, fs_comps, &shown, mode, verbose, io)
 }
 
 fn create_parents_walk(
     root: PathBuf,
     fs_comps: Vec<String>,
-    shown_comps: &[&str],
-    absolute_shown: bool,
+    shown_prefixes: &[String],
     mode: Option<u32>,
     verbose: bool,
     io: &mut Io,
@@ -231,23 +267,19 @@ fn create_parents_walk(
     // The folded shape consumes the operand's drive-letter component in its
     // root ("/e/Data" -> E:\ + [Data]), so the displayed prefix for fs
     // component i is the operand prefix ending at shown index i + offset.
-    let offset = shown_comps.len().saturating_sub(fs_comps.len());
+    let offset = shown_prefixes.len().saturating_sub(fs_comps.len());
     let mut acc = root;
     for (i, comp) in fs_comps.iter().enumerate() {
         acc = acc.join(comp);
-        let shown_end = (i + offset).min(shown_comps.len().saturating_sub(1));
-        let shown = if absolute_shown {
-            format!("/{}", shown_comps[..=shown_end].join("/"))
-        } else {
-            shown_comps[..=shown_end].join("/")
-        };
+        let shown_end = (i + offset).min(shown_prefixes.len().saturating_sub(1));
+        let shown = shown_prefixes[shown_end].as_str();
         match std::fs::symlink_metadata(&acc) {
             Ok(md) => {
                 if md.is_dir() {
                     continue; // existing dir: silent, not "created"
                 }
                 let err = io::Error::from(io::ErrorKind::AlreadyExists);
-                report_error(io, &shown, &err);
+                report_error(io, shown, &err);
                 return Err(());
             }
             Err(_) => match std::fs::create_dir(&acc) {
@@ -262,11 +294,11 @@ fn create_parents_walk(
                         }
                     }
                     if verbose {
-                        verbose_created(io, &shown);
+                        verbose_created(io, shown);
                     }
                 }
                 Err(e) => {
-                    report_error(io, &shown, &e);
+                    report_error(io, shown, &e);
                     return Err(());
                 }
             },
