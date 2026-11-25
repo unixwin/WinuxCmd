@@ -376,6 +376,15 @@ pub mod imp {
         while s.ends_with(r"\.") {
             s.truncate(s.len() - 2);
         }
+        // #1869: a dot-segment landing on a drive root ("C:\." spelled
+        // outright, or "." / ".\." joined against a root cwd) is shaved
+        // by the truncation above to the bare drive, and "\\?\C:" is not
+        // a path at all — every consumer then fails with
+        // ERROR_INVALID_PARAMETER where GNU stats the root. Restore the
+        // root separator so a bare-drive result spells the root it names.
+        if s.len() == 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic() {
+            s.push('\\');
+        }
         let s = s;
         if let Some(rest) = s.strip_prefix(r"\\?\") {
             return format!(r"\\?\{rest}");
@@ -1527,6 +1536,48 @@ mod api_path_probes {
             let out = imp::api_path(&ctx, "/d/repo/x/f.txt");
             assert_eq!(out, r"\\?\D:\repo\x\f.txt", "dialect fold");
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1869_root_cwd_dot_operand() {
+        // cwd IS the drive root and the operand is ".": the join spells
+        // "C:\.", the tail truncation shaves it to the bare drive, and
+        // api_path used to emit the invalid "\\?\C:" — every consumer
+        // then failed with ERROR_INVALID_PARAMETER where GNU stats the
+        // root (#1869).
+        let ctx = plain_ctx(Path::new(r"C:\"));
+        assert_eq!(imp::api_path(&ctx, "."), r"\\?\C:\");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1869_drive_root_dot_suffix() {
+        // The absolute spelling of the same landing: "C:\." itself.
+        let ctx = plain_ctx(Path::new(r"D:\wd"));
+        assert_eq!(imp::api_path(&ctx, r"C:\."), r"\\?\C:\");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1869_root_cwd_dot_backslash_dot() {
+        // ".\." from the root: the "\.\" collapse leaves "C:\.", which
+        // the tail truncation then shaves to the bare drive as well.
+        let ctx = plain_ctx(Path::new(r"C:\"));
+        assert_eq!(imp::api_path(&ctx, r".\."), r"\\?\C:\");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn issue1869_drive_root_guards() {
+        // Shapes that already land on the root (or below it) must not
+        // move: the plain root spelling, a non-root cwd's ".", and a
+        // root cwd's "./x".
+        let root = plain_ctx(Path::new(r"C:\"));
+        assert_eq!(imp::api_path(&root, r"C:\"), r"\\?\C:\");
+        let sub = plain_ctx(Path::new(r"C:\dir"));
+        assert_eq!(imp::api_path(&sub, "."), r"\\?\C:\dir");
+        assert_eq!(imp::api_path(&root, "./x"), r"\\?\C:\x");
     }
 
     #[test]
