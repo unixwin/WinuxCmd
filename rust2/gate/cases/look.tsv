@@ -1,0 +1,11 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+lk01-basic	strict	printf 'alpha\nbravo\ncharlie\ndelta\n' > d0			bra	d0
+lk02-case	strict	printf 'alpha\nbravo\nCharlie\ndelta\n' > d1			-f	cha	d1
+lk03-trailing-nl	strict	printf 'alpha\nbravo\ncharlie\ndelta\n' > d2			-f	delt	d2
+lk04-alphanum	strict	printf 'a-b\na1\n' > d3			-d	a	d3
+lk05-terminate	strict	printf 'ab:1\nab:2\nac:1\n' > d4			-t	:	ab:x	d4
+lk06-not-found	exit	printf 'alpha\nbravo\n' > d5			zzz	d5
+lk07-missing-file	exit				a	no_such_dict
+lk08-missing-op	exit				
+lk09-help	win				--help
+lk10-version	win				--version
