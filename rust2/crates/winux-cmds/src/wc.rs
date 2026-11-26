@@ -781,30 +781,28 @@ pub fn wc_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         total_when == "only",
     );
 
-    let emit = |out: &mut dyn Write, r: &CountResult, show_name: bool| -> std::io::Result<()> {
+    fn emit_row(
+        out: &mut dyn Write,
+        r: &CountResult,
+        request: CountRequest,
+        width: usize,
+        show_name: bool,
+    ) -> std::io::Result<()> {
         let mut first = true;
-        let mut push_val = |v: u64| -> std::io::Result<()> {
-            if !first {
-                out.write_all(b" ")?;
+        for (enabled, val) in [
+            (request.lines, r.lines),
+            (request.words, r.words),
+            (request.chars, r.chars),
+            (request.bytes, r.bytes),
+            (request.max_line_length, r.max_line_length),
+        ] {
+            if enabled {
+                if !first {
+                    out.write_all(b" ")?;
+                }
+                write!(out, "{val:>width$}")?;
+                first = false;
             }
-            write!(out, "{v:>width$}")?;
-            first = false;
-            Ok(())
-        };
-        if request.lines {
-            push_val(r.lines)?;
-        }
-        if request.words {
-            push_val(r.words)?;
-        }
-        if request.chars {
-            push_val(r.chars)?;
-        }
-        if request.bytes {
-            push_val(r.bytes)?;
-        }
-        if request.max_line_length {
-            push_val(r.max_line_length)?;
         }
         if show_name {
             if !first {
@@ -813,16 +811,16 @@ pub fn wc_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             out.write_all(quote_name_for_output(&r.filename).as_bytes())?;
         }
         out.write_all(b"\n")
-    };
+    }
 
     if total_when == "only" {
-        let _ = emit(io.stdout, &total, false);
+        let _ = emit_row(&mut *io.stdout, &total, request, width, false);
     } else {
         for r in &results {
-            let _ = emit(io.stdout, r, r.display_filename);
+            let _ = emit_row(&mut *io.stdout, r, request, width, r.display_filename);
         }
         if print_total {
-            let _ = emit(io.stdout, &total, true);
+            let _ = emit_row(&mut *io.stdout, &total, request, width, true);
         }
     }
 
@@ -867,7 +865,10 @@ mod tests {
     fn total_argmatch_and_errors() {
         let (rc, out, _) = run_mem(&["--total=al"], "a b\n");
         assert_eq!(rc, 0);
-        assert_eq!(out, "1 2 4 -\n1 2 4 total\n");
+        assert_eq!(
+            out,
+            "      1       2       4\n      1       2       4 total\n"
+        );
 
         let (rc, _, err) = run_mem(&["--total=a"], "a\n");
         assert_eq!(rc, 1);
