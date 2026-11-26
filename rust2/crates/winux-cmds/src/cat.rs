@@ -289,9 +289,10 @@ pub fn cat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         squeeze_blank,
     };
 
+    let skip_glob = ctx.env.get("WINUX_SHELL_GLOB").is_some_and(|v| v == "done");
     let mut files: Vec<String> = Vec::new();
     for op in raw_operands {
-        if crate::glob::contains_wildcard(&op) {
+        if !skip_glob && crate::glob::contains_wildcard(&op) {
             if let Some(expanded) = crate::glob::glob_expand_in(ctx, &op) {
                 files.extend(expanded);
                 continue;
@@ -335,7 +336,11 @@ pub fn cat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
             }
             Err(e) => {
-                let reason = crate::fsutil::gnu_open_reason(ctx, file, &e, false);
+                let reason = if crate::fsutil::failed_open_is_directory(ctx, file) {
+                    "Is a directory".to_string()
+                } else {
+                    crate::fsutil::gnu_open_reason(ctx, file, &e, false)
+                };
                 let _ = writeln!(io.stderr, "cat: {file}: {reason}");
                 exit_code = 1;
             }

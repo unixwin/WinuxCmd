@@ -62,6 +62,18 @@ REGISTER_COMMAND(cat, "cat",
                a == "/proc/self/fd/0";
       });
   if (reads_stdin) {
+    if (file_io::stdin_is_directory()) {
+      std::string_view label = "-";
+      for (std::string_view a : ctx.positionals) {
+        if (a == "-" || a == "/dev/stdin" || a == "/dev/fd/0" ||
+            a == "/proc/self/fd/0") {
+          label = a;
+          break;
+        }
+      }
+      safeErrorPrintLn("cat: " + std::string(label) + ": Is a directory");
+      return 1;
+    }
     return winux::rust2::run_command_with_stdin("cat", ctx.raw_args);
   }
   return winux::rust2::run_command("cat", ctx.raw_args);
