@@ -244,19 +244,23 @@ fn count_reader(
     let mut in_word = false;
     let mut carry: Vec<u8> = Vec::new();
 
-    let finish_line = |cur: &mut u64, max_len: &mut u64| {
+    fn finish_line(request: CountRequest, cur: &mut u64, max_len: &mut u64) {
         if request.max_line_length {
             if *cur > *max_len {
                 *max_len = *cur;
             }
             *cur = 0;
         }
-    };
+    }
 
-    let consume_cp = |cp: u32,
-                      res: &mut CountResult,
-                      cur_len: &mut u64,
-                      in_word: &mut bool| {
+    fn consume_cp(
+        cp: u32,
+        request: CountRequest,
+        posixly_correct: bool,
+        res: &mut CountResult,
+        cur_len: &mut u64,
+        in_word: &mut bool,
+    ) {
         if request.chars {
             res.chars += 1;
         }
@@ -265,13 +269,13 @@ fn count_reader(
                 if request.lines {
                     res.lines += 1;
                 }
-                finish_line(cur_len, &mut res.max_line_length);
+                finish_line(request, cur_len, &mut res.max_line_length);
                 if request.words {
                     *in_word = false;
                 }
             }
             0x0D | 0x0C => {
-                finish_line(cur_len, &mut res.max_line_length);
+                finish_line(request, cur_len, &mut res.max_line_length);
                 if request.words {
                     *in_word = false;
                 }
@@ -316,9 +320,18 @@ fn count_reader(
                 }
             }
         }
-    };
+    }
 
-    let mut process_chunk = |data: &[u8], final_chunk: bool, carry: &mut Vec<u8>| {
+    fn process_chunk(
+        data: &[u8],
+        final_chunk: bool,
+        request: CountRequest,
+        posixly_correct: bool,
+        res: &mut CountResult,
+        current_line_len: &mut u64,
+        in_word: &mut bool,
+        carry: &mut Vec<u8>,
+    ) {
         let mut i = 0usize;
         while i < data.len() {
             let mut j = i;
@@ -334,11 +347,11 @@ fn count_reader(
                         res.chars += run;
                     }
                     if request.max_line_length {
-                        current_line_len += run;
+                        *current_line_len += run;
                     }
-                    if request.words && !in_word {
+                    if request.words && !*in_word {
                         res.words += 1;
-                        in_word = true;
+                        *in_word = true;
                     }
                     j = k;
                     continue;
@@ -351,36 +364,36 @@ fn count_reader(
                         if request.lines {
                             res.lines += 1;
                         }
-                        finish_line(&mut current_line_len, &mut res.max_line_length);
+                        finish_line(request, current_line_len, &mut res.max_line_length);
                         if request.words {
-                            in_word = false;
+                            *in_word = false;
                         }
                     }
                     0x0D | 0x0C => {
-                        finish_line(&mut current_line_len, &mut res.max_line_length);
+                        finish_line(request, current_line_len, &mut res.max_line_length);
                         if request.words {
-                            in_word = false;
+                            *in_word = false;
                         }
                     }
                     0x09 => {
                         if request.max_line_length {
-                            current_line_len += 8 - (current_line_len % 8);
+                            *current_line_len += 8 - (*current_line_len % 8);
                         }
                         if request.words {
-                            in_word = false;
+                            *in_word = false;
                         }
                     }
                     0x20 => {
                         if request.max_line_length {
-                            current_line_len += 1;
+                            *current_line_len += 1;
                         }
                         if request.words {
-                            in_word = false;
+                            *in_word = false;
                         }
                     }
                     0x0B => {
                         if request.words {
-                            in_word = false;
+                            *in_word = false;
                         }
                     }
                     _ => {}
@@ -398,11 +411,18 @@ fn count_reader(
             }
             let (cp, step, valid) = decode_utf8_char(data, i);
             if valid {
-                consume_cp(cp, &mut res, &mut current_line_len, &mut in_word);
+                consume_cp(
+                    cp,
+                    request,
+                    posixly_correct,
+                    res,
+                    current_line_len,
+                    in_word,
+                );
             }
             i += step;
         }
-    };
+    }
 
     loop {
         let n = reader.read(&mut buf)?;
@@ -411,18 +431,45 @@ fn count_reader(
         }
         res.bytes += n as u64;
         if carry.is_empty() {
-            process_chunk(&buf[..n], false, &mut carry);
+            process_chunk(
+                &buf[..n],
+                false,
+                request,
+                posixly_correct,
+                &mut res,
+                &mut current_line_len,
+                &mut in_word,
+                &mut carry,
+            );
         } else {
             let mut combined = std::mem::take(&mut carry);
             combined.extend_from_slice(&buf[..n]);
-            process_chunk(&combined, false, &mut carry);
+            process_chunk(
+                &combined,
+                false,
+                request,
+                posixly_correct,
+                &mut res,
+                &mut current_line_len,
+                &mut in_word,
+                &mut carry,
+            );
         }
     }
     if !carry.is_empty() {
         let tail = std::mem::take(&mut carry);
-        process_chunk(&tail, true, &mut carry);
+        process_chunk(
+            &tail,
+            true,
+            request,
+            posixly_correct,
+            &mut res,
+            &mut current_line_len,
+            &mut in_word,
+            &mut carry,
+        );
     }
-    finish_line(&mut current_line_len, &mut res.max_line_length);
+    finish_line(request, &mut current_line_len, &mut res.max_line_length);
     Ok(res)
 }
 
