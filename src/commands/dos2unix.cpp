@@ -3,7 +3,7 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for dos2unix command.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -14,6 +14,7 @@
 import std;
 import core;
 import utils;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -42,96 +43,8 @@ REGISTER_COMMAND(dos2unix,
                  /* see also */
                  "unix2dos(1), d2u(1), u2d(1)", "WinuxCmd",
                  "Copyright © 2026 WinuxCmd", DOS2UNIX_OPTIONS) {
-  namespace cp = core::pipeline;
-
-  bool verbose =
-      ctx.get<bool>("--verbose", false) || ctx.get<bool>("-v", false);
-
-  auto process_file = [&](const std::string& filename,
-                          bool modify_in_place) -> bool {
-    std::wstring wfilename = utf8_to_wstring(filename);
-    // #1385: fold the operand once and open BOTH sides through the folded
-    // spelling. The read side already went through the shared operand
-    // boundary; the write side used to take the raw operand, so a
-    // shell-namespace spelling was read in the payload (shell) root but
-    // rewritten on the current drive root.
-    const std::wstring api_path =
-        native_path::normalize_api_operand_w(wfilename);
-    std::ifstream input(api_path, std::ios::binary);
-    if (!input) {
-      safeErrorPrintLn("dos2unix: cannot open '" + filename +
-                       "': No such file or directory");
-      return false;
-    }
-
-    // Read entire file
-    std::string content((std::istreambuf_iterator<char>(input)),
-                        std::istreambuf_iterator<char>());
-    input.close();
-
-    // Convert CRLF to LF
-    size_t pos = 0;
-    while ((pos = content.find("\r\n", pos)) != std::string::npos) {
-      content.erase(pos, 1);  // Remove \r, keep \n
-    }
-
-    if (modify_in_place) {
-      // Write back to file (the same folded operand the read side opened)
-      std::ofstream output(api_path, std::ios::binary);
-      if (!output) {
-        safeErrorPrintLn("dos2unix: cannot write to '" + filename + "'");
-        return false;
-      }
-      output.write(content.data(), content.size());
-      output.close();
-
-      if (verbose) {
-        safePrintLn("dos2unix: converted '" + filename + "'");
-      }
-    } else {
-      // Write to stdout
-      safePrint(content);
-    }
-
-    return true;
-  };
-
   if (ctx.positionals.empty()) {
-    // Preserve stdin byte-for-byte except for CRLF pairs. getline() would
-    // manufacture a final newline for input that does not have one.
-    file_io::set_stdin_binary();
-    std::string content((std::istreambuf_iterator<char>(std::cin)), {});
-    size_t pos = 0;
-    while ((pos = content.find("\r\n", pos)) != std::string::npos) {
-      content.erase(pos, 1);
-    }
-    safePrint(content);
-  } else {
-    // Process each file in place
-    bool all_ok = true;
-    for (auto file : ctx.positionals) {
-      std::string file_arg(file);
-      std::vector<std::string> expanded;
-      if (contains_wildcard(file_arg)) {
-        auto glob_result = glob_expand(file_arg);
-        if (glob_result.expanded) {
-          for (const auto& f : glob_result.files) {
-            expanded.push_back(wstring_to_utf8(f));
-          }
-        } else {
-          expanded.push_back(file_arg);
-        }
-      } else {
-        expanded.push_back(file_arg);
-      }
-      for (const auto& exp : expanded) {
-        if (!process_file(exp, true)) {
-          all_ok = false;
-        }
-      }
-    }
-    return all_ok ? 0 : 1;
+    return winux::rust2::run_command_with_stdin("dos2unix", ctx.raw_args);
   }
-
-  return 0;
+  return winux::rust2::run_command("dos2unix", ctx.raw_args);
 }
