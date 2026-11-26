@@ -503,6 +503,10 @@ fn compute_number_width(
             saw_non_regular = true;
             continue;
         }
+        if crate::fs_win::is_winux_fifo_path(&crate::fs_win::api_path(ctx, &r.filename)) {
+            saw_non_regular = true;
+            continue;
+        }
         let resolved = crate::fsutil::resolve(ctx, &r.filename);
         match std::fs::metadata(&resolved) {
             Ok(meta) if meta.is_file() => {
