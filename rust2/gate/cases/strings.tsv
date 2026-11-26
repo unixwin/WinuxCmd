@@ -1,0 +1,12 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+st01-basic	strict	printf '\x00\x01hello\x00\x00world\x00' > s0			s0
+st02-stdin	strict			\x00hello\x00	
+st03-min-len	strict	printf '\x00abcd\x00abcde\x00' > s1			-n	5	s1
+st04-radix-hex	strict	printf '\x00hello\x00' > s2			-t	x	s2
+st05-radix-oct	strict	printf '\x00hello\x00' > s3			-o	s3
+st06-print-name	strict	printf '\x00alpha\x00beta\x00' > s4			-f	s4
+st07-utf16-be	strict	printf '\x00h\x00e\x00l\x00l\x00o\x00' > s5			-e	b	s5
+st08-utf16-le	strict	printf 'w\x00o\x00r\x00l\x00d\x00\x00' > s6			-e	l	s6
+st09-missing	exit				no_such_bin
+st10-help	win				--help
+st11-version	win				--version
