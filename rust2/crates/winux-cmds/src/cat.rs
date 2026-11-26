@@ -307,7 +307,7 @@ pub fn cat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut exit_code = 0u32;
 
     for file in &files {
-        if file == "-" {
+        if file == "-" || file == "/dev/stdin" || file == "/dev/fd/0" || file == "/proc/self/fd/0" {
             if let Err((is_write, e)) =
                 process_reader(&mut io.stdin, &mut *io.stdout, flags, &mut state)
             {
@@ -315,7 +315,7 @@ pub fn cat_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     let _ = writeln!(io.stderr, "cat: write error: {}", crate::fsutil::reason(&e));
                     return Ok(1);
                 }
-                let _ = writeln!(io.stderr, "cat: -: {}", crate::fsutil::reason(&e));
+                let _ = writeln!(io.stderr, "cat: {file}: {}", crate::fsutil::reason(&e));
                 exit_code = 1;
             }
             continue;

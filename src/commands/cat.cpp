@@ -57,8 +57,10 @@ REGISTER_COMMAND(cat, "cat",
   // (rust2/crates/winux-cmds/src/cat.rs, cat_cmd).
   const bool reads_stdin =
       ctx.positionals.empty() ||
-      std::ranges::any_of(ctx.positionals,
-                          [](std::string_view a) { return a == "-"; });
+      std::ranges::any_of(ctx.positionals, [](std::string_view a) {
+        return a == "-" || a == "/dev/stdin" || a == "/dev/fd/0" ||
+               a == "/proc/self/fd/0";
+      });
   if (reads_stdin) {
     return winux::rust2::run_command_with_stdin("cat", ctx.raw_args);
   }
