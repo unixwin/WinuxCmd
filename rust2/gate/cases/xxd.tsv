@@ -1,0 +1,7 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+xx01-basic	win			hello	
+xx02-plain	win			abcdefgh	-p	-c	4
+xx03-reverse	win			68656c6c6f	-r	-p
+xx04-include	win			hi	-i
+xx05-help	win				--help
+xx06-version	win				--version
