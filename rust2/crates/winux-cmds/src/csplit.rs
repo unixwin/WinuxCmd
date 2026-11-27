@@ -305,7 +305,8 @@ fn validate_suffix_format(fmt: &str) -> Result<(), String> {
 fn render_validated(fmt: &str, value: usize) -> Result<String, String> {
     let b = fmt.as_bytes();
     let mut conversions = 0usize;
-    let mut out = String::new();
+    let mut prefix_lit = String::new();
+    let mut suffix_lit = String::new();
     // Parsed fields of the single conversion.
     let mut left_align = false;
     let mut zero_pad = false;
@@ -318,13 +319,19 @@ fn render_validated(fmt: &str, value: usize) -> Result<String, String> {
     let mut conv = ' ';
     let mut i = 0usize;
     while i < b.len() {
+        let target = if conversions == 0 {
+            &mut prefix_lit
+        } else {
+            &mut suffix_lit
+        };
         if b[i] != b'%' {
-            out.push(b[i] as char);
-            i += 1;
+            let ch = fmt[i..].chars().next().unwrap();
+            target.push(ch);
+            i += ch.len_utf8();
             continue;
         }
         if i + 1 < b.len() && b[i + 1] == b'%' {
-            out.push('%');
+            target.push('%');
             i += 2;
             continue;
         }
@@ -427,7 +434,7 @@ fn render_validated(fmt: &str, value: usize) -> Result<String, String> {
         }
     }
     Ok(format!(
-        "{out}{spaces_before}{sign}{zeros_before}{body}{spaces_after}"
+        "{prefix_lit}{spaces_before}{sign}{zeros_before}{body}{spaces_after}{suffix_lit}"
     ))
 }
 
@@ -1309,5 +1316,25 @@ mod tests {
             std::fs::read_to_string(sc.path("out/seg-01")).unwrap(),
             "bbb\nccc\n"
         );
+    }
+
+    #[test]
+    fn suffix_format_preserves_trailing_literals_and_utf8() {
+        let sample = "a\nb\n--\nc\n";
+        let r = run(
+            &[("f.txt", sample)],
+            &["-b", "_%02d%%.txt", "-s", "f.txt", "/--/"],
+        );
+        assert_eq!(r.rc, 0);
+        assert!(r.dir.join("xx_00%.txt").exists());
+        assert!(r.dir.join("xx_01%.txt").exists());
+
+        let r_utf8 = run(
+            &[("f.txt", sample)],
+            &["-b", "_%02d_章.txt", "-s", "f.txt", "/--/"],
+        );
+        assert_eq!(r_utf8.rc, 0);
+        assert!(r_utf8.dir.join("xx_00_章.txt").exists());
+        assert!(r_utf8.dir.join("xx_01_章.txt").exists());
     }
 }
