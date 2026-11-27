@@ -35,6 +35,7 @@ pub mod find;
 
 pub mod fmt;
 pub mod fold;
+pub mod free;
 pub mod fs_win;
 pub mod fsutil;
 pub mod getconf;
@@ -168,6 +169,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         // wave3a (#1488): alphabetical insertions
         ("fmt", fmt::fmt_cmd),
         ("fold", fold::fold_cmd),
+        ("free", free::free_cmd),
         ("paste", paste::paste_cmd),
         ("seq", seq::seq_cmd),
         ("tee", tee::tee_cmd),
