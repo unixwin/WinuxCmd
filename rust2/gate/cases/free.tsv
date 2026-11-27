@@ -1,0 +1,10 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+fr01-default	win				
+fr02-bytes	win				-b
+fr03-human	win				-h
+fr04-wide-total	win				-w	-t	-v	-l
+fr05-line	win				-L
+fr06-unit-conflict	exit				-b	-m
+fr07-extra	exit				extra
+fr08-version	win				-V
+fr09-help	win				--help
