@@ -303,7 +303,7 @@ pub fn cal_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             } else if s == "--months" {
                 i += 1;
                 if i >= args.len() {
-                    let _ = usage_error(ctx, io, "cal", &argopt::requires_arg(ctx, "--months"));
+                    let _ = usage_error(ctx, io, "cal", &argopt::option_requires_argument(ctx, "--months"));
                     return Ok(1);
                 }
                 n_text = Some(args[i].to_string_lossy().into_owned());
@@ -341,7 +341,7 @@ pub fn cal_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                         } else {
                             i += 1;
                             if i >= args.len() {
-                                let _ = usage_error(ctx, io, "cal", &argopt::requires_short_arg(ctx, 'n'));
+                                let _ = usage_error(ctx, io, "cal", &argopt::short_option_requires_argument(ctx, "n"));
                                 return Ok(1);
                             }
                             n_text = Some(args[i].to_string_lossy().into_owned());
