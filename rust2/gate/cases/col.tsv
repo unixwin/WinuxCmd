@@ -1,0 +1,11 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+cl01-basic	strict			hello\nworld\n	
+cl02-tabs	strict			a       b\n	
+cl03-spaces	strict			a       b\n	-x
+cl04-no-bs	strict			abc\x08d\n	-b
+cl05-fine	strict			a\x1b\x09b\n	-f
+cl06-pass	strict			hello\x01world\n	-p
+cl07-bad-lines	exit			hello\n	-l	bogus
+cl08-conflict	exit			hello\n	-h	-x
+cl09-help	win				-H
+cl10-version	win				-V
