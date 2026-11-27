@@ -64,7 +64,8 @@ fn format_pretty_uptime(uptime_secs: u64) -> String {
     append(weeks, "week", "weeks");
     append(days, "day", "days");
     append(hours, "hour", "hours");
-    if minutes > 0 || original < 60 {
+    let _ = original;
+    if minutes > 0 || first {
         if !first {
             result.push_str(", ");
         }
