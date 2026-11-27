@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
 /// @Description: Implementation for renice.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 
-#include "core/command_macros.h"
 #include "pch/pch.h"
+// include other header after pch.h
+#include "core/command_macros.h"
 
 import std;
 import core;
 import utils;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -27,128 +29,6 @@ auto constexpr RENICE_OPTIONS =
         // [GNU] -V: version shorthand (probed: `renice -V`)
         OPTION("-V", "--version", "output version information and exit")};
 
-namespace renice_pipeline {
-
-auto parse_int(std::string_view text) -> std::optional<int> {
-  int value = 0;
-  auto [ptr, ec] =
-      std::from_chars(text.data(), text.data() + text.size(), value);
-  if (ec != std::errc() || ptr != text.data() + text.size())
-    return std::nullopt;
-  return value;
-}
-
-auto run(const CommandContext<RENICE_OPTIONS.size()>& ctx) -> int {
-  // [DIFFERS] -g/--pgrp: GNU renice supports process group IDs; not available
-  // on Windows
-  if (ctx.has("-g") || ctx.has("--pgrp")) {
-    safeErrorPrintLn(
-        "renice: process group IDs (-g/--pgrp) are not supported on Windows "
-        "[DIFFERS from GNU renice]");
-    return 1;
-  }
-  // [DIFFERS] -u/--user: GNU renice supports user-based renice; not available
-  // on Windows
-  if (ctx.has("-u") || ctx.has("--user")) {
-    safeErrorPrintLn(
-        "renice: user-based renice (-u/--user) is not supported on Windows "
-        "[DIFFERS from GNU renice]");
-    return 1;
-  }
-
-  // -p/--pid: always interpreted as process IDs on Windows
-  (void)ctx.get<bool>("-p", false);
-  std::string priority_text = ctx.get<std::string>("-n", "");
-  if (priority_text.empty()) {
-    priority_text = ctx.get<std::string>("--priority", "");
-  }
-
-  std::span<const std::string_view> operands(ctx.positionals.data(),
-                                             ctx.positionals.size());
-  if (priority_text.empty() && !operands.empty()) {
-    priority_text = std::string(operands.front());
-    operands = operands.subspan(1);
-  }
-
-  // [GNU] no priority at all: util-linux renice.c:175 reports
-  // "not enough arguments" (with the try-help line), not a parse failure
-  // of the empty string.
-  if (priority_text.empty()) {
-    safeErrorPrintLn("renice: not enough arguments");
-    safeErrorPrintLn(winux::i18n::format(
-        "common.try_help", "Try '{} --help' for more information.", "renice"));
-    return 1;
-  }
-
-  // [GNU] renice.c checks the argument count BEFORE parsing the
-  // priority: with a priority but no target (argc < 2 at renice.c:171)
-  // the report is "not enough arguments" even when the priority text
-  // itself is invalid; "invalid priority" (renice.c:181) is only
-  // reached once at least one target operand remains.
-  if (operands.empty()) {
-    safeErrorPrintLn("renice: not enough arguments");
-    safeErrorPrintLn(winux::i18n::format(
-        "common.try_help", "Try '{} --help' for more information.", "renice"));
-    return 1;
-  }
-
-  auto niceness = parse_int(priority_text);
-  if (!niceness) {
-    // [GNU] renice.c:181: "invalid priority '<text>'" + try-help.
-    safeErrorPrintLn("renice: invalid priority '" + priority_text + "'");
-    safeErrorPrintLn(winux::i18n::format(
-        "common.try_help", "Try '{} --help' for more information.", "renice"));
-    return 1;
-  }
-  *niceness = std::clamp(*niceness, -20, 19);
-
-  DWORD priority_class = win32_priority_class_for_niceness(*niceness);
-  int status = 0;
-
-  for (auto operand : operands) {
-    auto pid = win32_parse_pid(operand);
-    if (!pid) {
-      safeErrorPrintLn("renice: invalid process ID '" + std::string(operand) +
-                       "'");
-      status = 1;
-      continue;
-    }
-
-    UniqueHandle process(
-        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-                    FALSE, *pid));
-    if (!process) {
-      DWORD error = GetLastError();
-      safeErrorPrintLn("renice: failed to get priority for " +
-                       std::to_string(*pid) + ": " +
-                       win32_posix_error_text(error));
-      status = 1;
-      continue;
-    }
-
-    int old_nice =
-        win32_niceness_from_priority_class(GetPriorityClass(process.get()));
-    if (!SetPriorityClass(process.get(), priority_class)) {
-      DWORD error = GetLastError();
-      safeErrorPrintLn("renice: failed to set priority for " +
-                       std::to_string(*pid) + ": " +
-                       win32_posix_error_text(error));
-      status = 1;
-      continue;
-    }
-
-    // [GNU] util-linux renice.c:115 prints
-    // "<pid> (process ID) old priority <o>, new priority <n>".
-    safePrintLn(std::to_string(*pid) + " (process ID) old priority " +
-                std::to_string(old_nice) + ", new priority " +
-                std::to_string(*niceness));
-  }
-
-  return status;
-}
-
-}  // namespace renice_pipeline
-
 REGISTER_COMMAND(
     renice, "renice",
     "renice [-n] PRIORITY [-p] PID...  # also: -g PGRP, -u USER [DIFFERS]",
@@ -159,5 +39,7 @@ REGISTER_COMMAND(
     "  renice -n 0 1234",
     "nice(1), ps(1), pgrep(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
     RENICE_OPTIONS) {
-  return renice_pipeline::run(ctx);
+  // #1488 mechanical replacement: semantics live in rust2
+  // (rust2/crates/winux-cmds/src/renice.rs, renice_cmd).
+  return winux::rust2::run_command("renice", ctx.raw_args);
 }

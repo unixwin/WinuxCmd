@@ -72,6 +72,7 @@ pub mod ptx;
 pub mod pwd;
 pub mod readlink;
 pub mod realpath;
+pub mod renice;
 pub mod rev;
 pub mod rm;
 pub mod rmdir;
@@ -128,6 +129,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("rmdir", rmdir::rmdir_cmd),
         ("readlink", readlink::readlink_cmd),
         ("realpath", realpath::realpath_cmd),
+        ("renice", renice::renice_cmd),
         ("chmod", chmod::chmod_cmd),
         ("chown", chown::chown_cmd),
         ("cp", cp::cp_cmd),
