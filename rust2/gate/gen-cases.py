@@ -6303,6 +6303,63 @@ mv_rows = [
 ]
 
 
+comm_setup = (
+    r"printf 'a\nb\nd\n' > f1; printf 'b\nc\nd\ne\n' > f2; "
+    r"printf 'b\na\n' > s1; printf 'x' > n1; printf 'x\ny' > n2; "
+    r"printf 'a\r\nb\n' > cr; mkdir d"
+)
+
+comm_rows = [
+    ("cm01-basic", "strict", comm_setup, "", "", ["f1", "f2"]),
+    ("cm02-1", "strict", comm_setup, "", "", ["-1", "f1", "f2"]),
+    ("cm03-2", "strict", comm_setup, "", "", ["-2", "f1", "f2"]),
+    ("cm04-3", "strict", comm_setup, "", "", ["-3", "f1", "f2"]),
+    ("cm05-12", "strict", comm_setup, "", "", ["-12", "f1", "f2"]),
+    ("cm06-13", "strict", comm_setup, "", "", ["-1", "-3", "f1", "f2"]),
+    ("cm07-123", "strict", comm_setup, "", "", ["-123", "f1", "f2"]),
+    ("cm08-swap", "strict", comm_setup, "", "", ["f2", "f1"]),
+    ("cm09-delim", "strict", comm_setup, "", "", ["--output-delimiter=::", "f1", "f2"]),
+    ("cm10-delim-empty", "strict", comm_setup, "", "", ["--output-delimiter=", "f1", "f2"]),
+    ("cm11-delim-detached", "strict", comm_setup, "", "", ["--output-delimiter", "|", "f1", "f2"]),
+    ("cm12-delim-same-twice", "strict", comm_setup, "", "", ["--output-delimiter=x", "--output-delimiter=x", "f1", "f2"]),
+    ("cm13-delim-conflict", "strict", comm_setup, "", "", ["--output-delimiter=x", "--output-delimiter=y", "f1", "f2"]),
+    ("cm14-delim-eats-operand", "strict", comm_setup, "", "", ["--output-delimiter", "f1", "f2"]),
+    ("cm15-total", "strict", comm_setup, "", "", ["--total", "f1", "f2"]),
+    ("cm16-total-delim-12", "strict", comm_setup, "", "", ["--output-delimiter=::", "--total", "-12", "f1", "f2"]),
+    ("cm17-total-delim-empty", "strict", comm_setup, "", "", ["--output-delimiter=", "--total", "f1", "f2"]),
+    ("cm18-total-abbrev", "strict", comm_setup, "", "", ["--tot", "f1", "f2"]),
+    ("cm19-z", "strict", comm_setup, "", "", ["-z", "f1", "f2"]),
+    ("cm20-z-total", "strict", comm_setup, "", "", ["--zero-terminated", "--total", "f1", "f2"]),
+    ("cm21-unsorted-default", "strict", comm_setup, "", "", ["s1", "f2"]),
+    ("cm22-unsorted-pairable", "strict", comm_setup, "", "", ["s1", "s1"]),
+    ("cm23-check-order", "strict", comm_setup, "", "", ["--check-order", "s1", "f2"]),
+    ("cm24-check-abbrev", "strict", comm_setup, "", "", ["--check", "s1", "s1"]),
+    ("cm25-nocheck-order", "strict", comm_setup, "", "", ["--nocheck-order", "s1", "f2"]),
+    ("cm26-check-then-nocheck", "strict", comm_setup, "", "", ["--check-order", "--nocheck-order", "s1", "f2"]),
+    ("cm27-nocheck-then-check", "strict", comm_setup, "", "", ["--nocheck-order", "--check-order", "s1", "f2"]),
+    ("cm28-unsorted-file2-total", "strict", comm_setup, "", "", ["--total", "f1", "s1"]),
+    ("cm29-no-final-newline", "strict", comm_setup, "", "", ["n1", "n2"]),
+    ("cm30-crlf-bytes", "strict", comm_setup, "", "", ["cr", "f1"]),
+    ("cm31-stdin-first", "strict", comm_setup, "", "b", ["-", "f2"]),
+    ("cm32-stdin-second", "strict", comm_setup, "", "c", ["f1", "-"]),
+    ("cm33-stdin-both-ebadf", "strict", comm_setup, "", "a", ["-", "-"]),
+    ("cm34-stdin-both-total", "strict", comm_setup, "", "a", ["--total", "-", "-"]),
+    ("cm35-missing-operand", "strict", comm_setup, "", "", []),
+    ("cm36-missing-after", "strict", comm_setup, "", "", ["f1"]),
+    ("cm37-extra-operand", "strict", comm_setup, "", "", ["f1", "f2", "s1"]),
+    ("cm38-invalid-short", "strict", comm_setup, "", "", ["-4", "f1", "f2"]),
+    ("cm39-unrecognized", "strict", comm_setup, "", "", ["--bogus", "f1", "f2"]),
+    ("cm40-flag-with-arg", "strict", comm_setup, "", "", ["--total=1", "f1", "f2"]),
+    ("cm41-missing-file1", "strict", comm_setup, "", "", ["nope", "f2"]),
+    ("cm42-missing-file2", "strict", comm_setup, "", "", ["f1", "nope"]),
+    ("cm43-dir-file1", "strict", comm_setup, "", "", ["d", "f2"]),
+    ("cm44-dir-file2", "strict", comm_setup, "", "", ["f1", "d"]),
+    ("cm45-double-dash", "strict", comm_setup, "", "", ["--", "-z", "f1"]),
+    ("cm46-permuted-options", "strict", comm_setup, "", "", ["f1", "f2", "-3"]),
+    ("cm47-empty-operand", "strict", comm_setup, "", "", ["@EMPTY@", "f1"]),
+]
+
+
 def collect():
     """All case tables as (cmd, rows) pairs, in emit order."""
     return [
@@ -6320,7 +6377,7 @@ def collect():
         ("seq", seq_rows), ("fold", fold_rows), ("paste", paste_rows),
         ("tee", tee_rows), ("fmt", fmt_rows), ("stat", stat_rows),
         ("touch", touch_rows), ("ln", ln_rows), ("sync", sync_rows),
-        ("join", join_rows), ("tsort", tsort_rows), ("hostid", hostid_rows),
+        ("join", join_rows), ("comm", comm_rows), ("tsort", tsort_rows), ("hostid", hostid_rows),
         ("users", users_rows), ("timeout", timeout_rows),
         ("expand", expand_rows), ("unexpand", unexpand_rows),
         ("numfmt", numfmt_rows),
