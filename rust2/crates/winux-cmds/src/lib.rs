@@ -27,6 +27,7 @@ pub mod df;
 pub mod digest;
 pub mod digestsum;
 pub mod dirname;
+pub mod dos2unix;
 pub mod du;
 pub mod echo;
 pub mod expand;
@@ -121,6 +122,10 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("[", test_cmd::bracket_cmd),
         ("basename", basename::basename_cmd),
         ("dirname", dirname::dirname_cmd),
+        ("dos2unix", dos2unix::dos2unix_cmd),
+        ("d2u", dos2unix::d2u_cmd),
+        ("unix2dos", dos2unix::unix2dos_cmd),
+        ("u2d", dos2unix::u2d_cmd),
         ("printenv", printenv::printenv_cmd),
         ("pwd", pwd::pwd_cmd),
         ("mkdir", mkdir::mkdir_cmd),

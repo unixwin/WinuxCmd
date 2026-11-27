@@ -1,0 +1,4 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+u2x01-stdin	win			a\nb\n	
+u2x02-help	win				--help
+u2x03-version	win				--version
