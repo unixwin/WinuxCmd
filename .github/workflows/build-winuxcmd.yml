@@ -464,8 +464,10 @@ jobs:
       # cache above is the only cache this job needs.
 
       # The verified set only: `cargo test -p winux-cmds` (529 tests on
-      # X299, #1597). The workspace's other crates are not run here until
-      # their suites are verified green the same way. The differential
+      # X299, #1597) plus `-p winuxcmd-ffi` (the C ABI boundary suites:
+      # tests.rs, stream_tests.rs, boundary_tests.rs). The workspace's other
+      # crates are not run here until their suites are verified green the
+      # same way. The differential
       # gate (run-gate.sh) is wired in separately, in the rust2-gate-shards
       # matrix below (#1616); the `bash -n` parse check above stays as the
       # build-leg syntax guard.
@@ -474,7 +476,7 @@ jobs:
         shell: cmd
         working-directory: rust2
         run: |
-          "%USERPROFILE%\.cargo\bin\cargo.exe" test --locked --no-fail-fast -p winux-cmds
+          "%USERPROFILE%\.cargo\bin\cargo.exe" test --locked --no-fail-fast -p winux-cmds -p winuxcmd-ffi
 
   # Differential gate execution, full corpus (#1616, WP-N): no workflow ever
   # ran rust2/gate/run-gate.sh, so the gate TSV rows — notably the

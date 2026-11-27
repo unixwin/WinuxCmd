@@ -31,6 +31,8 @@ use winux_core::stream::{StreamReadFn, StreamReader};
 use winux_core::{Ctx, Io, MapEnv};
 
 #[cfg(test)]
+mod boundary_tests;
+#[cfg(test)]
 mod stream_tests;
 #[cfg(test)]
 mod tests;
