@@ -1,0 +1,9 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+es01-basic	strict		WINUX_ENV_A=alpha;WINUX_ENV_B=beta	$WINUX_ENV_A ${WINUX_ENV_B} $MISSING\n	
+es02-shell-format	strict		WINUX_ENV_A=alpha;WINUX_ENV_B=beta	$WINUX_ENV_A $WINUX_ENV_B\n	$WINUX_ENV_A
+es03-variables	strict		WINUX_ENV_A=alpha;WINUX_ENV_B=beta		--variables	$WINUX_ENV_A ${WINUX_ENV_B}
+es04-literal-dollar	strict		WINUX_ENV_A=alpha	$1 ${} $\n	
+es05-too-many-args	exit			hello\n	$A	$B
+es06-missing-vars-arg	exit				-v
+es07-help	win				--help
+es08-version	win				-V
