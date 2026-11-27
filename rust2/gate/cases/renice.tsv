@@ -1,0 +1,9 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+rn01-no-args	exit				
+rn02-no-pid	exit				10
+rn03-bad-prio	exit				bogus	123
+rn04-bad-pid	exit				10	not-a-pid
+rn05-pgrp-unsupported	exit				-g	10	123
+rn06-user-unsupported	exit				-u	10	root
+rn07-help	win				--help
+rn08-version	win				-V
