@@ -96,6 +96,7 @@ pub mod truefalse;
 pub mod truncate;
 pub mod tsort;
 pub mod tty;
+pub mod tzset;
 pub mod uname;
 pub mod unexpand;
 pub mod unlink;
@@ -204,6 +205,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("who", who::who_cmd),
         // wave5 (#1488)
         ("tty", tty::tty_cmd),
+        ("tzset", tzset::tzset_cmd),
         ("mkfifo", mkfifo::mkfifo_cmd),
         ("mknod", mknod::mknod_cmd),
         ("chgrp", chgrp::chgrp_cmd),

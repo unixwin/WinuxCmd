@@ -1,0 +1,7 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+tz01-current	win				
+tz02-utc	win				UTC
+tz03-shanghai	win				Asia/Shanghai
+tz04-unknown	exit				Invalid/Zone
+tz05-help	win				--help
+tz06-version	win				-V
