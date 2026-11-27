@@ -29,6 +29,7 @@ pub mod digestsum;
 pub mod dirname;
 pub mod du;
 pub mod echo;
+pub mod envsubst;
 pub mod expand;
 pub mod factor;
 pub mod find;
@@ -161,6 +162,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("sha512sum", digestsum::sha512sum_cmd),
         // wave6 (#1488): simple text/applet family
         ("echo", echo::echo_cmd),
+        ("envsubst", envsubst::envsubst_cmd),
         ("rev", rev::rev_cmd),
         ("factor", factor::factor_cmd),
         ("arch", arch::arch_cmd),
