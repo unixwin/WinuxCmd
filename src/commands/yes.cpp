@@ -3,22 +3,18 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for yes.
-/// @Version: 0.2.0
+/// @Version: 0.3.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
-#include "core/command_macros.h"
 #include "pch/pch.h"
 // include other header after pch.h
-#include <fcntl.h>
-#include <io.h>
-
-#include <cerrno>
+#include "core/command_macros.h"
 
 import std;
 import core;
 import utils;
-import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -27,135 +23,12 @@ auto constexpr YES_OPTIONS =
     // [GNU] option
     std::array{OPTION("", "", "output a string repeatedly", STRING_TYPE)};
 
-namespace yes_pipeline {
-namespace cp = core::pipeline;
-
-struct Config {
-  std::string output = "y";
-};
-
-auto join_yes_args(std::span<const std::string_view> args) -> std::string {
-  std::string output;
-  for (size_t i = 0; i < args.size(); ++i) {
-    if (i != 0) output += char(32);
-    output += args[i];
-  }
-  return output;
-}
-
-auto build_config(const CommandContext<YES_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  Config cfg;
-  if (!ctx.positionals.empty()) {
-    cfg.output = join_yes_args(std::span<const std::string_view>(
-        ctx.positionals.data(), ctx.positionals.size()));
-  }
-  return cfg;
-}
-
-std::string repeated_block(const std::string& line) {
-  const std::string unit = line + "\n";
-  std::string block = unit;
-  constexpr size_t target_size = 8192;
-  while (block.size() + block.size() <= target_size) {
-    block.append(block.data(), block.size());
-  }
-  while (block.size() + unit.size() <= target_size) {
-    block += unit;
-  }
-  return block;
-}
-
-std::optional<size_t> test_repeat_limit() {
-  const char* raw_limit = getenv("WINUXCMD_YES_REPEAT_LIMIT");
-  if (!raw_limit || !*raw_limit) return std::nullopt;
-  std::string_view text(raw_limit);
-  size_t value = 0;
-  auto [ptr, ec] =
-      std::from_chars(text.data(), text.data() + text.size(), value);
-  if (ec != std::errc() || ptr != text.data() + text.size()) {
-    return std::nullopt;
-  }
-  return value;
-}
-
-// [GNU coreutils src/yes.c] the endless write loop never reaches its
-// write-error path ("standard output" + EXIT_FAILURE) when the pipe reader
-// exits: the default SIGPIPE disposition kills the process during write(),
-// so the shell observes a signal death and reports 128 + SIGPIPE = 141.
-// Windows has no SIGPIPE, so emulate that death as exit status 141
-// (#1142): a broken pipe surfaces as a failed CRT write whose Win32
-// cause is recorded in _doserrno — ERROR_BROKEN_PIPE / ERROR_NO_DATA,
-// the same pipe-gone pair console.cppm's broken-pipe classification
-// uses — with errno mapped to EPIPE. Any other write failure keeps the
-// existing fatal path (GNU would print "yes: standard output: <error>"
-// and exit 1).
-constexpr int kSigpipeDeathStatus = 128 + 13;
-
-// Classify the failed stdout write that made the caller's fwrite return
-// short. Must be evaluated immediately after the failing fwrite, before
-// any other CRT call can clobber errno/_doserrno.
-int write_failure_status() {
-  if (errno == EPIPE || _doserrno == ERROR_BROKEN_PIPE ||
-      _doserrno == ERROR_NO_DATA) {
-    return kSigpipeDeathStatus;
-  }
-  return ferror(stdout) ? 1 : 0;
-}
-
-// [GNU] yes.c:125-128: a non-EPIPE write failure is diagnosed as
-// 'yes: standard output: <error>' before exiting 1; only the SIGPIPE
-// death is silent.  Must be called with errno still holding the
-// failing fwrite's cause.
-int report_write_failure() {
-  int status = write_failure_status();
-  if (status == 1) {
-    safeErrorPrintLn("yes: standard output: " +
-                     std::string(std::strerror(errno)));
-  }
-  return status;
-}
-
-auto run(const Config& cfg) -> int {
-#ifdef _WIN32
-  // [GNU] yes writes raw bytes: keep stdout in binary mode so '\n' is not
-  // translated to CRLF and argument bytes pass through unmodified.
-  _setmode(_fileno(stdout), _O_BINARY);
-#endif
-
-  if (auto limit = test_repeat_limit()) {
-    std::string line = cfg.output + "\n";
-    for (size_t i = 0; i < *limit; ++i) {
-      if (fwrite(line.data(), 1, line.size(), stdout) != line.size()) {
-        return report_write_failure();
-      }
-    }
-    return 0;
-  }
-
-  std::string block = repeated_block(cfg.output);
-  for (;;) {
-    size_t written = fwrite(block.data(), 1, block.size(), stdout);
-    if (written != block.size()) {
-      return report_write_failure();
-    }
-  }
-}
-
-}  // namespace yes_pipeline
-
 REGISTER_COMMAND(yes, "yes", "yes [STRING]...",
                  "Repeatedly output a line with all specified STRING(s), or y.",
                  "  yes\n"
                  "  yes please",
                  "", "WinuxCmd", "Copyright © 2026 WinuxCmd", YES_OPTIONS) {
-  using namespace yes_pipeline;
-
-  auto cfg_result = build_config(ctx);
-  if (!cfg_result) {
-    cp::report_error(cfg_result, L"yes");
-    return 1;
-  }
-
-  return run(*cfg_result);
+  // #1488 mechanical replacement: semantics live in rust2
+  // (rust2/crates/winux-cmds/src/yes.rs, yes_cmd).
+  return winux::rust2::run_command("yes", ctx.raw_args);
 }

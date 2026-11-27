@@ -1,0 +1,8 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+ys01-default	win		WINUXCMD_YES_REPEAT_LIMIT=3		
+ys02-single	win		WINUXCMD_YES_REPEAT_LIMIT=2		hello
+ys03-multi	win		WINUXCMD_YES_REPEAT_LIMIT=2		a	bar	c
+ys04-dashdash-ver	win		WINUXCMD_YES_REPEAT_LIMIT=2		--	--version
+ys05-bogus	strict				--bogus
+ys06-help	strict				--help
+ys07-version	strict				--version

@@ -104,6 +104,7 @@ pub mod who;
 pub mod whoami;
 pub mod winsys;
 pub mod xargs;
+pub mod yes;
 
 use std::ffi::OsString;
 
@@ -231,6 +232,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("grep", grep::grep_cmd),
         ("egrep", grep::egrep_cmd),
         ("fgrep", grep::fgrep_cmd),
+        ("yes", yes::yes_cmd),
     ]
 }
 
