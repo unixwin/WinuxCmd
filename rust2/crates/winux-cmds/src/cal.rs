@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::io::Write;
 
 use crate::argopt;
-use winux_core::{tr, usage_error, CmdResult, Ctx, Io};
+use winux_core::{usage_error, CmdResult, Ctx, Io};
 
 const MONTH_NAMES: [&str; 13] = [
     "",
@@ -387,9 +387,7 @@ pub fn cal_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut year_only = false;
 
     if positionals.len() > 3 {
-        writeln!(io.stderr, "cal: bad usage")?;
-        let try_msg = tr!(ctx, "common.try_help", "Try '{0} --help' for more information.");
-        writeln!(io.stderr, "{}", try_msg.replace("{0}", "cal"))?;
+        let _ = usage_error(ctx, io, "cal", "bad usage");
         return Ok(1);
     }
 
