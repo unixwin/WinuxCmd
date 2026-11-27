@@ -99,6 +99,7 @@ pub mod tty;
 pub mod uname;
 pub mod unexpand;
 pub mod unlink;
+pub mod uptime;
 pub mod users;
 pub mod who;
 pub mod whoami;
@@ -145,6 +146,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("id", id::id_cmd),
         ("uname", uname::uname_cmd),
         ("unlink", unlink::unlink_cmd),
+        ("uptime", uptime::uptime_cmd),
         ("sleep", sleep::sleep_cmd),
         ("sort", sort::sort_cmd),
         ("tac", tac::tac_cmd),
