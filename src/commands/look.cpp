@@ -4,7 +4,7 @@
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for look (display lines beginning with a
 /// string).
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -14,15 +14,11 @@
 import std;
 import core;
 import utils;
-import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-// [GNU] -d, --alphanum: use only alphanumeric and blanks for comparison
-// [GNU] -f, --ignore-case: ignore case when comparing
-// [GNU] -t, --terminate: specify the string-terminator character
-// [GNU] -a, --alternative: use alternative dictionary order (whole first token)
 auto constexpr LOOK_OPTIONS = std::array{
     OPTION("-d", "--alphanum", "compare only alphanumeric and blanks"),
     OPTION("-f", "--ignore-case", "ignore case when comparing"),
@@ -30,230 +26,6 @@ auto constexpr LOOK_OPTIONS = std::array{
     OPTION("-t", "--terminate", "terminate string at CHAR", STRING_TYPE),
     // [GNU] -V, --version (util-linux look probes: `look -V` prints version)
     OPTION("-V", "--version", "output version information and exit")};
-
-namespace look_pipeline {
-namespace cp = core::pipeline;
-
-struct Config {
-  bool alphanum = false;
-  bool ignore_case = false;
-  bool alternative = false;
-  std::string terminator;  // empty means none
-  std::string key;
-  std::string file;
-};
-
-auto build_config(const CommandContext<LOOK_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  Config cfg;
-  cfg.alphanum =
-      ctx.get<bool>("-d", false) || ctx.get<bool>("--alphanum", false);
-  cfg.ignore_case =
-      ctx.get<bool>("-f", false) || ctx.get<bool>("--ignore-case", false);
-  cfg.alternative =
-      ctx.get<bool>("-a", false) || ctx.get<bool>("--alternative", false);
-
-  if (ctx.has("-t") || ctx.has("--terminate")) {
-    auto t =
-        ctx.get<std::string>("--terminate", ctx.get<std::string>("-t", ""));
-    if (!t.empty()) cfg.terminator = t;
-  }
-
-  // Positional args: string [file]
-  SmallVector<std::string, 4> pos;
-  for (auto a : ctx.positionals) pos.push_back(std::string(a));
-  if (pos.empty()) {
-    return std::unexpected("missing operand");
-  }
-  cfg.key = pos[0];
-  if (pos.size() >= 2) {
-    cfg.file = pos[1];
-  }
-  return cfg;
-}
-
-// Normalize a character per -d/-f flags for comparison purposes.
-auto norm_char(char c, bool alphanum, bool ignore_case) -> char {
-  if (ignore_case) {
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  }
-  if (alphanum) {
-    // keep alnum and blanks; everything else becomes blank (space) for sorting
-    if (!std::isalnum(static_cast<unsigned char>(c)) && c != ' ' && c != '\t') {
-      return ' ';
-    }
-  }
-  return c;
-}
-
-// Apply -t terminator: only compare up to and including the terminator char.
-// Returns the effective comparison prefix length for the key, and the per-line
-// effective comparison length (line up to terminator inclusive).
-auto key_for_compare(std::string_view s, const std::string& terminator,
-                     bool alphanum, bool ignore_case) -> std::string {
-  std::string out;
-  for (char c : s) {
-    out.push_back(norm_char(c, alphanum, ignore_case));
-  }
-  if (!terminator.empty()) {
-    auto pos = out.find_first_of(terminator);
-    if (pos != std::string::npos) {
-      out.resize(pos + 1);
-    }
-  }
-  return out;
-}
-
-auto line_for_compare(std::string_view line, const std::string& terminator,
-                      bool alphanum, bool ignore_case) -> std::string {
-  std::string out;
-  for (char c : line) {
-    out.push_back(norm_char(c, alphanum, ignore_case));
-  }
-  if (!terminator.empty()) {
-    auto pos = out.find_first_of(terminator);
-    if (pos != std::string::npos) {
-      out.resize(pos + 1);
-    }
-  }
-  return out;
-}
-
-// Read all lines from a file.  On failure, `error` receives the
-// strerror-style reason the oracle's err() would append (look.c:155,164:
-// "look: <file>: <reason>").
-auto read_lines(const std::string& filename, std::vector<std::string>& out,
-                std::string& error) -> bool {
-  // #1242: the dictionary operand may use any accepted POSIX drive spelling
-  // ("/e/words", "/cygdrive/e/words", "/mnt/e/words").  Opening the raw text
-  // made CreateFileW resolve a leading "/e" against the CURRENT drive, so
-  // the lookup answered for "<cwd>:\e\words" and every dialect form reported
-  // "cannot open" for a dictionary that exists on the named drive.  The
-  // operand folds once through the shared normalize_api_operand boundary
-  // here at the open; the caller keeps printing the operand verbatim in the
-  // error message (#1234 display/fold split).
-  std::wstring wfn =
-      utf8_to_wstring(native_path::normalize_api_operand(filename));
-  HANDLE h = CreateFileW(wfn.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (h == INVALID_HANDLE_VALUE) {
-    DWORD gle = GetLastError();
-    DWORD attr = GetFileAttributesW(wfn.c_str());
-    if (attr != INVALID_FILE_ATTRIBUTES &&
-        (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-      error = "Is a directory";
-    } else if (gle == ERROR_ACCESS_DENIED) {
-      error = "Permission denied";
-    } else {
-      error = "No such file or directory";
-    }
-    return false;
-  }
-  LARGE_INTEGER sz{};
-  if (!GetFileSizeEx(h, &sz) || sz.QuadPart < 0) {
-    CloseHandle(h);
-    return false;
-  }
-  std::string data(static_cast<size_t>(sz.QuadPart), '\0');
-  DWORD got = 0;
-  BOOL ok = TRUE;
-  if (!data.empty()) {
-    ok = ReadFile(h, data.data(), static_cast<DWORD>(data.size()), &got,
-                  nullptr);
-  }
-  CloseHandle(h);
-  if (!ok) return false;
-  data.resize(got);
-
-  size_t start = 0;
-  // #1251: a final newline at EOF must not synthesize a phantom empty entry.
-  // The loop below ends when `start` reaches the data size, so the text after
-  // the last '\n' is emitted only when it is non-empty: "…charlie\ndelta\n"
-  // yields exactly the four real words. The phantom used to enter the binary
-  // search as an "" entry, which sorts before every key while sitting at the
-  // END of the (sorted) array — a midpoint landing on it pushed lower_bound
-  // past the last real word and `look -f delt` printed nothing for a
-  // dictionary that ends "…charlie\ndelta\n". Oracle: util-linux look 2.39.3
-  // (WSL) prints "delta" for the trailing-newline form, prints every word and
-  // no trailing empty line for `look ''`, and treats a lone "\n" file as ONE
-  // empty entry — exactly the shapes this loop now produces. Empty lines in
-  // the MIDDLE of the dictionary keep their existing behavior (real entries,
-  // matched by an empty key): GNU look tolerates them the same way.
-  while (start < data.size()) {
-    size_t nl = data.find('\n', start);
-    if (nl == std::string::npos) {
-      out.emplace_back(data.substr(start));
-      break;
-    }
-    std::string line = data.substr(start, nl - start);
-    // strip a trailing \r (CRLF files)
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    out.push_back(std::move(line));
-    start = nl + 1;
-  }
-  return true;
-}
-
-auto run(const Config& cfg) -> int {
-  if (cfg.file.empty()) {
-    // GNU falls back to /usr/share/dict/words; on Windows there is no
-    // canonical dictionary, so require an explicit file.
-    safeErrorPrintLn("look: no dictionary file given");
-    safeErrorPrintLn("Try 'look --help' for more information.");
-    return 1;
-  }
-
-  std::vector<std::string> lines;
-  std::string open_error;
-  if (!read_lines(cfg.file, lines, open_error)) {
-    safeErrorPrintLn("look: " + cfg.file + ": " + open_error);
-    return 1;
-  }
-
-  if (lines.empty()) return 1;
-
-  // Binary search for the lower bound of the key prefix.
-  std::string key =
-      key_for_compare(cfg.key, cfg.terminator, cfg.alphanum, cfg.ignore_case);
-
-  // lower_bound: first line whose compare-form >= key.
-  size_t lo = 0;
-  size_t hi = lines.size();
-  while (lo < hi) {
-    size_t mid = lo + (hi - lo) / 2;
-    std::string cmp = line_for_compare(lines[mid], cfg.terminator, cfg.alphanum,
-                                       cfg.ignore_case);
-    if (cmp < key) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
-  }
-
-  // Emit every consecutive line whose compare-form starts with key.
-  int printed = 0;
-  for (size_t i = lo; i < lines.size(); ++i) {
-    std::string cmp = line_for_compare(lines[i], cfg.terminator, cfg.alphanum,
-                                       cfg.ignore_case);
-    if (cmp.compare(0, key.size(), key) != 0) {
-      // not a prefix match
-      if (!cmp.empty() && key.empty()) {
-        // keep going only if key empty
-      } else {
-        break;
-      }
-    }
-    if (cmp.size() >= key.size() && cmp.compare(0, key.size(), key) == 0) {
-      safePrintLn(lines[i]);
-      ++printed;
-    }
-  }
-  // [GNU] look exits 0 only when a match was printed; a search that finds
-  // nothing exits 1 (util-linux look.c:196: return (front ? 0 : 1)).
-  return printed > 0 ? 0 : 1;
-}
-
-}  // namespace look_pipeline
 
 REGISTER_COMMAND(
     look, "look", "look [OPTION]... STRING [FILE]",
@@ -263,18 +35,7 @@ REGISTER_COMMAND(
     "  look apple words.txt\n"
     "  look -f apple words.txt",
     "grep(1), sort(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", LOOK_OPTIONS) {
-  using namespace look_pipeline;
-
-  auto cfg_result = build_config(ctx);
-  if (!cfg_result) {
-    if (cfg_result.error() == "missing operand") {
-      safeErrorPrintLn("look: missing operand");
-      safeErrorPrintLn("Try 'look --help' for more information.");
-      return 1;
-    }
-    cp::report_error(cfg_result, L"look");
-    return 1;
-  }
-
-  return run(*cfg_result);
+  // #1488 mechanical replacement: semantics live in rust2
+  // (rust2/crates/winux-cmds/src/look.rs, look_cmd).
+  return winux::rust2::run_command("look", ctx.raw_args);
 }
