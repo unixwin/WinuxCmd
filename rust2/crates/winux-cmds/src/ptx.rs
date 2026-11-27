@@ -219,7 +219,7 @@ struct Config {
 
 struct SourceText {
     name: String,
-    text: String,
+    text: Vec<u8>,
     line_starts: Vec<usize>,
 }
 
@@ -230,7 +230,7 @@ struct Occurrence {
     context_start: usize,
     context_end: usize,
     line_number: usize,
-    key: String,
+    key: Vec<u8>,
 }
 
 fn is_word_char(ch: u8, breaks: &BTreeSet<u8>, traditional: bool) -> bool {
@@ -243,24 +243,24 @@ fn is_word_char(ch: u8, breaks: &BTreeSet<u8>, traditional: bool) -> bool {
     ch.is_ascii_alphabetic()
 }
 
-fn key_for(value: &str, ignore_case: bool) -> String {
+fn key_for(value: &[u8], ignore_case: bool) -> Vec<u8> {
     if ignore_case {
-        value.to_lowercase()
+        value.to_ascii_lowercase()
     } else {
-        value.to_string()
+        value.to_vec()
     }
 }
 
-fn word_set_from_file(content: Option<&str>, ignore_case: bool) -> BTreeSet<String> {
+fn word_set_from_file(content: Option<&[u8]>, ignore_case: bool) -> BTreeSet<Vec<u8>> {
     let mut words = BTreeSet::new();
     if let Some(data) = content {
-        let mut current = String::new();
-        for ch in data.bytes() {
+        let mut current = Vec::new();
+        for &ch in data {
             if ch.is_ascii_alphabetic() {
-                current.push(ch as char);
+                current.push(ch);
             } else if !current.is_empty() {
                 words.insert(key_for(&current, ignore_case));
-                current = String::new();
+                current.clear();
             }
         }
         if !current.is_empty() {
@@ -270,55 +270,69 @@ fn word_set_from_file(content: Option<&str>, ignore_case: bool) -> BTreeSet<Stri
     words
 }
 
-fn printable(value: &str) -> String {
+fn printable(value: &[u8]) -> Vec<u8> {
     value
-        .chars()
-        .map(|c| if c.is_ascii_whitespace() { ' ' } else { c })
+        .iter()
+        .map(|&b| if b.is_ascii_whitespace() { b' ' } else { b })
         .collect()
 }
 
-fn trim_left(value: &str) -> &str {
-    value.trim_start_matches(|c: char| c.is_ascii_whitespace())
+fn trim_left(mut value: &[u8]) -> &[u8] {
+    while let Some((&first, rest)) = value.split_first() {
+        if first.is_ascii_whitespace() {
+            value = rest;
+        } else {
+            break;
+        }
+    }
+    value
 }
 
-fn trim_right(value: &str) -> &str {
-    value.trim_end_matches(|c: char| c.is_ascii_whitespace())
+fn trim_right(mut value: &[u8]) -> &[u8] {
+    while let Some((&last, rest)) = value.split_last() {
+        if last.is_ascii_whitespace() {
+            value = rest;
+        } else {
+            break;
+        }
+    }
+    value
 }
 
-/// The rightmost `limit` columns of the before-field, breaking on a space
-/// and flagging truncation (C++ rightmost_field port).
-fn rightmost_field(value: &str, limit: usize) -> (String, bool) {
+/// The rightmost `limit` bytes of the before-field, breaking on a space
+/// and flagging truncation (GNU byte-sliced rightmost_field).
+fn rightmost_field(value: &[u8], limit: usize) -> (Vec<u8>, bool) {
     let printed = printable(value);
     let value = trim_right(&printed);
     if value.len() <= limit {
-        return (trim_left(value).to_string(), false);
+        return (trim_left(value).to_vec(), false);
     }
     let mut start = value.len() - limit;
-    while start < value.len() && !value.as_bytes()[start].is_ascii_whitespace() {
+    while start < value.len() && !value[start].is_ascii_whitespace() {
         start += 1;
     }
     if start >= value.len() {
         start = value.len() - limit;
     }
-    (trim_left(&value[start..]).to_string(), true)
+    (trim_left(&value[start..]).to_vec(), true)
 }
 
-/// The leftmost `limit` columns of the keyword-after field (C++
-/// leftmost_field port).
-fn leftmost_field(value: &str, limit: usize) -> (String, bool) {
+/// The leftmost `limit` bytes of the keyword-after field (GNU byte-sliced
+/// leftmost_field).
+fn leftmost_field(value: &[u8], limit: usize) -> (Vec<u8>, bool) {
     let printed = printable(value);
     let value = trim_left(&printed);
     if value.len() <= limit {
-        return (trim_right(value).to_string(), false);
+        return (trim_right(value).to_vec(), false);
     }
     let mut end = limit;
-    while end > 0 && !value.as_bytes()[end - 1].is_ascii_whitespace() {
+    while end > 0 && !value[end - 1].is_ascii_whitespace() {
         end -= 1;
     }
     if end == 0 {
         end = limit;
     }
-    (trim_right(&value[..end]).to_string(), true)
+    (trim_right(&value[..end]).to_vec(), true)
 }
 
 fn read_input_bytes(
@@ -513,16 +527,15 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             }
             Err(Err(e)) => return Err(CmdError::Io(e)),
         };
-        let text = String::from_utf8_lossy(&data).into_owned();
         let mut line_starts = vec![0usize];
-        for (i, &b) in text.as_bytes().iter().enumerate() {
-            if b == b'\n' && i + 1 < text.len() {
+        for (i, &b) in data.iter().enumerate() {
+            if b == b'\n' && i + 1 < data.len() {
                 line_starts.push(i + 1);
             }
         }
         sources.push(SourceText {
             name: if file == "-" { "" } else { file }.to_string(),
-            text,
+            text: data,
             line_starts,
         });
     }
@@ -536,26 +549,19 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
     };
     let ignore_words = word_set_from_file(
-        read_input_string(&cfg.ignore_file, io, ctx)
-            .as_deref()
-            .map(|b| String::from_utf8_lossy(b).into_owned())
-            .as_deref(),
+        read_input_string(&cfg.ignore_file, io, ctx).as_deref(),
         cfg.ignore_case,
     );
     let only_words = word_set_from_file(
-        read_input_string(&cfg.only_file, io, ctx)
-            .as_deref()
-            .map(|b| String::from_utf8_lossy(b).into_owned())
-            .as_deref(),
+        read_input_string(&cfg.only_file, io, ctx).as_deref(),
         cfg.ignore_case,
     );
 
     // Collect occurrences.
     let mut occurrences: Vec<Occurrence> = Vec::new();
     for (source_index, source) in sources.iter().enumerate() {
-        let text = &source.text;
-        let text_end = trim_right(text).len();
-        let bytes = text.as_bytes();
+        let bytes = &source.text;
+        let text_end = trim_right(bytes).len();
         let mut pos = 0usize;
         while pos < text_end {
             while pos < text_end && !is_word_char(bytes[pos], &breaks, cfg.traditional) {
@@ -569,7 +575,7 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 pos += 1;
             }
             let end = pos;
-            let word = &text[start..end];
+            let word = &bytes[start..end];
             let lookup = key_for(word, cfg.ignore_case);
             if !ignore_words.is_empty() && ignore_words.contains(&lookup) {
                 continue;
@@ -586,7 +592,7 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             let next_line = if line_number < source.line_starts.len() {
                 source.line_starts[line_number]
             } else {
-                text.len()
+                bytes.len()
             };
             let context_end = next_line.min(text_end);
             occurrences.push(Occurrence {
@@ -602,7 +608,11 @@ pub fn ptx_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     }
 
     occurrences.sort_by(|a, b| {
-        (a.key.as_str(), a.source_index, a.start).cmp(&(b.key.as_str(), b.source_index, b.start))
+        (a.key.as_slice(), a.source_index, a.start).cmp(&(
+            b.key.as_slice(),
+            b.source_index,
+            b.start,
+        ))
     });
 
     for occ in &occurrences {
@@ -624,10 +634,8 @@ fn reference_text(source: &SourceText, occ: &Occurrence) -> String {
     }
 }
 
-fn append_spaces(line: &mut String, count: usize) {
-    for _ in 0..count {
-        line.push(' ');
-    }
+fn append_spaces(line: &mut Vec<u8>, count: usize) {
+    line.extend(std::iter::repeat_n(b' ', count));
 }
 
 fn emit_dumb_line(
@@ -659,10 +667,10 @@ fn emit_dumb_line(
     let key_start = occ.start.min(end);
     let (keyafter, key_truncated) = leftmost_field(&source.text[key_start..end], key_limit);
 
-    let mut line = String::new();
+    let mut line = Vec::new();
     if cfg.auto_reference && !cfg.right_side_refs {
-        line.push_str(&ref_text);
-        line.push(':');
+        line.extend_from_slice(ref_text.as_bytes());
+        line.push(b':');
         append_spaces(
             &mut line,
             ref_width.saturating_sub(ref_text.len() + 1) + gap,
@@ -675,13 +683,13 @@ fn emit_dumb_line(
             .saturating_sub(if before_truncated { trunc } else { 0 }),
     );
     if before_truncated {
-        line.push_str(&cfg.truncation);
+        line.extend_from_slice(cfg.truncation.as_bytes());
     }
-    line.push_str(&before);
+    line.extend_from_slice(&before);
     append_spaces(&mut line, gap);
-    line.push_str(&keyafter);
+    line.extend_from_slice(&keyafter);
     if key_truncated {
-        line.push_str(&cfg.truncation);
+        line.extend_from_slice(cfg.truncation.as_bytes());
     }
     if cfg.auto_reference && cfg.right_side_refs {
         append_spaces(
@@ -689,9 +697,10 @@ fn emit_dumb_line(
             half.saturating_sub(keyafter.len() + if key_truncated { trunc } else { 0 }),
         );
         append_spaces(&mut line, gap);
-        line.push_str(&ref_text);
+        line.extend_from_slice(ref_text.as_bytes());
     }
-    let _ = writeln!(out, "{line}");
+    line.push(b'\n');
+    let _ = out.write_all(&line);
 }
 
 fn emit_roff_line(
@@ -706,11 +715,15 @@ fn emit_roff_line(
     let end = occ.context_end.min(source.text.len());
     let key_start = occ.start.min(end);
     let keyafter = printable(trim_left(trim_right(&source.text[key_start..end])));
-    let _ = writeln!(
-        out,
-        ".{} \"\" \"{}\" \"{}\" \"\"",
-        cfg.macro_name, before, keyafter
-    );
+    let mut line = Vec::new();
+    line.push(b'.');
+    line.extend_from_slice(cfg.macro_name.as_bytes());
+    line.extend_from_slice(b" \"\" \"");
+    line.extend_from_slice(&before);
+    line.extend_from_slice(b"\" \"");
+    line.extend_from_slice(&keyafter);
+    line.extend_from_slice(b"\" \"\"\n");
+    let _ = out.write_all(&line);
 }
 
 fn emit_tex_line(
@@ -727,11 +740,17 @@ fn emit_tex_line(
     let key = printable(&text[occ.start.min(key_end)..key_end]);
     let end = occ.context_end.min(text.len());
     let after = printable(trim_right(&text[key_end..end]));
-    let _ = writeln!(
-        out,
-        "\\{} {{}}{{{}}}{{{}}}{{{}}}{{}}",
-        cfg.macro_name, before, key, after
-    );
+    let mut line = Vec::new();
+    line.push(b'\\');
+    line.extend_from_slice(cfg.macro_name.as_bytes());
+    line.extend_from_slice(b" {}{");
+    line.extend_from_slice(&before);
+    line.extend_from_slice(b"}{");
+    line.extend_from_slice(&key);
+    line.extend_from_slice(b"}{");
+    line.extend_from_slice(&after);
+    line.extend_from_slice(b"}{}\n");
+    let _ = out.write_all(&line);
 }
 
 #[cfg(test)]
@@ -741,6 +760,7 @@ mod tests {
 
     struct Run {
         rc: u32,
+        raw_out: Vec<u8>,
         out: String,
         err: String,
         dir: std::path::PathBuf,
@@ -756,10 +776,13 @@ mod tests {
         let ctx = sc.ctx();
         let owned: Vec<OsString> = args.iter().map(Into::into).collect();
         let rc = super::ptx_cmd(&owned, &mut io.split(), &ctx).unwrap();
+        let out = io.out();
+        let err = io.err();
         Run {
             rc,
-            out: io.out(),
-            err: io.err(),
+            raw_out: io.output,
+            out,
+            err,
             dir: sc.dir.clone(),
             _sc: sc,
         }
@@ -1001,6 +1024,61 @@ mod tests {
         assert_eq!(
             r.err,
             "ptx: invalid option -- 'h'\nTry 'ptx --help' for more information.\n"
+        );
+    }
+
+    #[test]
+    fn utf8_multibyte_truncation_slices_raw_bytes_like_gnu() {
+        // GNU coreutils ptx slices fallback non-whitespace fields by raw byte
+        // offset (producing partial UTF-8 bytes when `limit` lands mid-codepoint):
+        // - `printf 'hello—中文\n' | ptx -w 14` -> limit=5 -> `hello/`
+        // - `printf 'hello—中文\n' | ptx -w 16` -> limit=6 -> `hello\xe2/`
+        // - `printf 'hello—中文\n' | ptx -w 18` -> limit=7 -> `hello\xe2\x80/`
+        let r14 = run(&[], "hello—中文\n", &["-w", "14"]);
+        assert_eq!(r14.rc, 0);
+        assert!(
+            r14.raw_out.windows(6).any(|w| w == b"hello/"),
+            "raw_out={:?}",
+            r14.raw_out
+        );
+
+        let r16 = run(&[], "hello—中文\n", &["-w", "16"]);
+        assert_eq!(r16.rc, 0);
+        assert!(
+            r16.raw_out.windows(7).any(|w| w == b"hello\xe2/"),
+            "raw_out={:?}",
+            r16.raw_out
+        );
+
+        let r18 = run(&[], "hello—中文\n", &["-w", "18"]);
+        assert_eq!(r18.rc, 0);
+        assert!(
+            r18.raw_out.windows(8).any(|w| w == b"hello\xe2\x80/"),
+            "raw_out={:?}",
+            r18.raw_out
+        );
+
+        // Before-field fallback byte truncation (GNU probed):
+        // - `printf '中文— hello\n' | ptx -w 18` -> limit=4 -> `/\x87\xe2\x80\x94   hello`
+        // - `printf '中文— hello\n' | ptx -w 20` -> limit=5 -> `/\x96\x87\xe2\x80\x94   hello`
+        let b18 = run(&[], "中文— hello\n", &["-w", "18"]);
+        assert_eq!(b18.rc, 0);
+        assert!(
+            b18.raw_out
+                .windows(13)
+                .any(|w| w == b"/\x87\xe2\x80\x94   hello"),
+            "raw_out={:?}",
+            b18.raw_out
+        );
+
+        let b20 = run(&[], "中文— hello\n", &["-w", "20"]);
+        assert_eq!(b20.rc, 0);
+        assert!(
+            b20.raw_out
+                .windows(14)
+                .any(|w| w == b"/\x96\x87\xe2\x80\x94   hello"),
+            "raw_out={:?}",
+            b20.raw_out
         );
     }
 }
