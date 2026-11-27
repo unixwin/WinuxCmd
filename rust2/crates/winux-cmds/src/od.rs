@@ -363,6 +363,7 @@ fn parse_bytes_arg(text: &str) -> Option<u64> {
 
 /// The od -a named characters, 3 letters each.
 fn named_char(b: u8) -> String {
+    let b = b & 0x7f;
     const NAMES: [&str; 32] = [
         "nul", "soh", "stx", "etx", "eot", "enq", "ack", "bel", "bs", "ht", "nl", "vt", "ff", "cr",
         "so", "si", "dle", "dc1", "dc2", "dc3", "dc4", "nak", "syn", "etb", "can", "em", "sub",
@@ -1874,5 +1875,14 @@ mod tests {
         // od.c dump(): current_offset starts at n_bytes_to_skip
         assert_eq!(run(&["-j2", "-c"], "abcd").1, "0000002   c   d\n0000004\n");
         assert_eq!(run(&["-N2", "-c"], "abcd").1, "0000000   a   b\n0000002\n");
+    }
+
+    #[test]
+    fn named_char_ignores_high_order_bit() {
+        assert_eq!(
+            run_bytes(&["-An", "-a"], b"\x80\xa0\xc1\xff").1,
+            " nul  sp   A del\n"
+        );
+        assert_eq!(run_bytes(&["-An", "-ta"], b"\x89\x8a").1, "  ht  nl\n");
     }
 }
