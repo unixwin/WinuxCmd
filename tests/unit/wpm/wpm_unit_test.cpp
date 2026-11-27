@@ -3305,3 +3305,92 @@ TEST(wpm, wpm_loopback_proxy_fallback_off_by_default_opt_in_via_config) {
   EXPECT_NE(allowed.exit_code, 0);
   EXPECT_CONTAINS(allowed.stderr_text, "loopback proxy 127.0.0.1:");
 }
+
+// Issue #1835: post-install expose/unexpose switch manages <root>/bin entry
+// links without uninstalling the package payload or receipt.
+TEST(wpm, wpm_expose_and_unexpose_manage_bin_links_without_uninstalling) {
+  TempDir tmp;
+  const auto artifact_path = tmp.path / L"source" / L"tool.exe";
+  const auto index_path = tmp.path / L"fixture-shim-index.json";
+  const auto root_exe = canonical_exe(tmp.path, L"winuxcmd.exe");
+  const auto shim_tool = canonical_exe(tmp.path, L"tool.exe");
+  const auto bin_tool = tmp.path / L"bin" / L"tool.exe";
+  const auto payload_tool = tmp.path / L"opt" / L"tool" / L"tool.exe";
+  std::filesystem::create_directories(root_exe.parent_path());
+  std::filesystem::copy_file(build_winuxcmd_path(), root_exe,
+                             std::filesystem::copy_options::overwrite_existing);
+  tmp.write("source/tool.exe", "external exe\n");
+  tmp.write("fixture-shim-index.json",
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"name\": \"fixture\",\n"
+            "  \"version\": \"fixture-shim\",\n"
+            "  \"packages\": [\n"
+            "    {\"name\":\"tool\",\"version\":\"1.0.0\","
+            "\"description\":\"shim fixture\",\"kind\":\"external\","
+            "\"commands\":[\"tool\"],\"artifacts\":{\"" +
+                current_arch_key() +
+                "\":{\"type\":\"exe\","
+                "\"sha256\":\"5140f4f6bf8b5691b7bccc1c4f00a2027dae00b2110d38"
+                "a1e090af291226f322\",\"layout\":\"shim\","
+                "\"urls\":[\"" +
+                file_url(artifact_path) +
+                "\"],\"files\":[{\"from\":\"tool.exe\","
+                "\"to\":\"tool.exe\"}]}}}\n"
+                "  ]\n"
+                "}\n");
+
+  Pipeline add;
+  add.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"add", L"fixture",
+           widen_ascii(file_url(index_path)), L"--root", tmp.wpath()});
+  EXPECT_EQ(add.run().exit_code, 0);
+
+  Pipeline use;
+  use.add(L"winuxcmd.exe",
+          {L"wpm", L"source", L"use", L"fixture", L"--root", tmp.wpath()});
+  EXPECT_EQ(use.run().exit_code, 0);
+
+  Pipeline install;
+  install.add(L"winuxcmd.exe",
+              {L"wpm", L"install", L"tool", L"--root", tmp.wpath()});
+  EXPECT_EQ(install.run().exit_code, 0);
+  EXPECT_TRUE(std::filesystem::exists(payload_tool));
+  EXPECT_TRUE(std::filesystem::exists(shim_tool));
+  EXPECT_TRUE(std::filesystem::exists(bin_tool));
+
+  // Unexpose removes <root>/bin/tool.exe but preserves shim, payload, and receipt.
+  Pipeline unexpose;
+  unexpose.add(L"winuxcmd.exe",
+               {L"wpm", L"unexpose", L"tool", L"--root", tmp.wpath()});
+  auto unexpose_r = unexpose.run();
+  EXPECT_EQ(unexpose_r.exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(bin_tool));
+  EXPECT_TRUE(std::filesystem::exists(shim_tool));
+  EXPECT_TRUE(std::filesystem::exists(payload_tool));
+  EXPECT_TRUE(
+      std::filesystem::exists(tmp.path / L".wpm" / L"installed" / L"tool.json"));
+
+  // Dry-run expose leaves bin/tool.exe absent.
+  Pipeline expose_dry;
+  expose_dry.add(L"winuxcmd.exe",
+                 {L"wpm", L"expose", L"tool", L"--dry-run", L"--root",
+                  tmp.wpath()});
+  EXPECT_EQ(expose_dry.run().exit_code, 0);
+  EXPECT_FALSE(std::filesystem::exists(bin_tool));
+
+  // Real expose restores <root>/bin/tool.exe.
+  Pipeline expose;
+  expose.add(L"winuxcmd.exe",
+             {L"wpm", L"expose", L"tool", L"--json", L"--root", tmp.wpath()});
+  auto expose_r = expose.run();
+  EXPECT_EQ(expose_r.exit_code, 0);
+  EXPECT_CONTAINS(expose_r.stdout_text, "\"status\": \"exposed\"");
+  EXPECT_TRUE(std::filesystem::exists(bin_tool));
+
+  // Uninstalled package fails cleanly.
+  Pipeline missing;
+  missing.add(L"winuxcmd.exe",
+              {L"wpm", L"expose", L"no-such-pkg", L"--root", tmp.wpath()});
+  EXPECT_NE(missing.run().exit_code, 0);
+}
