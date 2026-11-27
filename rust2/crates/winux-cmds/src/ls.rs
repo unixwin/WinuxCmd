@@ -2389,17 +2389,23 @@ fn ls_error(io: &mut Io, msg: &str) {
 // ======================================================================
 
 /// Effective locale codeset: LC_ALL > LC_CTYPE > LANG, first non-empty
-/// wins; none set means the C locale (setlocale(LC_ALL, "") fallback).
+/// wins. On Windows an unset POSIX locale is not the C locale at the
+/// filename boundary: the process manifest pins the narrow-char plane to
+/// UTF-8, so printable Unicode stays printable by default. Explicit POSIX
+/// locale variables still select the GNU table (`C` escapes non-ASCII).
 /// `utf8` selects the multibyte printability table — gnulib quotearg's
 /// iswprint holds for é/CJK/emoji only under a UTF-8 codeset.
 fn utf8_locale(ctx: &Ctx) -> bool {
     let pick = ["LC_ALL", "LC_CTYPE", "LANG"]
         .iter()
         .find_map(|k| env(ctx, k).filter(|v| !v.is_empty()));
-    pick.is_some_and(|v| {
-        let v = v.to_ascii_lowercase();
-        v.contains("utf-8") || v.contains("utf8")
-    })
+    match pick {
+        Some(v) => {
+            let v = v.to_ascii_lowercase();
+            v.contains("utf-8") || v.contains("utf8")
+        }
+        None => cfg!(windows),
+    }
 }
 
 /// Is `c` printable under the effective locale? ASCII graphics plus —
@@ -5560,5 +5566,34 @@ mod tests {
             assert_eq!(err, "");
             assert_eq!(out, "marker.txt\n", "{args:?}");
         }
+    }
+
+    /// #1883: Windows filenames are Unicode and the shipped process
+    /// manifest speaks UTF-8 even when no POSIX locale variable exists,
+    /// so the tty shell-escape default must not octal-escape CJK.
+    #[cfg(windows)]
+    #[test]
+    fn unset_locale_keeps_cjk_literal_in_shell_escape() {
+        let env = MapEnv::new();
+        let ctx = Ctx::new(std::env::temp_dir(), &env);
+        assert!(utf8_locale(&ctx));
+        assert_eq!(
+            apply_quoting("中文", Quoting::ShellEscape, "", utf8_locale(&ctx)),
+            "中文"
+        );
+    }
+
+    /// The POSIX override remains authoritative: an explicit C locale
+    /// keeps the GNU byte-escaped shape (#1646).
+    #[test]
+    fn explicit_c_locale_still_escapes_cjk_in_shell_escape() {
+        let mut env = MapEnv::new();
+        env.set("LC_ALL", "C");
+        let ctx = Ctx::new(std::env::temp_dir(), &env);
+        assert!(!utf8_locale(&ctx));
+        assert_eq!(
+            apply_quoting("中文", Quoting::ShellEscape, "", utf8_locale(&ctx)),
+            r"''$'\344\270\255'''$'\346\226\207'''"
+        );
     }
 }

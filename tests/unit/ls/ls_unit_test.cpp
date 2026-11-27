@@ -3166,6 +3166,7 @@ TEST(ls, ls_escape_style_escapes_spaces_and_non_ascii_bytes) {
 
   Pipeline p;
   p.set_cwd(tmp.wpath());
+  p.set_env(L"LC_ALL", L"C");
   p.add(L"ls.exe", {L"-b", L"-1"});
 
   auto r = p.run();
@@ -3174,6 +3175,26 @@ TEST(ls, ls_escape_style_escapes_spaces_and_non_ascii_bytes) {
   EXPECT_NE(r.stdout_text.find("sp\\ ace.txt\n"), std::string::npos);
   EXPECT_NE(r.stdout_text.find("\\303\\251t.txt\n"), std::string::npos);
   EXPECT_EQ(r.stdout_text.find("sp ace.txt\n"), std::string::npos);
+}
+
+// #1883: with no POSIX locale variable set, the Windows UTF-8 filename
+// boundary keeps printable Unicode literal under shell-escape quoting.
+TEST(ls, ls_shell_escape_prints_unicode_names_by_default) {
+  TempDir tmp;
+  std::filesystem::path chinese = tmp.path / L"中文";
+  {
+    std::ofstream out(chinese, std::ios::binary);
+    out << "x";
+  }
+
+  Pipeline p;
+  p.set_cwd(tmp.wpath());
+  p.add(L"ls.exe", {L"-1", L"--quoting-style=shell-escape", L"中文"});
+
+  auto r = p.run();
+
+  EXPECT_EQ(r.exit_code, 0);
+  EXPECT_EQ_TEXT(r.stdout_text, "中文\n");
 }
 
 // #1646: shell quoting only quotes when GNU's quotearg sees a shell special
