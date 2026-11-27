@@ -1,13 +1,17 @@
-/*
- *  Copyright © 2026 WinuxCmd
- */
-#include "core/command_macros.h"
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 caomengxuan666 <caomengxuan666@users.noreply.github.com>
+/// @Description: Implementation for hmac256.
+/// @Version: 0.2.0
+/// @License: MIT
+
 #include "pch/pch.h"
+// include other header after pch.h
+#include "core/command_macros.h"
 
 import std;
 import core;
 import utils;
-import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -15,78 +19,6 @@ using cmd::meta::OptionType;
 auto constexpr HMAC256_OPTIONS =
     // [EXT]
     std::array{OPTION("", "", "key string", STRING_TYPE)};
-
-// ======================================================
-// Pipeline components
-// ======================================================
-namespace hmac256_pipeline {
-namespace cp = core::pipeline;
-
-struct Config {
-  std::string key;
-  std::string filename;
-};
-
-auto build_config(const CommandContext<HMAC256_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  if (ctx.positionals.empty()) {
-    return std::unexpected("missing key");
-  }
-
-  Config cfg;
-  cfg.key = std::string(ctx.positionals[0]);
-  cfg.filename =
-      ctx.positionals.size() > 1 ? std::string(ctx.positionals[1]) : "-";
-  return cfg;
-}
-
-auto input_open_error(const std::string& filename) -> std::string {
-  std::error_code ec;
-  if (std::filesystem::is_directory(
-          std::filesystem::u8path(native_path::normalize_api_operand(filename)),
-          ec) &&
-      !ec) {
-    return "cannot open \x27" + filename + "\x27 for reading: Is a directory";
-  }
-  return "cannot open \x27" + filename +
-         "\x27 for reading: No such file or directory";
-}
-
-auto run(const Config& cfg) -> int {
-  std::istream* input = &std::cin;
-  std::ifstream file;
-  if (cfg.filename != "-") {
-    file.open(native_path::normalize_api_operand(cfg.filename),
-              std::ios::binary);
-    if (!file) {
-      safeErrorPrint("hmac256: ");
-      safeErrorPrintLn(input_open_error(cfg.filename));
-      return 1;
-    }
-    input = &file;
-  }
-
-  auto digest = portable_digest::hmac_sha256_stream_hex(cfg.key, *input);
-  if (!digest) {
-    safeErrorPrint("hmac256: ");
-    safeErrorPrintLn(digest.error());
-    return 1;
-  }
-
-  safePrint(*digest);
-  if (cfg.filename != "-") {
-    safePrint("  ");
-    safePrint(cfg.filename);
-  }
-  safePrintLn("");
-  return 0;
-}
-
-}  // namespace hmac256_pipeline
-
-// ======================================================
-// Main command implementation
-// ======================================================
 
 REGISTER_COMMAND(hmac256,
                  /* name */
@@ -112,15 +44,7 @@ REGISTER_COMMAND(hmac256,
 
                  /* options */
                  HMAC256_OPTIONS) {
-  using namespace hmac256_pipeline;
-  using namespace core::pipeline;
-
-  auto cfg_result = build_config(ctx);
-  if (!cfg_result) {
-    safeErrorPrint("hmac256: ");
-    safeErrorPrintLn(cfg_result.error());
-    return 1;
-  }
-
-  return run(*cfg_result);
+  // #1488 mechanical replacement: semantics live in rust2
+  // (rust2/crates/winux-cmds/src/hmac256.rs, hmac256_cmd).
+  return winux::rust2::run_command_with_stdin("hmac256", ctx.raw_args);
 }
