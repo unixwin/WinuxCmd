@@ -2630,10 +2630,11 @@ pub(crate) fn shell_escape_quote_display_name(name: &str, always: bool) -> Strin
 /// pub(crate) entry keeps the C.UTF-8 oracle default for the mv/cp
 /// diagnostic callers that have no locale plumbing.
 fn shell_escape_quote_display_name_l(name: &str, always: bool, utf8: bool) -> String {
-    let mut quote = always;
+    let mut quote = always || name.is_empty();
     if !quote {
+        let len = name.chars().count();
         for (i, c) in name.chars().enumerate() {
-            if shell_special_at(c, i, name.chars().count(), utf8) {
+            if shell_special_at(c, i, len, utf8) {
                 quote = true;
                 break;
             }
@@ -2646,14 +2647,24 @@ fn shell_escape_quote_display_name_l(name: &str, always: bool, utf8: bool) -> St
         return format!("\"{name}\"");
     }
     let mut out = String::from("'");
+    let mut pending_escape = false;
     for c in name.chars() {
         if c == '\'' {
             out.push_str("'\\''");
-        } else if is_print(c, utf8) || c == '\u{7f}' {
+            pending_escape = false;
+        } else if is_print(c, utf8) {
+            if pending_escape {
+                out.push_str("''");
+                pending_escape = false;
+            }
             out.push(c);
         } else {
-            // close quote, emit $'<escape>', reopen
+            if !pending_escape {
+                out.push_str("'$'");
+                pending_escape = true;
+            }
             let named = match c {
+                '\0' => Some("\\0"),
                 '\u{7}' => Some("\\a"),
                 '\u{8}' => Some("\\b"),
                 '\t' => Some("\\t"),
@@ -2663,9 +2674,6 @@ fn shell_escape_quote_display_name_l(name: &str, always: bool, utf8: bool) -> St
                 '\r' => Some("\\r"),
                 _ => None,
             };
-            out.push('\'');
-            out.push('$');
-            out.push('\'');
             if let Some(e) = named {
                 out.push_str(e);
             } else if (c as u32) < 0x80 {
@@ -2673,8 +2681,6 @@ fn shell_escape_quote_display_name_l(name: &str, always: bool, utf8: bool) -> St
             } else {
                 push_utf8_octal(&mut out, c);
             }
-            out.push('\'');
-            out.push('\'');
         }
     }
     out.push('\'');
@@ -5584,7 +5590,7 @@ mod tests {
     }
 
     /// The POSIX override remains authoritative: an explicit C locale
-    /// keeps the GNU byte-escaped shape (#1646).
+    /// keeps the GNU byte-escaped shape (#1646, #1890).
     #[test]
     fn explicit_c_locale_still_escapes_cjk_in_shell_escape() {
         let mut env = MapEnv::new();
@@ -5593,7 +5599,22 @@ mod tests {
         assert!(!utf8_locale(&ctx));
         assert_eq!(
             apply_quoting("中文", Quoting::ShellEscape, "", utf8_locale(&ctx)),
-            r"''$'\344\270\255'''$'\346\226\207'''"
+            r"''$'\344\270\255\346\226\207'"
         );
+    }
+
+    #[test]
+    fn shell_escape_merges_adjacent_escapes_and_transitions_like_quotearg() {
+        let q_utf8 = |s: &str| apply_quoting(s, Quoting::ShellEscape, "", true);
+        let q_c = |s: &str| apply_quoting(s, Quoting::ShellEscape, "", false);
+        assert_eq!(q_utf8(""), "''");
+        assert_eq!(q_utf8("tab\tname"), "'tab'$'\\t''name'");
+        assert_eq!(q_utf8("\tx"), "''$'\\t''x'");
+        assert_eq!(q_utf8("x\t"), "'x'$'\\t'");
+        assert_eq!(q_utf8("a\t\nb"), "'a'$'\\t\\n''b'");
+        assert_eq!(q_utf8("\t'x"), "''$'\\t'\\''x'");
+        assert_eq!(q_utf8("it's\tx"), "'it'\\''s'$'\\t''x'");
+        assert_eq!(q_utf8("\x7f"), "''$'\\177'");
+        assert_eq!(q_c("a中文b"), r"'a'$'\344\270\255\346\226\207''b'");
     }
 }
