@@ -1,0 +1,9 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+ln01-plain	win			
+ln02-extra	exit				extra
+ln03-bogus	win				--bogus
+ln04-dashdash	win				--
+ln05-help	win				--help
+ln06-version	win				--version
+ln07-short-h	win				-h
+ln08-dashdash-extra	exit				--	extra

@@ -3,7 +3,7 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for logname command.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 
@@ -14,6 +14,7 @@
 import std;
 import core;
 import utils;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -39,25 +40,7 @@ REGISTER_COMMAND(
     /* see also */
     "whoami(1), id(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
     LOGNAME_OPTIONS) {
-  namespace cp = core::pipeline;
-
-  // [GNU] logname takes no operands: coreutils reports "extra operand 'X'"
-  // and exits 1 rather than printing the login name (WinuxCmd #1215).
-  if (!ctx.positionals.empty()) {
-    return cp::report_extra_operand("logname", ctx.positionals.front());
-  }
-
-  // Get current username
-  wchar_t username[UNLEN + 1];
-  DWORD size = UNLEN + 1;
-
-  if (GetUserNameW(username, &size)) {
-    std::wstring wusername(username);
-    std::string utf8_username = wstring_to_utf8(wusername);
-    safePrintLn(utf8_username);
-    return 0;
-  } else {
-    safeErrorPrint("logname: failed to get username\n");
-    return 1;
-  }
+  // #1488 mechanical replacement: semantics live in rust2
+  // (rust2/crates/winux-cmds/src/logname.rs, logname_cmd).
+  return winux::rust2::run_command("logname", ctx.raw_args);
 }
