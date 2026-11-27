@@ -18,6 +18,7 @@ pub mod childproc;
 pub mod chmod;
 pub mod chown;
 pub mod cksum;
+pub mod col;
 pub mod cp;
 pub mod csplit;
 pub mod cut;
@@ -210,6 +211,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("chcon", chcon::chcon_cmd),
         ("runcon", runcon::runcon_cmd),
         ("cksum", cksum::cksum_cmd),
+        ("col", col::col_cmd),
         ("date", date::date_cmd),
         ("du", du::du_cmd),
         ("pinky", pinky::pinky_cmd),
