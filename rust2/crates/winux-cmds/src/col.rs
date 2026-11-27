@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::io::{Read, Write};
+use std::io::Write;
 
 use crate::argopt;
 use winux_core::{usage_error, CmdResult, Ctx, Io};
@@ -527,7 +527,7 @@ mod tests {
         assert_eq!(rc, 0);
         assert_eq!(out, "a       b\n");
 
-        let (rc, out, _) = run_mem(&["-b"], "abc\bd\n");
+        let (rc, out, _) = run_mem(&["-b"], "abc\x08d\n");
         assert_eq!(rc, 0);
         assert_eq!(out, "abd\n");
     }
