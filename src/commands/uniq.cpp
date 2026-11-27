@@ -4,7 +4,7 @@
 /// @contributors:
 ///   - caomengxuan666 <2507560089@qq.com>
 /// @Description: Implementation for uniq.
-/// @Version: 0.1.0
+/// @Version: 0.2.0
 /// @License: MIT
 /// @Copyright: Copyright © 2026 WinuxCmd
 #include "pch/pch.h"
@@ -13,36 +13,11 @@
 import std;
 import core;
 import utils;
-import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
 
-/**
- * @brief UNIQ command options definition
- *
- * This array defines all the options supported by the uniq command.
- * Each option is described with its short form, long form, and description.
- * The implementation status is also indicated for each option.
- *
- * @par Options:
- *
- * - @a -c, @a --count: Prefix lines by the number of occurrences [IMPLEMENTED]
- * - @a -d, @a --repeated: Only print duplicate lines [IMPLEMENTED]
- * - @a -D, @a --all-repeated[=METHOD]: Print all duplicate lines
- *
- * [IMPLEMENTED]
- * - @a -f, @a --skip-fields: Avoid comparing the first N
- * fields [IMPLEMENTED]
- * - @a -i, @a --ignore-case: Ignore differences in case [IMPLEMENTED]
- * - @a -s, @a --skip-chars: Avoid comparing the first N characters
- * [IMPLEMENTED]
- * - @a -u, @a --unique: Only print unique lines [IMPLEMENTED]
- * - @a -w, @a --check-chars: Compare no more than N characters [IMPLEMENTED]
- * - @a -z, @a --zero-terminated: Line delimiter is NUL, not newline
- * [IMPLEMENTED]
- * - @a --group[=METHOD]: Show all items, separating groups [IMPLEMENTED]
- */
 auto constexpr UNIQ_OPTIONS = std::array{
     // [GNU] option
     OPTION("-c", "--count", "prefix lines by the number of occurrences"),
@@ -52,12 +27,6 @@ auto constexpr UNIQ_OPTIONS = std::array{
     OPTION("-D", "--all-repeated", "print all duplicate lines",
            OPTIONAL_STRING_TYPE),
     // [GNU] option
-    // [GNU] #1519: -f/-s/-w are size_opt counts (uniq.c:233, xstrtoumax),
-    // so they use the parser's unsigned type; the consumer's negative
-    // diagnostics are unaffected (negatives still store signed).
-    // #1523: size_opt also accepts LONGINT_OVERFLOW and clamps to
-    // SIZE_MAX (uniq.c:237-247), so the declarations use the clamping
-    // unsigned type -- past UINT64_MAX is accepted, not an error.
     OPTION("-f", "--skip-fields", "avoid comparing the first N fields",
            UINT_CLAMP_TYPE),
     // [GNU] option
@@ -70,506 +39,13 @@ auto constexpr UNIQ_OPTIONS = std::array{
     // [GNU] option
     OPTION("-w", "--check-chars", "compare no more than N characters",
            UINT_CLAMP_TYPE),
-    // [GNU] -NUM: the obsolete option — its digits are the number of
-    // fields to skip (uniq.c's digit cases), NOT a check-chars count;
-    // hidden like split's -NUM.
+    // [GNU] -NUM: obsolete skip-fields count
     OPTION("-NUM", "", "", UINT_CLAMP_TYPE),
     // [GNU] option
     OPTION("-z", "--zero-terminated", "line delimiter is NUL, not newline"),
     // [GNU] option
     OPTION("", "--group", "show all items, separating groups",
            OPTIONAL_STRING_TYPE)};
-
-namespace uniq_pipeline {
-namespace cp = core::pipeline;
-
-enum class GroupMode { none, separate, prepend, append, both };
-
-struct Config {
-  bool show_count = false;
-  bool repeated_only = false;
-  bool all_repeated = false;
-  bool unique_only = false;
-  bool ignore_case = false;
-  bool group_all = false;
-  bool output_unique = true;
-  bool output_first_repeated = true;
-  bool output_later_repeated = false;
-  GroupMode group_mode = GroupMode::none;
-  int skip_fields = 0;
-  int skip_chars = 0;
-  int check_chars = -1;
-  char delimiter = '\n';
-  std::string input = "-";
-  std::string output = "-";
-};
-
-auto read_all(std::istream& in) -> std::string { return read_text_stream(in); }
-
-auto read_source(std::string_view path) -> cp::Result<std::string> {
-  if (path == "-") {
-    // [GNU] closed stdin (<&-) is a read error, not an empty stream.
-    if (file_io::stdin_is_bad()) {
-      return std::unexpected("error reading '-': Bad file descriptor");
-    }
-    file_io::set_stdin_binary();
-    return read_all(std::cin);
-  }
-
-  auto content = file_io::read_all_file(path);
-  if (!content) {
-    const std::string prefix =
-        "cannot open '" + std::string(path) + "' for reading: ";
-    if (content.error().starts_with(prefix)) {
-      return std::unexpected(std::string(path) + ": " +
-                             content.error().substr(prefix.size()));
-    }
-    return std::unexpected(content.error());
-  }
-  return *content;
-}
-
-auto split_records(std::string_view content, char delimiter)
-    -> std::vector<std::string> {
-  SmallVector<std::string, 4096> out;
-  size_t start = 0;
-  for (size_t i = 0; i < content.size(); ++i) {
-    if (content[i] == delimiter) {
-      out.emplace_back(content.substr(start, i - start));
-      start = i + 1;
-    }
-  }
-  if (start < content.size()) {
-    out.emplace_back(content.substr(start));
-  }
-  return std::vector<std::string>(out.begin(), out.end());
-}
-
-auto skip_n_fields(std::string_view line, int n) -> std::string_view {
-  if (n <= 0) return line;
-
-  // [GNU] find_field (uniq.c) skips field_sep characters (system.h):
-  // blank (space/tab) or '\n' — the '\n' member matters for -z input,
-  // whose records may contain newlines.  std::isspace additionally
-  // treats VT, FF and CR as separators, which GNU does not.
-  auto is_field_sep = [](char c) {
-    return c == ' ' || c == '\t' || c == '\n';
-  };
-  size_t i = 0;
-  int fields = 0;
-  while (i < line.size() && fields < n) {
-    while (i < line.size() && is_field_sep(line[i])) {
-      ++i;
-    }
-    if (i >= line.size()) break;
-    while (i < line.size() && !is_field_sep(line[i])) {
-      ++i;
-    }
-    ++fields;
-  }
-  return line.substr(i);
-}
-
-auto comparison_key(std::string_view line, const Config& cfg) -> std::string {
-  auto key = skip_n_fields(line, cfg.skip_fields);
-  size_t start =
-      std::min<size_t>(key.size(), static_cast<size_t>(cfg.skip_chars));
-  key = key.substr(start);
-  if (cfg.check_chars >= 0) {
-    key = key.substr(0, static_cast<size_t>(cfg.check_chars));
-  }
-  if (cfg.ignore_case) return ascii_lower_copy(key);
-  return std::string(key);
-}
-
-auto is_unsupported_used(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
-    -> std::optional<std::string_view> {
-  return std::nullopt;
-}
-
-// [GNU] argmatch (lib/argmatch.c) accepts any unambiguous prefix of a
-// table entry; an exact match always wins, and an ambiguous prefix is
-// an error just like a non-match.
-auto argmatch_prefix(std::string_view value,
-                     std::initializer_list<std::string_view> names)
-    -> std::optional<std::string_view> {
-  std::optional<std::string_view> hit;
-  for (auto name : names) {
-    if (name == value) return name;
-    if (!value.empty() && name.starts_with(value)) {
-      if (hit.has_value() && *hit != name) return std::nullopt;
-      hit = name;
-    }
-  }
-  return hit;
-}
-
-auto parse_group_mode(std::string_view method) -> cp::Result<GroupMode> {
-  // [GNU] only attached values reach here (a bare --group is resolved by
-  // the caller, uniq.c:591-593); "" is an argmatch failure -- it prefixes
-  // every candidate, so GNU calls it ambiguous (#1513).
-  if (method.empty()) {
-    return std::unexpected(
-        "ambiguous argument '' for '--group'\nValid arguments are:\n  - "
-        "'prepend'\n  - 'append'\n  - 'separate'\n  - 'both'\nTry 'uniq "
-        "--help' for more information.");
-  }
-  if (auto full = argmatch_prefix(method, {"separate", "prepend", "append",
-                                            "both"})) {
-    method = *full;
-  }
-  if (method == "separate") return GroupMode::separate;
-  if (method == "prepend") return GroupMode::prepend;
-  if (method == "append") return GroupMode::append;
-  if (method == "both") return GroupMode::both;
-  // [GNU] uniq.c XARGMATCH ("--group", ...): argmatch diagnostic with
-  // the valid-argument list, in uniq.c's table order.
-  return std::unexpected(
-      "invalid argument '" + std::string(method) +
-      "' for '--group'\nValid arguments are:\n  - 'prepend'\n  - "
-      "'append'\n  - 'separate'\n  - 'both'\nTry 'uniq --help' for "
-      "more information.");
-}
-
-auto parse_all_repeated_mode(std::string_view method) -> cp::Result<GroupMode> {
-  // [GNU] only attached values reach here (a bare -D/--all-repeated is
-  // resolved by the caller, uniq.c:579-586); "" is an argmatch failure
-  // (#1513).
-  if (method.empty()) {
-    return std::unexpected(
-        "ambiguous argument '' for '--all-repeated'\nValid arguments "
-        "are:\n  - 'none'\n  - 'prepend'\n  - 'separate'\nTry 'uniq "
-        "--help' for more information.");
-  }
-  if (auto full = argmatch_prefix(method, {"none", "prepend", "separate"})) {
-    method = *full;
-  }
-  if (method == "none") return GroupMode::none;
-  if (method == "prepend") return GroupMode::prepend;
-  if (method == "separate") return GroupMode::separate;
-  // [GNU] uniq.c XARGMATCH ("--all-repeated", ...) over
-  // {"none", "prepend", "separate"}.
-  return std::unexpected(
-      "invalid argument '" + std::string(method) +
-      "' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - "
-      "'prepend'\n  - 'separate'\nTry 'uniq --help' for more "
-      "information.");
-}
-
-auto build_config(const CommandContext<UNIQ_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  Config cfg;
-
-  cfg.show_count =
-      ctx.get<bool>("--count", false) || ctx.get<bool>("-c", false);
-  cfg.repeated_only =
-      ctx.get<bool>("--repeated", false) || ctx.get<bool>("-d", false);
-  cfg.all_repeated = ctx.has("--all-repeated") || ctx.has("-D");
-  cfg.unique_only =
-      ctx.get<bool>("--unique", false) || ctx.get<bool>("-u", false);
-  cfg.ignore_case =
-      ctx.get<bool>("--ignore-case", false) || ctx.get<bool>("-i", false);
-
-  if (cfg.repeated_only) cfg.output_unique = false;
-  if (cfg.all_repeated) {
-    cfg.output_unique = false;
-    cfg.output_later_repeated = true;
-  }
-  if (cfg.unique_only) cfg.output_first_repeated = false;
-
-  cfg.skip_fields = ctx.get<int>("--skip-fields", 0);
-  if (cfg.skip_fields == 0) cfg.skip_fields = ctx.get<int>("-f", 0);
-
-  cfg.skip_chars = ctx.get<int>("--skip-chars", 0);
-  if (cfg.skip_chars == 0) cfg.skip_chars = ctx.get<int>("-s", 0);
-
-  cfg.check_chars = ctx.get<int>("--check-chars", -1);
-  if (cfg.check_chars < 0) cfg.check_chars = ctx.get<int>("-w", -1);
-  // [GNU] the obsolete -NUM option sets the number of FIELDS to skip
-  // (uniq.c's digit cases accumulate into skip_fields); it has never
-  // been a check-chars count.  It shares the skip_fields variable with
-  // -f: when no explicit -f/--skip-fields was given, the accumulated
-  // -NUM digits win (the shared parser hands each -NUM occurrence to
-  // us as one raw value; digits accumulate across occurrences).
-  if (!ctx.has("-f") && !ctx.has("--skip-fields")) {
-    auto obsolete_values = ctx.get_all<int>("-NUM");
-    if (!obsolete_values.empty()) {
-      // Accumulate the DIGITS across occurrences (uniq.c's
-      // DECIMAL_DIGIT_ACCUMULATE): "-1 -5" means skip 15 fields.
-      long long accumulated = 0;
-      for (int raw : obsolete_values) {
-        for (char c : std::to_string(raw)) {
-          if (c >= '0' && c <= '9') accumulated = accumulated * 10 + (c - '0');
-        }
-      }
-      cfg.skip_fields = static_cast<int>(std::min<long long>(
-          accumulated, std::numeric_limits<int>::max()));
-    }
-  }
-
-  cfg.delimiter =
-      (ctx.get<bool>("--zero-terminated", false) || ctx.get<bool>("-z", false))
-          ? '\0'
-          : '\n';
-
-  // [GNU] size_opt (uniq.c) reports each negative count with its own
-  // message: "<value>: invalid number of ... to skip".
-  if (cfg.skip_fields < 0) {
-    return std::unexpected(std::to_string(cfg.skip_fields) +
-                           ": invalid number of fields to skip");
-  }
-  if (cfg.skip_chars < 0) {
-    return std::unexpected(std::to_string(cfg.skip_chars) +
-                           ": invalid number of bytes to skip");
-  }
-
-  // [GNU] An explicitly given negative -w/--check-chars has its own
-  // diagnostic; check_chars == -1 is the "no limit" default only when
-  // neither option was given.
-  bool check_given = ctx.has("-w") || ctx.has("--check-chars");
-  if (check_given && cfg.check_chars < 0) {
-    return std::unexpected(std::to_string(cfg.check_chars) +
-                           ": invalid number of bytes to compare");
-  }
-
-  // [GNU] uniq.c:579-597: --group and --all-repeated take optional
-  // arguments; a bare occurrence (optarg == nullptr) selects the
-  // compiled-in default (separate / none), an attached value goes
-  // through argmatch -- including "", which fails (#1513).
-  auto group_occurrences = ctx.string_occurrences({"--group"});
-  auto repeated_occurrences =
-      ctx.string_occurrences({"--all-repeated", "-D"});
-  if (!group_occurrences.empty()) {
-    const auto& occurrence = group_occurrences.back();
-    cfg.group_all = true;
-    if (!occurrence.has_value) {
-      cfg.group_mode = GroupMode::separate;
-    } else {
-      auto group_mode = parse_group_mode(occurrence.value);
-      if (!group_mode) return std::unexpected(group_mode.error());
-      cfg.group_mode = *group_mode;
-    }
-  } else if (!repeated_occurrences.empty()) {
-    const auto& occurrence = repeated_occurrences.back();
-    if (!occurrence.has_value) {
-      cfg.group_mode = GroupMode::none;
-    } else {
-      auto group_mode = parse_all_repeated_mode(occurrence.value);
-      if (!group_mode) return std::unexpected(group_mode.error());
-      cfg.group_mode = *group_mode;
-    }
-  }
-
-  const bool output_option_used = cfg.show_count || cfg.repeated_only ||
-                                  cfg.all_repeated || cfg.unique_only;
-  if (cfg.group_all && output_option_used) {
-    return std::unexpected("--group is mutually exclusive with -c/-d/-D/-u");
-  }
-  if (cfg.show_count && cfg.output_later_repeated) {
-    return std::unexpected(
-        "printing all duplicated lines and repeat counts is meaningless");
-  }
-
-  // [native-glob] #1374: with WINUX_SHELL_GLOB=native the shell leaves
-  // expansion to the command; the INPUT operand goes through the shared
-  // expand_file_operand boundary like cat's operands do. The expansion
-  // is spliced into the operand list, so a multi-file match produces
-  // the same "extra operand" result a shell expansion would. The OUTPUT
-  // operand names a file to create and is never expanded.
-  std::vector<std::string> expanded_input;
-  std::vector<std::string_view> operands(ctx.positionals.begin(),
-                                         ctx.positionals.end());
-  // [GNU] an operand of the form +NUM is the obsolete skip-chars
-  // option (uniq.c's case 1: a whole-token unsigned parse), never a
-  // file name; the last one wins, as with repeated -s.
-  {
-    std::vector<std::string_view> files_only;
-    for (auto operand : operands) {
-      bool consumed = false;
-      if (operand.size() > 1 && operand[0] == '+') {
-        long long value = 0;
-        bool all_digits = true;
-        for (size_t i = 1; i < operand.size(); ++i) {
-          if (operand[i] < '0' || operand[i] > '9') {
-            all_digits = false;
-            break;
-          }
-          value = value * 10 + (operand[i] - '0');
-        }
-        if (all_digits) {
-          cfg.skip_chars = static_cast<int>(std::min<long long>(
-              value, std::numeric_limits<int>::max()));
-          consumed = true;
-        }
-      }
-      if (!consumed) files_only.push_back(operand);
-    }
-    operands = std::move(files_only);
-  }
-  if (!operands.empty() && contains_wildcard(operands[0])) {
-    expanded_input = expand_file_operand(operands[0]);
-    operands.clear();
-    for (const auto& file : expanded_input) operands.emplace_back(file);
-    for (size_t i = 1; i < ctx.positionals.size(); ++i) {
-      operands.push_back(ctx.positionals[i]);
-    }
-  }
-
-  if (operands.size() > 2) {
-    return std::unexpected("extra operand '" + std::string(operands[2]) + "'");
-  }
-  if (operands.size() >= 1) cfg.input = std::string(operands[0]);
-  if (operands.size() == 2) cfg.output = std::string(operands[1]);
-
-  return cfg;
-}
-
-auto should_emit(size_t count, const Config& cfg) -> bool {
-  if (cfg.group_all) return true;
-  if (count == 1) return cfg.output_unique;
-  return cfg.output_first_repeated || cfg.output_later_repeated;
-}
-
-auto emit_one(std::ostream& out, std::string_view line, size_t count,
-              const Config& cfg, bool show_count_override = false) -> void {
-  if (cfg.show_count && !show_count_override) {
-    out << std::setw(7) << count << " ";
-  }
-  out << line;
-  out << cfg.delimiter;
-}
-
-auto emit_group_separator(std::ostream& out, const Config& cfg) -> void {
-  out << cfg.delimiter;
-}
-
-auto run(const Config& cfg) -> int {
-  std::ifstream input_file;
-  std::istream* input = &std::cin;
-  if (cfg.input != "-") {
-    auto input_operand = native_path::make_api_path_operand(cfg.input);
-    if (input_operand.had_trailing_separator &&
-        native_path::attributes_are_regular_file(
-            native_path::operand_target_attributes_w(input_operand))) {
-      cp::report_custom_error(L"uniq",
-                              utf8_to_wstring(cfg.input + ": Not a directory"));
-      return 1;
-    }
-    input_file = file_io::open_binary_file(cfg.input);
-    if (!input_file.is_open()) {
-      auto content = read_source(cfg.input);
-      if (!content) {
-        cp::report_error(content, L"uniq");
-        return 1;
-      }
-      cp::report_custom_error(L"uniq", L"cannot open input");
-      return 1;
-    }
-    input = &input_file;
-  } else if (file_io::stdin_is_bad()) {
-    // [GNU] closed stdin (<&-) errors "uniq: error reading '-'".
-    cp::report_custom_error(L"uniq", L"error reading '-': Bad file descriptor");
-    return 1;
-  } else {
-    // [#1212] the direct std::cin route must read fd 0 as bytes, not the
-    // CRT text stream, or the payload stops at the first 0x1A.
-    file_io::set_stdin_binary();
-  }
-
-  std::ostream* out = &std::cout;
-  std::ofstream file_out;
-  int stdout_mode = -1;
-  if (cfg.output != "-") {
-    file_out = file_io::create_binary_file(cfg.output);
-    if (!file_out.is_open()) {
-      cp::report_custom_error(L"uniq", L"cannot open output file");
-      return 1;
-    }
-    out = &file_out;
-  } else {
-    // Keep record bytes unchanged when stdout is a Windows pipe.
-    stdout_mode = _setmode(_fileno(stdout), _O_BINARY);
-  }
-
-  bool first_emitted_group = false;
-  std::vector<std::string> group;
-  std::string key;
-  // [perf #1127-P4] Streaming window (roadmap item 7): modes that print
-  // only a group's first record (plain, -c, -d, -u) used to buffer every
-  // record of the group, so one huge duplicate run cost unbounded
-  // memory. Those modes now keep just the first record plus a counter.
-  // --group and -D print every record of a group, so they keep the full
-  // buffer exactly as before (keep_all_records).
-  const bool keep_all_records = cfg.group_all || cfg.output_later_repeated;
-  size_t group_count = 0;
-  auto emit_group = [&](const std::vector<std::string>& records) {
-    const size_t count = group_count;
-    if (should_emit(count, cfg)) {
-      // [GNU] uniq.c: a separator precedes the group for prepend/both, and
-      // (once a group has been printed) also for append/separate, so groups
-      // are separated by exactly one blank line even under --group=both.
-      if (cfg.group_mode == GroupMode::prepend ||
-          cfg.group_mode == GroupMode::both ||
-          (first_emitted_group && (cfg.group_mode == GroupMode::append ||
-                                   cfg.group_mode == GroupMode::separate))) {
-        emit_group_separator(*out, cfg);
-      }
-
-      if (cfg.group_all) {
-        for (const auto& record : records) {
-          emit_one(*out, record, count, cfg, true);
-        }
-      } else if (count == 1) {
-        emit_one(*out, records.front(), count, cfg);
-      } else {
-        if (cfg.output_first_repeated) {
-          emit_one(*out, records.front(), count, cfg);
-        }
-        if (cfg.output_later_repeated) {
-          for (size_t k = 1; k < records.size(); ++k) {
-            emit_one(*out, records[k], count, cfg, true);
-          }
-        }
-      }
-
-      first_emitted_group = true;
-    }
-  };
-
-  std::string line;
-  while (std::getline(*input, line, cfg.delimiter)) {
-    auto line_key = comparison_key(line, cfg);
-    if (group_count > 0 && line_key != key) {
-      emit_group(group);
-      group.clear();
-      group_count = 0;
-    }
-    if (group_count == 0) key = std::move(line_key);
-    if (keep_all_records || group_count == 0) {
-      group.push_back(std::move(line));
-    }
-    ++group_count;
-    line.clear();
-  }
-  if (input->bad()) {
-    cp::report_custom_error(L"uniq", L"error reading input");
-    if (stdout_mode != -1) _setmode(_fileno(stdout), stdout_mode);
-    return 1;
-  }
-  if (group_count > 0) emit_group(group);
-
-  // [GNU] append/both end the output with a single trailing separator.
-  if (first_emitted_group && (cfg.group_mode == GroupMode::append ||
-                              cfg.group_mode == GroupMode::both)) {
-    emit_group_separator(*out, cfg);
-  }
-
-  out->flush();
-  if (stdout_mode != -1) _setmode(_fileno(stdout), stdout_mode);
-  return 0;
-}
-
-}  // namespace uniq_pipeline
 
 REGISTER_COMMAND(
     uniq, "uniq", "uniq [OPTION]... [INPUT [OUTPUT]]",
@@ -579,18 +55,24 @@ REGISTER_COMMAND(
     "  sort a.txt | uniq -c\n"
     "  uniq -i -d words.txt",
     "sort(1), grep(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", UNIQ_OPTIONS) {
-  using namespace uniq_pipeline;
-
-  if (auto unsupported = is_unsupported_used(ctx); unsupported.has_value()) {
-    cp::report_custom_error(L"uniq", utf8_to_wstring(*unsupported));
-    return 2;
+  // #1488 mechanical replacement: semantics live in rust2
+  // (rust2/crates/winux-cmds/src/uniq.rs, uniq_cmd).
+  // Stdin is read when no file operand is given (ignoring obsolete +NUM
+  // operands) or when the first file operand is "-".
+  bool has_input_file = false;
+  bool input_is_dash = false;
+  for (std::string_view arg : ctx.positionals) {
+    if (arg.size() > 1 && arg[0] == '+' &&
+        std::ranges::all_of(arg.substr(1),
+                            [](char c) { return c >= '0' && c <= '9'; })) {
+      continue;
+    }
+    has_input_file = true;
+    input_is_dash = (arg == "-");
+    break;
   }
-
-  auto cfg = build_config(ctx);
-  if (!cfg) {
-    cp::report_error(cfg, L"uniq");
-    return 1;
+  if (!has_input_file || input_is_dash) {
+    return winux::rust2::run_command_with_stdin("uniq", ctx.raw_args);
   }
-
-  return run(*cfg);
+  return winux::rust2::run_command("uniq", ctx.raw_args);
 }
