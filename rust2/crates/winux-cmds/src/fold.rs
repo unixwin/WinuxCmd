@@ -258,10 +258,10 @@ pub fn fold_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                 }
                 '0'..='9' => {
                     // getopt gives the attached value (or none). fold.c's
-                    // `optarg--` trick re-parses the ORIGINAL argv text:
-                    // "-42" -> "42", "-4x" -> "4x", "-4" -> "4".
-                    let original = &arg[1..]; // everything after the dash
-                    match parse_width(original) {
+                    // `optarg--` trick re-parses from the leading digit of
+                    // the cluster suffix: "-s42" -> "42", "-4x" -> "4x".
+                    let original: String = chars[ci..].iter().collect();
+                    match parse_width(&original) {
                         WidthArg::Good(w) => width = w,
                         WidthArg::Bad(t) => return width_error(ctx, io, &t),
                         WidthArg::None => unreachable!(),
@@ -534,5 +534,18 @@ mod tests {
         assert_eq!(io.out(), "zz\n");
         assert_eq!(run(&["--bogus"], "x\n").0, 1);
         assert_eq!(run(&["--help"], "").0, 0);
+    }
+
+    #[test]
+    fn clustered_flag_and_digit_short_options() {
+        let (r, out, err) = run(&["-s4"], "aaa bbb\n");
+        assert_eq!((r, out.as_str(), err.as_str()), (0, "aaa \nbbb\n", ""));
+
+        let (r, out, err) = run(&["-b3"], "h\u{e9}llo\n");
+        assert_eq!((r, out.as_str(), err.as_str()), (0, "h\u{e9}\nllo\n", ""));
+
+        let (r, _, err) = run(&["-s4x"], "abc\n");
+        assert_eq!(r, 1);
+        assert!(err.contains("invalid number of columns: '4x'"));
     }
 }
