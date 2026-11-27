@@ -582,14 +582,13 @@ TEST(winuxcmd, i18n_legacy_length_gate_bulk_output_stays_verbatim) {
   root.write(".wpm/i18n/zh-CN/catalog.json", catalog);
   root.write("bulk.txt", bulk);
 
-  // Short output under the gate still translates: wc prints its stdin
-  // count line "1" through safePrintLn -> translate_legacy.
+  // Short output under the gate still translates: expr prints "1"
+  // through safePrintLn -> translate_legacy (wc is now on rust2).
   {
     Pipeline p;
     p.set_env(L"WINUX_LANG", L"zh-CN");
-    p.set_stdin("x\n");
     p.add((root.path / "usr" / "bin" / "winuxcmd.exe").wstring(),
-          {L"wc", L"-l"});
+          {L"expr", L"1"});
     auto r = p.run();
     EXPECT_EQ(r.exit_code, 0);
     EXPECT_EQ_TEXT(r.stdout_text, "ONE-TRANSLATED\n");

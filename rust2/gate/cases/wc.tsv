@@ -1,0 +1,22 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+wc01-basic	strict	printf 'hello world\nsecond line\n' > w0			w0
+wc02-stdin	strict			hello world\nsecond line\n	
+wc03-dash	strict			hello world\n	-
+wc04-empty	strict	: > w1			w1
+wc05-lines	strict	printf 'a\nb\nc\n' > w2			-l	w2
+wc06-words	strict	printf 'one two   three\n' > w3			-w	w3
+wc07-bytes	strict	printf 'abc\n' > w4			-c	w4
+wc08-chars	strict	printf 'a\xc3\xa9\n' > w5	LC_ALL=C.UTF-8		-m	w5
+wc09-max-len	strict	printf 'a\tbc\n12345\n' > w6			-L	w6
+wc10-multi-total	strict	printf 'a\n' > w7; printf 'b c\n' > w8			w7	w8
+wc11-total-only	strict	printf 'a\n' > w9; printf 'b c\n' > w10			--total=only	w9	w10
+wc12-total-never	strict	printf 'a\n' > w11; printf 'b c\n' > w12			--total=never	w11	w12
+wc13-total-always	strict	printf 'a\n' > w13			--total=al	w13
+wc14-files0-from	strict	printf 'a\n' > fa; printf 'b c\n' > fb; printf 'fa\0fb\0' > list0			--files0-from=list0
+wc15-files0-stdin	strict	printf 'a\n' > fc			fc\0	--files0-from=-
+wc16-files0-conflict	exit	printf 'a\n' > fd; printf 'fd\0' > l0			--files0-from=l0	fd
+wc17-total-ambiguous	exit				--total=a
+wc18-total-invalid	exit				--total=bogus
+wc19-missing	exit				no_such_file
+wc20-help	win				--help
+wc21-version	win				--version
