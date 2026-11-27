@@ -1,0 +1,19 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+ct01-basic	strict	printf 'hello\nworld\n' > c0			c0
+ct02-stdin	strict			hello\nworld\n	
+ct03-dash	strict			hello\n	-
+ct04-multi	strict	printf 'a\n' > c1; printf 'b\n' > c2			c1	c2
+ct05-number	strict	printf 'a\n\nb\n' > c3			-n	c3
+ct06-nonblank	strict	printf 'a\n\nb\n' > c4			-b	c4
+ct07-nonblank-wins	strict	printf 'a\n\nb\n' > c5			-n	-b	c5
+ct08-show-ends	strict	printf 'a\r\nb\rc\r' > c6			-E	c6
+ct09-squeeze	strict	printf 'a\n\n\n\nb\n' > c7			-s	c7
+ct10-show-tabs	strict	printf 'a\tb\n' > c8			-T	c8
+ct11-show-all	strict	printf '\x01\t\x7f\n' > c9			-A	c9
+ct12-e-flag	strict	printf '\x01\t\n' > c10			-e	c10
+ct13-t-flag	strict	printf '\x01\t\n' > c11			-t	c11
+ct14-u-ignored	strict	printf 'ok\n' > c12			-u	c12
+ct15-unterminated	strict	printf 'no-nl' > c13			-n	c13
+ct16-missing	exit				no_such_file
+ct17-help	win				--help
+ct18-version	win				--version

@@ -12,6 +12,7 @@ pub mod basename;
 pub mod basenc;
 pub mod bre;
 pub mod canon;
+pub mod cat;
 pub mod chcon;
 pub mod chgrp;
 pub mod childproc;
@@ -120,6 +121,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("test", test_cmd::test_cmd),
         ("[", test_cmd::bracket_cmd),
         ("basename", basename::basename_cmd),
+        ("cat", cat::cat_cmd),
         ("dirname", dirname::dirname_cmd),
         ("printenv", printenv::printenv_cmd),
         ("pwd", pwd::pwd_cmd),
