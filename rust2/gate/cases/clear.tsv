@@ -1,0 +1,6 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+cl01-default	win				
+cl02-no-scrollback	win				-x
+cl03-curses-ver	win				-V
+cl04-help	win				--help
+cl05-bogus	exit				--bogus
