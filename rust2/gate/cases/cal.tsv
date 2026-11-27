@@ -1,0 +1,11 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+ca01-month-year	win				7	2026
+ca02-monday	win				-m	3	2024
+ca03-year	win				2026
+ca04-three	win				-3	3	2024
+ca05-julian	win				-j	7	2026
+ca06-twelve	win				-Y	1	2026
+ca07-bad-month	exit				13	2026
+ca08-bad-n	exit				-n	bogus
+ca09-version	win				-V
+ca10-help	win				-h
