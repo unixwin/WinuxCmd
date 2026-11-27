@@ -1,0 +1,7 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+hm01-stdin	win			hello	secret
+hm02-file	win	echo_hello:data.txt			secret	data.txt
+hm03-missing-key	exit				
+hm04-missing-file	exit				secret	no_such_file.bin
+hm05-help	win				--help
+hm06-version	win				--version

@@ -43,6 +43,7 @@ pub mod gnuhelp;
 pub mod grep;
 pub mod groups;
 pub mod head;
+pub mod hmac256;
 
 pub mod hostid;
 pub mod hostname;
@@ -184,6 +185,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("numfmt", numfmt::numfmt_cmd),
         // wave4a (#1488): alphabetical insertions
         ("head", head::head_cmd),
+        ("hmac256", hmac256::hmac256_cmd),
         ("tail", tail::tail_cmd),
         ("cut", cut::cut_cmd),
         ("tr", tr::tr_cmd),
