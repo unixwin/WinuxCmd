@@ -299,6 +299,9 @@ fn rightmost_field(value: &str, limit: usize) -> (String, bool) {
     }
     if start >= value.len() {
         start = value.len() - limit;
+        while start < value.len() && !value.is_char_boundary(start) {
+            start += 1;
+        }
     }
     (trim_left(&value[start..]).to_string(), true)
 }
@@ -317,6 +320,9 @@ fn leftmost_field(value: &str, limit: usize) -> (String, bool) {
     }
     if end == 0 {
         end = limit;
+        while end > 0 && !value.is_char_boundary(end) {
+            end -= 1;
+        }
     }
     (trim_right(&value[..end]).to_string(), true)
 }
@@ -1002,5 +1008,16 @@ mod tests {
             r.err,
             "ptx: invalid option -- 'h'\nTry 'ptx --help' for more information.\n"
         );
+    }
+
+    #[test]
+    fn utf8_multibyte_truncation_does_not_panic() {
+        let r_after = run(&[], "hello—中文\n", &["-w", "16"]);
+        assert_eq!(r_after.rc, 0);
+        assert!(r_after.out.contains("hello/"), "out={}", r_after.out);
+
+        let r_before = run(&[], "中文— hello\n", &["-w", "20"]);
+        assert_eq!(r_before.rc, 0);
+        assert!(r_before.out.contains("/—   hello"), "out={}", r_before.out);
     }
 }
