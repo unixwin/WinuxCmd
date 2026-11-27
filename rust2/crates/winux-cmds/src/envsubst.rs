@@ -232,7 +232,7 @@ mod tests {
             sc.env.set(k, v);
         }
         let ctx = sc.ctx();
-        let mut io = MemIo::with_stdin(stdin_data.as_bytes().to_vec());
+        let mut io = MemIo::new(stdin_data);
         let os_args: Vec<OsString> = args.iter().map(OsString::from).collect();
         let rc = envsubst_cmd(&os_args, &mut io.split(), &ctx).unwrap();
         (rc, io.out(), io.err())
