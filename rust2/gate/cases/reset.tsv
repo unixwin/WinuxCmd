@@ -1,0 +1,9 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+rs01-basic	win				
+rs02-quiet	win				-q	vt100
+rs03-report	win				-r	vt100
+rs04-shell-sh	win		SHELL=/bin/sh		-s	vt100
+rs05-shell-csh	win		SHELL=/bin/tcsh;TERM=xterm-256color		-s
+rs06-init	win				-I
+rs07-version	win				-V
+rs08-help	win				--help
