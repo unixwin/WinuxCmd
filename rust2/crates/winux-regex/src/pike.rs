@@ -21,8 +21,8 @@
 //! Capture spans are not computed here: `Regex::find_at_bytes_with` asks
 //! the backtracker for the captures of the (already located) match only.
 
-use crate::ast::Node;
-use crate::matcher::{chars_equal, class_matches};
+use crate::ast::{ClassAtom, Node};
+use crate::matcher::{chars_equal, class_matches, decode_char_at, fold_char};
 use crate::Regex;
 
 const MAX_INSTS: usize = 20_000;
@@ -45,6 +45,12 @@ enum Assert {
 enum Inst {
     /// Consume one byte in set `.0`, continue at `.1`.
     Set(u32, u32),
+    /// Consume one whole CHARACTER satisfying predicate `.0` (the
+    /// character-level predicates a 256-bit byte set cannot express:
+    /// multibyte literals, negated classes, classes with multibyte
+    /// members, and -i folds whose fold class leaves ASCII), continue
+    /// at `.1`. Steps by the decoded character width, like `Dot`.
+    Char(u32, u32),
     /// `.` (codepoint width), optional newline / invalid-byte exclusion.
     Dot {
         exclude_newline: bool,
@@ -56,16 +62,49 @@ enum Inst {
     Match,
 }
 
+/// A character predicate for [`Inst::Char`]: the interpreter's own
+/// `chars_equal` / `class_matches` over the decoded character.
+#[derive(Debug, Clone)]
+enum CharPred {
+    Literal(char),
+    Class {
+        negated: bool,
+        atoms: Vec<ClassAtom>,
+    },
+}
+
+/// Can this class be decided byte-by-byte with the interpreter's exact
+/// answer? Only a non-negated, ASCII-only class: a negated class can
+/// consume a multibyte character, a multibyte member is not a byte, and
+/// under -i a stored `k`/`s` also matches the Kelvin sign / long s,
+/// which are multibyte characters.
+fn byte_representable_class(ignore_case: bool, negated: bool, atoms: &[ClassAtom]) -> bool {
+    if negated {
+        return false;
+    }
+    atoms.iter().all(|a| match a {
+        ClassAtom::Literal(c) => c.is_ascii() && !(ignore_case && matches!(*c, 'k' | 's')),
+        ClassAtom::Range(lo, hi) => {
+            hi.is_ascii()
+                && !(ignore_case && ((*lo <= 'k' && 'k' <= *hi) || (*lo <= 's' && 's' <= *hi)))
+        }
+        ClassAtom::Posix(_) => true,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Nfa {
     insts: Vec<Inst>,
     sets: Vec<[u64; 4]>,
+    preds: Vec<CharPred>,
+    ignore_case: bool,
     start: u32,
 }
 
 struct Builder {
     insts: Vec<Inst>,
     sets: Vec<[u64; 4]>,
+    preds: Vec<CharPred>,
     ignore_case: bool,
 }
 
@@ -92,6 +131,11 @@ impl Builder {
         (self.sets.len() - 1) as u32
     }
 
+    fn pred(&mut self, p: CharPred) -> u32 {
+        self.preds.push(p);
+        (self.preds.len() - 1) as u32
+    }
+
     /// Continuation-passing emit: returns the entry instruction of `node`
     /// that continues at `next`.
     fn emit(&mut self, node: &Node, next: u32) -> Option<u32> {
@@ -100,12 +144,30 @@ impl Builder {
             Node::Empty => next,
             Node::Literal(c) => {
                 let c = *c;
-                let s = self.set_of(|b| chars_equal(ic, b, c));
-                self.push(Inst::Set(s, next))?
+                // Byte set only when every matching character is one
+                // ASCII byte: a multibyte literal, and the -i fold
+                // partners of k/s (Kelvin sign, long s), need the
+                // character predicate.
+                if c.is_ascii() && !(ic && matches!(fold_char(c), 'k' | 's')) {
+                    let s = self.set_of(|b| b < 0x80 && chars_equal(ic, b as char, c));
+                    self.push(Inst::Set(s, next))?
+                } else {
+                    let pr = self.pred(CharPred::Literal(c));
+                    self.push(Inst::Char(pr, next))?
+                }
             }
             Node::CharClass { negated, atoms } => {
-                let s = self.set_of(|b| class_matches(ic, *negated, atoms, b));
-                self.push(Inst::Set(s, next))?
+                if byte_representable_class(ic, *negated, atoms) {
+                    let s =
+                        self.set_of(|b| b < 0x80 && class_matches(ic, *negated, atoms, b as char));
+                    self.push(Inst::Set(s, next))?
+                } else {
+                    let pr = self.pred(CharPred::Class {
+                        negated: *negated,
+                        atoms: atoms.clone(),
+                    });
+                    self.push(Inst::Char(pr, next))?
+                }
             }
             Node::Dot => self.push(Inst::Dot {
                 exclude_newline: false,
@@ -180,6 +242,7 @@ impl Nfa {
         let mut b = Builder {
             insts: Vec::new(),
             sets: Vec::new(),
+            preds: Vec::new(),
             ignore_case,
         };
         let m = b.push(Inst::Match)?;
@@ -187,6 +250,8 @@ impl Nfa {
         Some(Nfa {
             insts: b.insts,
             sets: b.sets,
+            preds: b.preds,
+            ignore_case,
             start,
         })
     }
@@ -321,6 +386,22 @@ impl Regex {
                                 self.add_thread(nfa, cache, g, text, p + 1, next, s);
                             }
                         }
+                        Inst::Char(pred, next) => {
+                            if p < len {
+                                let (c, w) = decode_char_at(text, p);
+                                let ok = match &nfa.preds[pred as usize] {
+                                    CharPred::Literal(l) => chars_equal(nfa.ignore_case, c, *l),
+                                    CharPred::Class { negated, atoms } => {
+                                        class_matches(nfa.ignore_case, *negated, atoms, c)
+                                    }
+                                };
+                                if ok {
+                                    self.slot_for(cache, p + w);
+                                    let g = cache.slots[(p + w) % SLOTS].gen;
+                                    self.add_thread(nfa, cache, g, text, p + w, next, s);
+                                }
+                            }
+                        }
                         Inst::Dot {
                             exclude_newline,
                             reject_invalid,
@@ -419,7 +500,7 @@ impl Regex {
                         stack.push(next);
                     }
                 }
-                Inst::Set(..) | Inst::Dot { .. } | Inst::Match => {
+                Inst::Set(..) | Inst::Char(..) | Inst::Dot { .. } | Inst::Match => {
                     let slot = &mut cache.slots[si];
                     let d = slot.sparse[iu] as usize;
                     if d < slot.dense.len() && slot.dense[d] == i {

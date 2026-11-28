@@ -22,12 +22,19 @@ pub type Max = Option<u32>;
 pub const RE_DUP_MAX: u32 = 32_767;
 
 /// One member of a bracket expression's set.
+///
+/// Members are CHARACTERS, not bytes (WinuxCmd #1907): the pattern is
+/// decoded as UTF-8 when parsed, so a multibyte member is one atom and a
+/// class consumes one whole character of text. A pattern byte that does
+/// not form a well-formed UTF-8 sequence decodes as the single-byte
+/// character U+0080..=U+00FF of its value — the same decode the matcher
+/// applies to ill-formed text bytes, so the two sides stay symmetric.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClassAtom {
-    /// A single byte (backslash is an ordinary member in GNU brackets).
-    Literal(u8),
-    /// Inclusive byte range `first..=last` (endpoints may be backslashes).
-    Range(u8, u8),
+    /// A single character (backslash is an ordinary member in GNU brackets).
+    Literal(char),
+    /// Inclusive character range `first..=last` (endpoints may be backslashes).
+    Range(char, char),
     /// `[:name:]` POSIX class, C-locale byte semantics.
     Posix(PosixClass),
 }
@@ -102,7 +109,9 @@ impl PosixClass {
 pub enum Node {
     /// Matches the empty string.
     Empty,
-    Literal(u8),
+    // One character (see ClassAtom for the decode rule; a quantifier
+    // over this node repeats the whole character, WinuxCmd #1910).
+    Literal(char),
     /// Any codepoint (never splits a well-formed UTF-8 sequence).
     Dot,
     /// `^` — absolute start of the text.

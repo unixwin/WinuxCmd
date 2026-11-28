@@ -124,6 +124,225 @@ fn utf8_prev_char_start(text: &[u8], pos: usize) -> usize {
     }
 }
 
+/// Decode the character at `pos`: the scalar of the well-formed UTF-8
+/// sequence starting there, or — for an ASCII byte or an ill-formed byte
+/// (bad lead, bad continuation, overlong/surrogate form) — the
+/// single-byte character of the byte's value, width 1. This is THE decode
+/// rule of the engine (WinuxCmd #1907/#1910): pattern parsing and every
+/// matcher decode through here, so a character is one atom on both sides
+/// and an ill-formed byte stays one unit, mirroring `utf8_char_width_at`.
+pub fn decode_char_at(text: &[u8], pos: usize) -> (char, usize) {
+    if pos >= text.len() {
+        return ('\0', 0);
+    }
+    let w = utf8_char_width_at(text, pos);
+    if w > 1 {
+        if let Ok(s) = std::str::from_utf8(&text[pos..pos + w]) {
+            if let Some(c) = s.chars().next() {
+                return (c, w);
+            }
+        }
+    }
+    (text[pos] as char, 1)
+}
+
+/// The engine's case fold (WinuxCmd #1909): the canonical Unicode simple
+/// case fold of one character — uppercase first, then lowercase, each
+/// step kept only when it maps to exactly one character. Routing through
+/// uppercase is what puts the Greek final sigma in the sigma class
+/// (`ς -> Σ -> σ`), and the single-character rule keeps characters whose
+/// full fold expands (`İ`) unfolded, like glibc's simple towupper/towlower
+/// tables. ASCII folds exactly like `to_ascii_lowercase`.
+pub fn fold_char(c: char) -> char {
+    fn single(mut it: impl Iterator<Item = char>) -> Option<char> {
+        let first = it.next()?;
+        if it.next().is_some() {
+            None
+        } else {
+            Some(first)
+        }
+    }
+    let up = single(c.to_uppercase()).unwrap_or(c);
+    single(up.to_lowercase()).unwrap_or(up)
+}
+
+/// Every character whose fold equals `fold_char(c)` that the auxiliary
+/// engines (byte pre-filters, literal sets) may need to enumerate: `c`,
+/// its case-expansion closure, and the two non-ASCII characters whose
+/// fold lands in ASCII (long s `ſ` -> `s`, Kelvin sign -> `k`). A superset
+/// of the true fold class is safe for candidate generation; equality is
+/// always decided by [`fold_char`] itself.
+pub fn fold_variants(c: char) -> Vec<char> {
+    fn push(out: &mut Vec<char>, x: char) {
+        if !out.contains(&x) {
+            out.push(x);
+        }
+    }
+    let f = fold_char(c);
+    let mut out = vec![c];
+    for x in c.to_uppercase() {
+        push(&mut out, x);
+    }
+    for x in c.to_lowercase() {
+        push(&mut out, x);
+    }
+    for x in f.to_uppercase() {
+        push(&mut out, x);
+    }
+    for x in f.to_lowercase() {
+        push(&mut out, x);
+    }
+    if f == 's' {
+        push(&mut out, '\u{17F}');
+    }
+    if f == 'k' {
+        push(&mut out, '\u{212A}');
+    }
+    out
+}
+
+/// The character set of a bracket expression's atoms as sorted, disjoint
+/// codepoint intervals (the set the interpreter tests, BEFORE negation):
+/// literal/range atoms contribute directly (they are stored case-folded
+/// under `ignore_case`), POSIX atoms contribute their C-locale ASCII set
+/// with the same -i cross-fold `class_matches` applies. Shared by the
+/// auxiliary engines so the sets cannot drift.
+pub(crate) fn class_char_intervals(ignore_case: bool, atoms: &[ClassAtom]) -> Vec<(u32, u32)> {
+    let mut iv: Vec<(u32, u32)> = Vec::new();
+    for atom in atoms {
+        match atom {
+            ClassAtom::Literal(c) => iv.push((*c as u32, *c as u32)),
+            ClassAtom::Range(lo, hi) => iv.push((*lo as u32, *hi as u32)),
+            ClassAtom::Posix(class) => {
+                for b in 0..=0x7Fu32 {
+                    let c = char::from_u32(b).expect("ASCII");
+                    if posix_matches(ignore_case, *class, c) {
+                        iv.push((b, b));
+                    }
+                }
+            }
+        }
+    }
+    iv.sort_unstable();
+    let mut out: Vec<(u32, u32)> = Vec::with_capacity(iv.len());
+    for (lo, hi) in iv {
+        match out.last_mut() {
+            Some((_, phi)) if lo <= phi.saturating_add(1) => {
+                if hi > *phi {
+                    *phi = hi;
+                }
+            }
+            _ => out.push((lo, hi)),
+        }
+    }
+    out
+}
+
+/// The effective character set of a bracket expression under the compile
+/// flags: `class_char_intervals` closed under the fold preimage (a
+/// character matches iff its fold lands in the stored set) and, for a
+/// negated class, complemented over the Unicode scalar range. `None`
+/// when the fold closure would need an unbounded enumeration (huge
+/// stored ranges under -i): the caller must decline to the interpreter
+/// (exact engines) or over-approximate (necessary-condition filters).
+pub(crate) fn class_effective_intervals(
+    ignore_case: bool,
+    negated: bool,
+    atoms: &[ClassAtom],
+) -> Option<Vec<(u32, u32)>> {
+    let mut set = class_char_intervals(ignore_case, atoms);
+    if ignore_case {
+        // Fold preimage: variants of stored characters whose fold lands
+        // back in the stored set. Enumerating the stored set is bounded
+        // by its size; past the cap the caller declines/over-approximates.
+        let total: u64 = set.iter().map(|(lo, hi)| u64::from(hi - lo + 1)).sum();
+        if total > 200_000 {
+            return None;
+        }
+        let contains = |set: &[(u32, u32)], v: u32| set.iter().any(|(lo, hi)| v >= *lo && v <= *hi);
+        let mut extra: Vec<(u32, u32)> = Vec::new();
+        for (lo, hi) in &set {
+            let mut v = *lo;
+            loop {
+                let c = char::from_u32(v).expect("stored chars are scalars");
+                for w in fold_variants(c) {
+                    if !contains(&set, w as u32) && contains(&set, fold_char(w) as u32) {
+                        extra.push((w as u32, w as u32));
+                    }
+                }
+                if v == *hi {
+                    break;
+                }
+                v += 1;
+            }
+        }
+        if !extra.is_empty() {
+            set.extend(extra);
+            set = merge_intervals(set);
+        }
+    }
+    if negated {
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        let mut next = 0u32;
+        for (lo, hi) in &set {
+            if *lo > next {
+                push_scalar_range(&mut out, next, lo - 1);
+            }
+            next = next.max(hi + 1);
+        }
+        if next <= 0x10FFFF {
+            push_scalar_range(&mut out, next, 0x10FFFF);
+        }
+        set = out;
+    }
+    Some(set)
+}
+
+fn merge_intervals(mut iv: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    iv.sort_unstable();
+    let mut out: Vec<(u32, u32)> = Vec::with_capacity(iv.len());
+    for (lo, hi) in iv {
+        match out.last_mut() {
+            Some((_, phi)) if lo <= phi.saturating_add(1) => {
+                if hi > *phi {
+                    *phi = hi;
+                }
+            }
+            _ => out.push((lo, hi)),
+        }
+    }
+    out
+}
+
+/// Append `lo..=hi` skipping the surrogate gap (not scalar values).
+fn push_scalar_range(out: &mut Vec<(u32, u32)>, lo: u32, hi: u32) {
+    if lo > hi {
+        return;
+    }
+    if lo < 0xD800 {
+        out.push((lo, hi.min(0xD7FF)));
+    }
+    if hi > 0xDFFF {
+        out.push((lo.max(0xE000), hi));
+    }
+}
+
+/// POSIX-class membership of one character: C-locale ASCII table, plus
+/// the -i cross-fold between the case classes (GNU grep -i [[:upper:]]
+/// matches lowercase and vice versa). Non-ASCII characters are in no
+/// C-locale class.
+fn posix_matches(ignore_case: bool, class: PosixClass, c: char) -> bool {
+    let mut hit = c.is_ascii() && class.matches(c as u8);
+    if !hit && ignore_case {
+        hit = match class {
+            PosixClass::Lower => c.is_ascii_uppercase(),
+            PosixClass::Upper => c.is_ascii_lowercase(),
+            _ => false,
+        };
+    }
+    hit
+}
+
 fn is_word_char(b: u8) -> bool {
     (b as char).is_ascii_alphanumeric() || b == b'_'
 }
@@ -153,44 +372,36 @@ pub(crate) fn is_word_cp_before(text: &[u8], pos: usize) -> bool {
     is_word_cp_at(text, utf8_prev_char_start(text, pos))
 }
 
-fn fold_ascii(b: u8) -> u8 {
-    b.to_ascii_lowercase()
-}
-
-/// The engine's literal comparison rule (`chars_equal`): folds ASCII under
-/// ignore_case. Free function so the fast-path analysis in `fastpath.rs`
-/// reuses the single copy of the rule.
-pub(crate) fn chars_equal(ignore_case: bool, lhs: u8, rhs: u8) -> bool {
+/// The engine's literal comparison rule (`chars_equal`): Unicode case
+/// fold under ignore_case ([`fold_char`]). Free function so the fast-path
+/// analysis in `fastpath.rs` reuses the single copy of the rule.
+pub(crate) fn chars_equal(ignore_case: bool, lhs: char, rhs: char) -> bool {
     if !ignore_case {
         lhs == rhs
     } else {
-        fold_ascii(lhs) == fold_ascii(rhs)
+        fold_char(lhs) == fold_char(rhs)
     }
 }
 
-/// The engine's bracket-expression rule (`class_matches`): folds the byte
-/// under ignore_case, tests atoms in order, negates at the end. POSIX
-/// classes test the ORIGINAL byte and only the case classes cross-fold
-/// under -i (GNU grep -i [[:upper:]] matches lowercase and vice versa).
-/// Free function so the fast-path analysis reuses the single copy.
-pub(crate) fn class_matches(ignore_case: bool, negated: bool, atoms: &[ClassAtom], b: u8) -> bool {
-    let folded = if ignore_case { fold_ascii(b) } else { b };
+/// The engine's bracket-expression rule (`class_matches`): folds the
+/// character under ignore_case, tests atoms in order, negates at the end.
+/// POSIX classes test the ORIGINAL character and only the case classes
+/// cross-fold under -i (GNU grep -i [[:upper:]] matches lowercase and
+/// vice versa). Free function so the fast-path analysis reuses the
+/// single copy.
+pub(crate) fn class_matches(
+    ignore_case: bool,
+    negated: bool,
+    atoms: &[ClassAtom],
+    c: char,
+) -> bool {
+    let folded = if ignore_case { fold_char(c) } else { c };
     let mut matched = false;
     for atom in atoms {
         matched = match atom {
-            ClassAtom::Literal(c) => folded == *c,
+            ClassAtom::Literal(l) => folded == *l,
             ClassAtom::Range(lo, hi) => folded >= *lo && folded <= *hi,
-            ClassAtom::Posix(class) => {
-                let mut hit = class.matches(b);
-                if !hit && ignore_case {
-                    hit = match class {
-                        PosixClass::Lower => (b as char).is_ascii_uppercase(),
-                        PosixClass::Upper => (b as char).is_ascii_lowercase(),
-                        _ => false,
-                    };
-                }
-                hit
-            }
+            ClassAtom::Posix(class) => posix_matches(ignore_case, *class, c),
         };
         if matched {
             break;
@@ -574,9 +785,14 @@ impl Regex {
         }
         match node {
             Node::Empty => vec![state],
-            Node::Literal(b) => {
-                if state.pos < text.len() && chars_equal(self.ignore_case, text[state.pos], *b) {
-                    vec![advance(state, 1)]
+            Node::Literal(l) => {
+                if state.pos < text.len() {
+                    let (c, w) = decode_char_at(text, state.pos);
+                    if chars_equal(self.ignore_case, c, *l) {
+                        vec![advance(state, w)]
+                    } else {
+                        Vec::new()
+                    }
                 } else {
                     Vec::new()
                 }
@@ -673,10 +889,13 @@ impl Regex {
                 vec![advance(state, w)]
             }
             Node::CharClass { negated, atoms } => {
-                if state.pos < text.len()
-                    && class_matches(self.ignore_case, *negated, atoms, text[state.pos])
-                {
-                    vec![advance(state, 1)]
+                if state.pos < text.len() {
+                    let (c, w) = decode_char_at(text, state.pos);
+                    if class_matches(self.ignore_case, *negated, atoms, c) {
+                        vec![advance(state, w)]
+                    } else {
+                        Vec::new()
+                    }
                 } else {
                     Vec::new()
                 }
@@ -743,21 +962,26 @@ impl Regex {
         if !capture.matched {
             return Vec::new();
         }
-        let len = capture.end - capture.begin;
-        if state.pos + len > text.len() {
-            return Vec::new();
-        }
-        for i in 0..len {
-            if !chars_equal(
-                self.ignore_case,
-                text[state.pos + i],
-                text[capture.begin + i],
-            ) {
+        // Character-wise comparison (the capture and the text at the
+        // cursor must decode to the same characters with the same
+        // widths, so the consumed byte counts agree exactly).
+        let span = &text[capture.begin..capture.end];
+        let mut i = 0usize;
+        let mut p = state.pos;
+        while i < span.len() {
+            if p >= text.len() {
                 return Vec::new();
             }
+            let (a, wa) = decode_char_at(span, i);
+            let (b, wb) = decode_char_at(text, p);
+            if wa != wb || !chars_equal(self.ignore_case, a, b) {
+                return Vec::new();
+            }
+            i += wa;
+            p += wb;
         }
         vec![State {
-            pos: state.pos + len,
+            pos: p,
             captures: state.captures,
         }]
     }
