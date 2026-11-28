@@ -233,6 +233,7 @@ pub fn chattr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     };
     let mut positionals: Vec<String> = Vec::new();
     let mut no_more_opts = false;
+    let mut saw_short_r = false;
 
     for a in args {
         let s = a.to_string_lossy();
@@ -248,8 +249,13 @@ pub fn chattr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
             writeln!(io.stdout, "Usage: chattr [-RVf] MODE FILE...")?;
             return Ok(0);
         }
-        if s == "--recursive" || s == "-R" {
+        if s == "--recursive" {
             cfg.recursive = true;
+            continue;
+        }
+        if s == "-R" {
+            cfg.recursive = true;
+            saw_short_r = true;
             continue;
         }
         if s == "--verbose" || s == "-V" {
@@ -266,6 +272,17 @@ pub fn chattr_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
         }
         // Mode strings like `+RH`, `-H`, `=A` are positional operands, not options.
         positionals.push(s.into_owned());
+    }
+
+    if saw_short_r
+        && (positionals.len() < 2
+            || !matches!(
+                positionals[0].as_bytes().first(),
+                Some(b'+' | b'-' | b'=')
+            ))
+    {
+        cfg.recursive = false;
+        positionals.insert(0, "-R".to_owned());
     }
 
     if positionals.len() < 2 {
