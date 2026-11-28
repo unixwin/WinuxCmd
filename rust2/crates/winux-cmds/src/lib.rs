@@ -17,6 +17,7 @@ pub mod chgrp;
 pub mod childproc;
 pub mod chmod;
 pub mod chown;
+pub mod chroot;
 pub mod cksum;
 pub mod cp;
 pub mod csplit;
@@ -207,6 +208,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("mkfifo", mkfifo::mkfifo_cmd),
         ("mknod", mknod::mknod_cmd),
         ("chgrp", chgrp::chgrp_cmd),
+        ("chroot", chroot::chroot_cmd),
         ("chcon", chcon::chcon_cmd),
         ("runcon", runcon::runcon_cmd),
         ("cksum", cksum::cksum_cmd),

@@ -1,0 +1,7 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+cr01-missing-op	exit				
+cr02-missing-dir	exit				no_such_dir_xyz
+cr03-existing-dir	exit	mkdir:jail			jail	echo	hi
+cr04-bad-opt	exit				--zzz	someroot
+cr05-help	win				--help
+cr06-version	win				--version
