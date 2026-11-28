@@ -26,6 +26,7 @@ pub mod date;
 pub mod df;
 pub mod digest;
 pub mod digestsum;
+pub mod dir;
 pub mod dirname;
 pub mod du;
 pub mod echo;
@@ -120,7 +121,9 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("test", test_cmd::test_cmd),
         ("[", test_cmd::bracket_cmd),
         ("basename", basename::basename_cmd),
+        ("dir", dir::dir_cmd),
         ("dirname", dirname::dirname_cmd),
+        ("vdir", dir::vdir_cmd),
         ("printenv", printenv::printenv_cmd),
         ("pwd", pwd::pwd_cmd),
         ("mkdir", mkdir::mkdir_cmd),

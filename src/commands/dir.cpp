@@ -15,6 +15,7 @@ import std;
 import core;
 import utils;
 import container;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -181,40 +182,6 @@ auto constexpr DIR_OPTIONS = std::array{
     // [GNU]
     OPTION("", "--zero", "end each output line with NUL, not newline")};
 
-namespace dir_pipeline {
-namespace cp = core::pipeline;
-
-auto run(const CommandContext<DIR_OPTIONS.size()>& ctx) -> int {
-  // [GNU] dir is equivalent to `ls -C -b': list entries in columns and
-  // quote nongraphic characters with C-style escapes by default.
-  std::vector<std::string> ls_arg_storage;
-  ls_arg_storage.push_back("-C");
-  ls_arg_storage.push_back("-b");
-
-  // Preserve the original argv surface so GNU dir options actually reach ls.
-  for (const auto& arg : ctx.raw_args) {
-    ls_arg_storage.emplace_back(arg);
-  }
-
-  if (CommandRegistry::hasCommand("ls")) {
-    std::vector<std::string_view> ls_arg_views;
-    ls_arg_views.reserve(ls_arg_storage.size());
-    for (const auto& arg : ls_arg_storage) {
-      ls_arg_views.emplace_back(arg);
-    }
-    return CommandRegistry::dispatch("ls", ls_arg_views);
-  }
-
-  // Unreachable in every built layout: ls.cpp is globbed into the same
-  // winuxcmd-commands library as this file, so "ls" is always registered
-  // in-process. (An external-spawn fallback for a split-applet layout that
-  // does not exist used to live here; it was removed as dead code. This
-  // branch keeps that fallback's failure shape.)
-  safeErrorPrintLn("dir: failed to execute ls");
-  return 1;
-}
-
-}  // namespace dir_pipeline
 
 REGISTER_COMMAND(
     dir, "dir", "dir [OPTION]... [FILE]...",
@@ -266,8 +233,7 @@ REGISTER_COMMAND(
     "  dir -a         show hidden files\n"
     "  dir -R         recursive listing",
     "ls(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd", DIR_OPTIONS) {
-  using namespace dir_pipeline;
-  using namespace core::pipeline;
-
-  return run(ctx);
+  // #1488 mechanical replacement: semantics live in rust2
+  // (rust2/crates/winux-cmds/src/dir.rs, dir_cmd).
+  return winux::rust2::run_command("dir", ctx.raw_args);
 }
