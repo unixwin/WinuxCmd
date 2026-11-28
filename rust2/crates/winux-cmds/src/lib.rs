@@ -66,6 +66,7 @@ pub mod od;
 
 pub mod paste;
 pub mod pathchk;
+pub mod pidof;
 pub mod pinky;
 pub mod printenv;
 pub mod ptx;
@@ -196,6 +197,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         // wave4b (#1488)
         ("factor", factor::factor_cmd),
         ("pathchk", pathchk::pathchk_cmd),
+        ("pidof", pidof::pidof_cmd),
         ("csplit", csplit::csplit_cmd),
         ("shuf", shuf::shuf_cmd),
         ("ptx", ptx::ptx_cmd),

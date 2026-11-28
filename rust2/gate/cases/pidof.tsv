@@ -1,0 +1,6 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+po01-missing-arg	exit				
+po02-no-match	exit				WINUXCMD_NO_SUCH_PROC_999
+po03-exact-no-match	exit				--exact	WINUXCMD_NO_SUCH_PROC_999
+po04-help	win				--help
+po05-version	win				-V
