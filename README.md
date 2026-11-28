@@ -344,6 +344,41 @@ WinuxCmd is maintained by its two core maintainers:
 | [@caomengxuan666](https://github.com/caomengxuan666) | Creator and core maintainer |
 | [@arookieofc](https://github.com/arookieofc) | Core maintainer |
 
+<!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
+[![All Contributors](https://img.shields.io/badge/all_contributors-12-orange.svg?style=flat-square)](#contributors)
+<!-- ALL-CONTRIBUTORS-BADGE:END -->
+
+Thanks to everyone who has contributed code, bug reports, and fixes ([emoji key](https://allcontributors.org/docs/en/emoji-key)):
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+<table>
+  <tbody>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/caomengxuan666"><img src="https://avatars.githubusercontent.com/u/114896873?v=4&size=100" width="100px" height="100px" alt="caomengxuan666"/><br /><sub><b>caomengxuan666</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/commits?author=caomengxuan666" title="Code">💻</a> <a href="#maintenance-caomengxuan666" title="Maintenance">🚧</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/arookieofc"><img src="https://avatars.githubusercontent.com/u/186315048?v=4&size=100" width="100px" height="100px" alt="arookieofc"/><br /><sub><b>arookieofc</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/commits?author=arookieofc" title="Code">💻</a> <a href="#maintenance-arookieofc" title="Maintenance">🚧</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Uarz"><img src="https://avatars.githubusercontent.com/u/149165079?v=4&size=100" width="100px" height="100px" alt="Uarz"/><br /><sub><b>Uarz</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/commits?author=Uarz" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Catapult291"><img src="https://avatars.githubusercontent.com/u/200960228?v=4&size=100" width="100px" height="100px" alt="Catapult291"/><br /><sub><b>Catapult291</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/commits?author=Catapult291" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/daiaji"><img src="https://avatars.githubusercontent.com/u/25875791?v=4&size=100" width="100px" height="100px" alt="daiaji"/><br /><sub><b>daiaji</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/commits?author=daiaji" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/arookieofc-ai"><img src="https://avatars.githubusercontent.com/u/282213208?v=4&size=100" width="100px" height="100px" alt="arookieofc-ai"/><br /><sub><b>arookieofc-ai</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/commits?author=arookieofc-ai" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/OpenCode"><img src="https://avatars.githubusercontent.com/u/265697?v=4&size=100" width="100px" height="100px" alt="OpenCode"/><br /><sub><b>OpenCode</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/commits?author=OpenCode" title="Code">💻</a></td>
+    </tr>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/zzmyth-sys"><img src="https://avatars.githubusercontent.com/u/232838516?v=4&size=100" width="100px" height="100px" alt="zzmyth-sys"/><br /><sub><b>zzmyth-sys</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/commits?author=zzmyth-sys" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Haoming9527"><img src="https://avatars.githubusercontent.com/u/167516473?v=4&size=100" width="100px" height="100px" alt="Haoming9527"/><br /><sub><b>Haoming9527</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/commits?author=Haoming9527" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/dingyi580"><img src="https://avatars.githubusercontent.com/u/63770542?v=4&size=100" width="100px" height="100px" alt="dingyi580"/><br /><sub><b>dingyi580</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/commits?author=dingyi580" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/ShiomiHC"><img src="https://avatars.githubusercontent.com/u/136112345?v=4&size=100" width="100px" height="100px" alt="ShiomiHC"/><br /><sub><b>ShiomiHC</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/issues?q=author%3AShiomiHC" title="Bug reports">🐛</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/qwased"><img src="https://avatars.githubusercontent.com/u/35343489?v=4&size=100" width="100px" height="100px" alt="qwased"/><br /><sub><b>qwased</b></sub></a><br /><a href="https://github.com/unixwin/WinuxCmd/issues?q=author%3Aqwased" title="Bug reports">🐛</a></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+
+<!-- ALL-CONTRIBUTORS-LIST:END -->
+
 Everyone who has landed code (bots excluded), refreshed weekly by the readme-stats workflow:
 
 <!-- AUTO:CONTRIBUTORS:START -->

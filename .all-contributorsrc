@@ -1,0 +1,127 @@
+{
+  "projectName": "WinuxCmd",
+  "projectOwner": "unixwin",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "README.md",
+    "README-zh.md"
+  ],
+  "badgeTemplate": "[![All Contributors](https://img.shields.io/badge/all_contributors-<%= contributors.length %>-orange.svg?style=flat-square)](#contributors)",
+  "imageSize": 100,
+  "commit": false,
+  "contributorsPerLine": 7,
+  "skipCi": true,
+  "contributors": [
+    {
+      "login": "caomengxuan666",
+      "name": "caomengxuan666",
+      "avatar_url": "https://avatars.githubusercontent.com/u/114896873?v=4",
+      "profile": "https://github.com/caomengxuan666",
+      "contributions": [
+        "code",
+        "maintenance"
+      ]
+    },
+    {
+      "login": "arookieofc",
+      "name": "arookieofc",
+      "avatar_url": "https://avatars.githubusercontent.com/u/186315048?v=4",
+      "profile": "https://github.com/arookieofc",
+      "contributions": [
+        "code",
+        "maintenance"
+      ]
+    },
+    {
+      "login": "Uarz",
+      "name": "Uarz",
+      "avatar_url": "https://avatars.githubusercontent.com/u/149165079?v=4",
+      "profile": "https://github.com/Uarz",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "Catapult291",
+      "name": "Catapult291",
+      "avatar_url": "https://avatars.githubusercontent.com/u/200960228?v=4",
+      "profile": "https://github.com/Catapult291",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "daiaji",
+      "name": "daiaji",
+      "avatar_url": "https://avatars.githubusercontent.com/u/25875791?v=4",
+      "profile": "https://github.com/daiaji",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "arookieofc-ai",
+      "name": "arookieofc-ai",
+      "avatar_url": "https://avatars.githubusercontent.com/u/282213208?v=4",
+      "profile": "https://github.com/arookieofc-ai",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "OpenCode",
+      "name": "OpenCode",
+      "avatar_url": "https://avatars.githubusercontent.com/u/265697?v=4",
+      "profile": "https://github.com/OpenCode",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "zzmyth-sys",
+      "name": "zzmyth-sys",
+      "avatar_url": "https://avatars.githubusercontent.com/u/232838516?v=4",
+      "profile": "https://github.com/zzmyth-sys",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "Haoming9527",
+      "name": "Haoming9527",
+      "avatar_url": "https://avatars.githubusercontent.com/u/167516473?v=4",
+      "profile": "https://github.com/Haoming9527",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "dingyi580",
+      "name": "dingyi580",
+      "avatar_url": "https://avatars.githubusercontent.com/u/63770542?v=4",
+      "profile": "https://github.com/dingyi580",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "ShiomiHC",
+      "name": "ShiomiHC",
+      "avatar_url": "https://avatars.githubusercontent.com/u/136112345?v=4",
+      "profile": "https://github.com/ShiomiHC",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "qwased",
+      "name": "qwased",
+      "avatar_url": "https://avatars.githubusercontent.com/u/35343489?v=4",
+      "profile": "https://github.com/qwased",
+      "contributions": [
+        "bug"
+      ]
+    }
+  ]
+}
