@@ -38,6 +38,7 @@ pub mod fold;
 pub mod fs_win;
 pub mod fsutil;
 pub mod getconf;
+pub mod getfacl;
 pub mod glob;
 pub mod gnuhelp;
 pub mod grep;
@@ -141,6 +142,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         // shipped unregistered on main — their gate tables ran 22 FAIL
         // (driver rc 127 vs cpp rc 0) because dispatch could not find them.
         ("getconf", getconf::getconf_cmd),
+        ("getfacl", getfacl::getfacl_cmd),
         ("hostname", hostname::hostname_cmd),
         ("id", id::id_cmd),
         ("uname", uname::uname_cmd),
