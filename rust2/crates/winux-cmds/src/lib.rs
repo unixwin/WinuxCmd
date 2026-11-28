@@ -88,6 +88,7 @@ pub mod tac;
 pub mod tail;
 pub mod tee;
 pub mod test_cmd;
+pub mod time;
 pub mod timeout;
 pub mod touch;
 pub mod tr;
@@ -118,6 +119,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("true", truefalse::true_cmd),
         ("false", truefalse::false_cmd),
         ("test", test_cmd::test_cmd),
+        ("time", time::time_cmd),
         ("[", test_cmd::bracket_cmd),
         ("basename", basename::basename_cmd),
         ("dirname", dirname::dirname_cmd),
