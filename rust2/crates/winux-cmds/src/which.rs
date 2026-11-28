@@ -158,7 +158,7 @@ fn normalize_win_shell_path(text: &str) -> String {
 }
 
 fn env_str(ctx: &Ctx, key: &str) -> Option<String> {
-    ctx.env.get(key).map(|v| v.to_string_lossy().into_owned())
+    winux_core::win32_env_get(ctx.env, key).map(|v| v.to_string_lossy().into_owned())
 }
 
 fn get_home_directory(ctx: &Ctx) -> Option<PathBuf> {
