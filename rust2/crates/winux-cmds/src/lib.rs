@@ -53,6 +53,7 @@ pub mod ls;
 pub mod messages;
 pub mod mkdir;
 pub mod mkfifo;
+pub mod mkpasswd;
 pub mod mknod;
 pub mod mktemp;
 pub mod modemap;
@@ -205,6 +206,8 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         // wave5 (#1488)
         ("tty", tty::tty_cmd),
         ("mkfifo", mkfifo::mkfifo_cmd),
+        ("mkgroup", mkpasswd::mkgroup_cmd),
+        ("mkpasswd", mkpasswd::mkpasswd_cmd),
         ("mknod", mknod::mknod_cmd),
         ("chgrp", chgrp::chgrp_cmd),
         ("chcon", chcon::chcon_cmd),

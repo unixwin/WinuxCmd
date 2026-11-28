@@ -1,0 +1,4 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+mg01-current	win				--current
+mg02-extra	exit				extra
+mg03-help	win				--help

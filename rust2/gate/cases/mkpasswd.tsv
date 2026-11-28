@@ -1,0 +1,7 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+mp01-current	win				--current
+mp02-prefix-shell	win				--current	--path-prefix	/u	--shell	/bin/false
+mp03-pwfd-unsupported	exit				-P	3
+mp04-method-unsupported	exit				-S	sha-512
+mp05-extra	exit				extra
+mp06-help	win				--help
