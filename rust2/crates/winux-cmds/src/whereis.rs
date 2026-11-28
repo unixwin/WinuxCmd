@@ -81,7 +81,7 @@ fn canonical_dir(ctx: &Ctx, dir: &str) -> String {
 fn default_bin_dirs(ctx: &Ctx) -> Vec<String> {
     let mut dirs = Vec::new();
     if let Some(p) = ctx.env.get("PATH") {
-        dirs.extend(split_env_path(&p));
+        dirs.extend(split_env_path(&p.to_string_lossy()));
     }
     #[cfg(windows)]
     {
@@ -102,7 +102,7 @@ fn default_bin_dirs(ctx: &Ctx) -> Vec<String> {
 
 fn default_man_dirs(ctx: &Ctx) -> Vec<String> {
     ctx.env.get("MANPATH")
-        .map(|p| split_env_path(&p))
+        .map(|p| split_env_path(&p.to_string_lossy()))
         .unwrap_or_default()
 }
 
