@@ -482,7 +482,7 @@ mod tests {
         let sc = ScratchCtx::new("whereis-find");
         std::fs::write(sc.path("mytool.exe"), b"bin").unwrap();
         std::fs::write(sc.path("mytool.1"), b"man").unwrap();
-        let dir_str = sc.root().to_string_lossy().into_owned();
+        let dir_str = sc.path(".").to_string_lossy().into_owned();
 
         let mut io = MemIo::new("");
         let rc = whereis_cmd(
