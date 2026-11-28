@@ -512,7 +512,7 @@ impl<'a> Parser<'a> {
                         Node::AnchorStart
                     })
                 } else {
-                    Ok(Node::Literal(b'^'))
+                    Ok(Node::Literal('^'))
                 }
             }
             b'$' => {
@@ -523,7 +523,7 @@ impl<'a> Parser<'a> {
                         Node::AnchorEnd
                     })
                 } else {
-                    Ok(Node::Literal(b'$'))
+                    Ok(Node::Literal('$'))
                 }
             }
             b'.' => Ok(if self.opts.multiline || self.opts.strict_utf8_dot {
@@ -538,7 +538,7 @@ impl<'a> Parser<'a> {
             b'*' if self.syntax == Syntax::Basic && (pos.first || pos.after_caret) => {
                 // POSIX BRE literal `*`: first character of the expression /
                 // subexpression, or directly after an initial `^`.
-                Ok(Node::Literal(b'*'))
+                Ok(Node::Literal('*'))
             }
             b'(' if self.syntax == Syntax::Extended => self.parse_group(),
             b')' if self.syntax == Syntax::Extended && self.depth == 0 => {
@@ -553,10 +553,19 @@ impl<'a> Parser<'a> {
                 }
                 // glibc accepts a stray top-level `)` as a literal
                 // (`grep -E ')'` matches `)`); the C++ engine errored.
-                Ok(Node::Literal(b')'))
+                Ok(Node::Literal(')'))
             }
             b'\\' => self.parse_escape_atom(),
-            _ => Ok(Node::Literal(ch)),
+            _ if ch < 0x80 => Ok(Node::Literal(ch as char)),
+            _ => {
+                // A multibyte character is ONE atom (WinuxCmd #1910: a
+                // following quantifier repeats the character, not its
+                // last byte). Ill-formed bytes decode as single-byte
+                // characters, mirroring the matcher's text decode.
+                let (c, w) = crate::matcher::decode_char_at(self.pattern, self.pos - 1);
+                self.pos = self.pos - 1 + w;
+                Ok(Node::Literal(c))
+            }
         }
     }
 
@@ -614,14 +623,14 @@ impl<'a> Parser<'a> {
                 b'<' | b'>' | b'b' | b'B' | b'`' | b'\'' | b's' | b'S' | b'w' | b'W'
             )
         {
-            return Ok(Node::Literal(escaped));
+            return Ok(Node::Literal(escaped as char));
         }
         if escaped == b')'
             && self.syntax == Syntax::Basic
             && self.depth == 0
             && self.opts.unmatched_right_paren_ord
         {
-            return Ok(Node::Literal(b')'));
+            return Ok(Node::Literal(')'));
         }
         match escaped {
             b'<' => Ok(Node::WordStart),
@@ -660,7 +669,14 @@ impl<'a> Parser<'a> {
                 self.pos,
                 "unmatched ) or \\)",
             )),
-            _ => Ok(Node::Literal(escaped)),
+            _ if escaped < 0x80 => Ok(Node::Literal(escaped as char)),
+            _ => {
+                // `\` before a multibyte character quotes the whole
+                // character (one atom, like the unescaped form).
+                let (c, w) = crate::matcher::decode_char_at(self.pattern, self.pos - 1);
+                self.pos = self.pos - 1 + w;
+                Ok(Node::Literal(c))
+            }
         }
     }
 
@@ -798,7 +814,7 @@ impl<'a> Parser<'a> {
                     // REG_NEWLINE: RE_HAT_LISTS_NOT_NEWLINE — a non-matching
                     // list never matches newline (GNU sed `M`, probed; the
                     // `\W` / `\S` shorthands are unaffected).
-                    atoms.push(ClassAtom::Literal(b'\n'));
+                    atoms.push(ClassAtom::Literal('\n'));
                 }
                 return Ok(Node::CharClass { negated, atoms });
             }
@@ -845,8 +861,12 @@ impl<'a> Parser<'a> {
                 ));
             }
 
-            // Backslash is an ORDINARY member byte in GNU brackets.
-            let start = self.bump().expect("peeked above");
+            // Backslash is an ORDINARY member in GNU brackets. A member
+            // is one CHARACTER (WinuxCmd #1907): a multibyte member
+            // decodes whole, so the class holds characters, not the
+            // member's UTF-8 bytes.
+            let (start, start_w) = crate::matcher::decode_char_at(self.pattern, self.pos);
+            self.pos += start_w;
 
             // Range? A `-` right before the closing `]` stays literal, and
             // the first-position `]` never starts one (GNU `[]-a]` is
@@ -854,10 +874,11 @@ impl<'a> Parser<'a> {
             let is_range = self.at(0, b'-')
                 && self.peek(1).is_some_and(|b| b != b']')
                 && prev_takes_range
-                && !(first_member && start == b']');
+                && !(first_member && start == ']');
             if is_range {
                 self.pos += 1; // `-`
-                let end = self.bump().expect("peek(1) existed");
+                let (end, end_w) = crate::matcher::decode_char_at(self.pattern, self.pos);
+                self.pos += end_w;
                 // GNU checks the RAW endpoints first: `[z-a]` and even
                 // `grep -i '[Z-A]'` / `grep -i '[a-Z]'` all error
                 // ("Invalid range end", probed). The C++ engine swapped
@@ -870,16 +891,19 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 // -i folds the endpoints afterwards; the matcher folds the
-                // input byte, so `[A-Z]` caseless covers both cases.
+                // input character, so `[A-Z]` caseless covers both cases.
                 let (lo, hi) = if self.ignore_case {
-                    (start.to_ascii_lowercase(), end.to_ascii_lowercase())
+                    (
+                        crate::matcher::fold_char(start),
+                        crate::matcher::fold_char(end),
+                    )
                 } else {
                     (start, end)
                 };
                 atoms.push(ClassAtom::Range(lo, hi));
             } else {
                 atoms.push(ClassAtom::Literal(if self.ignore_case {
-                    start.to_ascii_lowercase()
+                    crate::matcher::fold_char(start)
                 } else {
                     start
                 }));
@@ -947,7 +971,7 @@ impl<'a> Parser<'a> {
             ));
         }
         self.pos = cursor + 2;
-        Ok(ClassAtom::Literal(name[0]))
+        Ok(ClassAtom::Literal(name[0] as char))
     }
 }
 

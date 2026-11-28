@@ -404,7 +404,7 @@ fn ast_shape() {
     let re = Regex::compile(Syntax::Basic, "a^b").unwrap();
     assert!(matches!(re.root(), Node::Sequence(_)));
     if let Node::Sequence(kids) = re.root() {
-        assert!(matches!(&kids[1], Node::Literal(b'^')));
+        assert!(matches!(&kids[1], Node::Literal('^')));
     }
 
     // ERE anchors are context-independent.

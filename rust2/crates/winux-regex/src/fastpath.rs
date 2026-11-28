@@ -43,7 +43,7 @@
 //! agree byte-for-byte on every corpus input.
 
 use crate::ast::{ClassAtom, Node};
-use crate::matcher::{chars_equal, class_matches};
+use crate::matcher::{chars_equal, class_effective_intervals, fold_char, fold_variants};
 use crate::Regex;
 
 /// Cap on the extracted required prefix (regex.cppm `kMaxFastPrefix`).
@@ -246,31 +246,95 @@ fn analyze_first(node: &Node, ignore_case: bool) -> FirstInfo {
     }
 }
 
-/// Bytes t satisfying the engine's own literal rule (`chars_equal` under
-/// the compile flags) — regex.cppm `literal_byte_set`.
-fn literal_byte_set(ch: u8, ignore_case: bool) -> [bool; 256] {
+/// First bytes of a character satisfying the engine's own literal rule
+/// (`chars_equal` under the compile flags): the first byte of the UTF-8
+/// encoding of every character in the literal's fold class, plus — for a
+/// character below U+0100 — the character's own byte value, which is how
+/// an ill-formed lone byte in the text decodes (regex.cppm
+/// `literal_byte_set`, character-wise since WinuxCmd #1909).
+fn literal_byte_set(ch: char, ignore_case: bool) -> [bool; 256] {
     let mut set = [false; 256];
-    if !ignore_case {
-        set[ch as usize] = true;
-        return set;
-    }
-    let folded = ch.to_ascii_lowercase();
-    set[folded as usize] = true;
-    if folded.is_ascii_alphabetic() {
-        set[folded.to_ascii_uppercase() as usize] = true;
+    let variants: &[char] = if ignore_case {
+        &fold_variants(ch)
+    } else {
+        std::slice::from_ref(&ch)
+    };
+    let mut buf = [0u8; 4];
+    for v in variants {
+        set[v.encode_utf8(&mut buf).as_bytes()[0] as usize] = true;
+        if (*v as u32) < 0x100 {
+            set[*v as u8 as usize] = true;
+        }
     }
     set
 }
 
-/// Exact per-byte replication of the interpreter's `class_matches` over all
-/// 256 byte values (regex.cppm `expand_class_set`) — the SAME function the
-/// matcher runs, so the sets cannot drift.
+/// First bytes of a character the interpreter's `class_matches` accepts:
+/// computed from the class's effective character set
+/// (`class_effective_intervals`, the same set the matcher tests), so the
+/// sets cannot drift. A byte leads a matching character when the
+/// character it decodes to — a well-formed sequence starting with that
+/// lead byte, or the ill-formed lone byte itself — is in the set. When
+/// the effective set cannot be enumerated (huge -i ranges), every byte
+/// is admitted: the filter degrades to a no-op, never to a wrong skip.
 fn expand_class_set(negated: bool, atoms: &[ClassAtom], ignore_case: bool) -> [bool; 256] {
-    let mut set = [false; 256];
-    for (byte, hit) in set.iter_mut().enumerate() {
-        *hit = class_matches(ignore_case, negated, atoms, byte as u8);
+    let Some(set) = class_effective_intervals(ignore_case, negated, atoms) else {
+        return [true; 256];
+    };
+    let in_set = |v: u32| set.iter().any(|(lo, hi)| v >= *lo && v <= *hi);
+    let range_hit = |lo: u32, hi: u32| set.iter().any(|(a, b)| *a <= hi && lo <= *b);
+    let mut out = [false; 256];
+    for (byte, hit) in out.iter_mut().enumerate() {
+        let b = byte as u8;
+        *hit = match b {
+            0x00..=0x7F => in_set(u32::from(b)),
+            0x80..=0xFF => {
+                // The lone byte decodes as the Latin-1 character of its
+                // value; a lead byte may also start a well-formed
+                // character anywhere in its codepoint interval.
+                in_set(u32::from(b))
+                    || match b {
+                        0xC2..=0xDF => range_hit(0x80, 0x7FF),
+                        0xE0..=0xEF => range_hit(0x800, 0xFFFF),
+                        0xF0..=0xF4 => range_hit(0x10000, 0x10FFFF),
+                        _ => false,
+                    }
+            }
+        };
     }
-    set
+    out
+}
+
+/// Append the bytes every match of the single character `c` must begin
+/// with; false (nothing appended) when a match of `c` can begin with
+/// different bytes, which breaks the fixed byte run:
+///
+/// * an ASCII character is its own byte; under -i its fold stays in
+///   ASCII and `prefix_matches_at` folds byte-wise — except `k`/`s`,
+///   whose fold classes contain multibyte characters (Kelvin sign,
+///   long s) that a byte prefix cannot spell;
+/// * a character in U+0080..=U+00FF occurs both as a two-byte sequence
+///   and as an ill-formed lone byte — two different first bytes;
+/// * a character at U+0100 or above only occurs as its UTF-8 encoding;
+///   under -i that holds only when its fold class is itself (caseless),
+///   since a cased variant encodes differently.
+fn push_prefix_char(out: &mut Vec<u8>, c: char, ignore_case: bool) -> bool {
+    let mut buf = [0u8; 4];
+    if c.is_ascii() {
+        if ignore_case && matches!(fold_char(c), 'k' | 's') {
+            return false;
+        }
+        out.push(c as u8);
+        return true;
+    }
+    if (c as u32) < 0x100 {
+        return false;
+    }
+    if ignore_case && fold_variants(c).len() > 1 {
+        return false;
+    }
+    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+    true
 }
 
 /// Appends the literal bytes every match must begin with. Returns false
@@ -282,8 +346,10 @@ fn extract_required_prefix(node: &Node, ignore_case: bool, out: &mut Vec<u8>) ->
         return false;
     }
     match node {
-        Node::Literal(b) => {
-            out.push(*b);
+        Node::Literal(c) => {
+            if !push_prefix_char(out, *c, ignore_case) {
+                return false;
+            }
             out.len() < MAX_FAST_PREFIX
         }
         Node::Empty
@@ -302,19 +368,19 @@ fn extract_required_prefix(node: &Node, ignore_case: bool, out: &mut Vec<u8>) ->
         }
         Node::Capture { child, .. } => extract_required_prefix(child, ignore_case, out),
         Node::CharClass { negated, atoms } => {
-            let set = expand_class_set(*negated, atoms, ignore_case);
-            let mut hits = 0;
-            let mut only = 0usize;
-            for (b, member) in set.iter().enumerate() {
-                if *member {
-                    hits += 1;
-                    only = b;
-                }
-            }
-            if hits != 1 {
+            // A class contributes to the prefix only when its effective
+            // character set is exactly one character; that character
+            // then obeys the literal byte-stability rule.
+            let Some(set) = class_effective_intervals(ignore_case, *negated, atoms) else {
+                return false;
+            };
+            if set.len() != 1 || set[0].0 != set[0].1 {
                 return false;
             }
-            out.push(only as u8);
+            let only = char::from_u32(set[0].0).expect("effective set holds scalars");
+            if !push_prefix_char(out, only, ignore_case) {
+                return false;
+            }
             out.len() < MAX_FAST_PREFIX
         }
         Node::Sequence(children) => {
@@ -359,7 +425,7 @@ fn extract_required_prefix(node: &Node, ignore_case: bool, out: &mut Vec<u8>) ->
 /// `pure_literal_length`).
 fn pure_literal_length(node: &Node) -> usize {
     match node {
-        Node::Literal(_) => 1,
+        Node::Literal(c) => c.len_utf8(),
         Node::Sequence(children) => {
             let mut total = 0usize;
             for child in children {
@@ -387,7 +453,11 @@ impl Regex {
             return false;
         }
         for (i, &p) in prefix.iter().enumerate() {
-            if !chars_equal(self.ignore_case, text[pos + i], p) {
+            // Byte-wise comparison of the decoded characters: exact for
+            // every prefix extraction can produce (raw UTF-8 encodings
+            // case-sensitively; ASCII bytes under -i, whose fold never
+            // collides with a byte >= 0x80 decoded as Latin-1).
+            if !chars_equal(self.ignore_case, text[pos + i] as char, p as char) {
                 return false;
             }
         }

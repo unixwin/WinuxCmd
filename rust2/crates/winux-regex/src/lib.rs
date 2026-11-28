@@ -12,10 +12,13 @@
 //! extensions, backreferences `\1..9`, capture groups, POSIX
 //! leftmost-longest matching (NOT leftmost-first), C-locale byte classes.
 //! Perl syntax is out of scope: `grep -P` keeps PCRE2 at the command layer.
-//! Byte-oriented throughout: `&[u8]` is the primary API; the `&str` forms
-//! are thin wrappers. `.` and the word boundaries advance whole UTF-8
-//! codepoints (the C++ engine's D7 rule, matching GNU grep under a UTF-8
-//! locale).
+//! `&[u8]` is the primary API; the `&str` forms are thin wrappers. The
+//! pattern and the text are processed CHARACTER-wise (WinuxCmd
+//! #1907/#1909/#1910): literals, bracket classes and quantifiers treat a
+//! multibyte character as one atom, `-i` folds with the Unicode case
+//! fold, and `.` and the word boundaries advance whole UTF-8 codepoints
+//! (the C++ engine's D7 rule, matching GNU grep under a UTF-8 locale).
+//! Ill-formed bytes decode as single-byte characters on both sides.
 //!
 //! # Contract
 //!
@@ -258,7 +261,7 @@ impl Regex {
         Self::compile_bytes(syntax, pattern.as_bytes())
     }
 
-    /// Compile with GNU grep `-i` folding (ASCII case-fold; C locale).
+    /// Compile with GNU grep `-i` folding (Unicode case fold).
     pub fn compile_ignore_case(syntax: Syntax, pattern: &str) -> Result<Regex, Error> {
         Self::compile_bytes_ignore_case(syntax, pattern.as_bytes(), true)
     }
@@ -460,7 +463,23 @@ fn fixed_width(node: &ast::Node, at: usize, caps: &mut [(usize, usize)]) -> Opti
     match node {
         Empty | AnchorStart | AnchorEnd | WordStart | WordEnd | WordBoundary | NotWordBoundary
         | LineStart(_) | LineEnd(_) | BufferStart | BufferEnd => Some(0),
-        Literal(_) | CharClass { .. } => Some(1),
+        Literal(c) => Some(c.len_utf8()),
+        CharClass { negated, atoms } => {
+            // A class consumes one character: fixed single-byte width
+            // only when it can match ASCII characters exclusively (a
+            // negated class can always consume a multibyte character).
+            let ascii_only = !negated
+                && atoms.iter().all(|a| match a {
+                    ast::ClassAtom::Literal(c) => c.is_ascii(),
+                    ast::ClassAtom::Range(_, hi) => hi.is_ascii(),
+                    ast::ClassAtom::Posix(_) => true,
+                });
+            if ascii_only {
+                Some(1)
+            } else {
+                None
+            }
+        }
         Sequence(children) => {
             let mut w = 0;
             for c in children {

@@ -20,23 +20,28 @@
 //!   one of them.
 //!
 //! The per-node rules are reused, not re-derived: literals and bracket
-//! expressions go through the engine's own `chars_equal` / `class_matches`
-//! (so `-i` folding is identical), anchors are absolute line ends, and the
+//! expressions are decided by the engine's own character set
+//! (`class_effective_intervals` / `fold_variants`, so `-i` folding is
+//! identical), anchors are absolute line ends, and the
 //! unanchored scan attempts exactly the interpreter's positions (position 0
 //! and every later position that is not a UTF-8 continuation byte, the
 //! `scan_positions` advance rule) through a `next-is-not-a-continuation`
 //! lookahead.
 //!
-//! Two node kinds depend on the input's UTF-8 shape: `.` advances a whole
+//! Some node kinds depend on the input's UTF-8 shape: `.` advances a whole
 //! codepoint, which is an exact byte rule on well-formed UTF-8
 //! (`std::str::from_utf8`: a lead byte always carries its continuations);
-//! the word assertions (`\< \> \b \B`) classify codepoints, and because
+//! a bracket expression whose effective character set leaves ASCII is
+//! compiled to a UTF-8 interval trie over the same set (it consumes whole
+//! characters, so it is likewise exact only on well-formed UTF-8); the
+//! word assertions (`\< \> \b \B`) classify codepoints, and because
 //! a single-byte bracket can stop in the MIDDLE of a codepoint, where the
 //! interpreter's classification of a continuation byte depends on how far
 //! back the lead is, they are byte rules only on ASCII lines.
 //! [`LineDfa::input_requirement`] reports which lines the DFA is exact on;
-//! the caller routes the others to the interpreter. Patterns without `.`
-//! and word assertions are exact on arbitrary bytes.
+//! the caller routes the others to the interpreter. Patterns without `.`,
+//! multibyte character classes and word assertions are exact on
+//! arbitrary bytes.
 //!
 //! Back-references make the language non-regular: [`LineDfa::new`] returns
 //! `None` for them (and for NFAs above a size cap), and the caller keeps the
@@ -63,7 +68,7 @@
 use std::collections::HashMap;
 
 use crate::ast::Node;
-use crate::matcher::{chars_equal, class_matches};
+use crate::matcher::{chars_equal, class_effective_intervals, fold_char, fold_variants};
 use crate::Regex;
 
 /// The input lines on which a [`LineDfa`] is exact.
@@ -71,7 +76,8 @@ use crate::Regex;
 pub enum InputRequirement {
     /// Any bytes.
     Any,
-    /// Well-formed UTF-8 lines (`.` present).
+    /// Well-formed UTF-8 lines (`.` or a character class whose effective
+    /// set leaves ASCII is present).
     ValidUtf8,
     /// ASCII-only lines (word assertions present: mid-codepoint positions,
     /// reachable after a single-byte bracket consumed a lead byte, classify
@@ -182,6 +188,85 @@ impl Nfa {
         self.push(NState::Bytes { set, next })
     }
 
+    /// Fragment matching exactly one character of the effective set
+    /// `intervals` (sorted disjoint codepoint intervals): the set is
+    /// split by UTF-8 length and each length class becomes a byte trie
+    /// over the value bits. An empty set yields a byte state that can
+    /// never fire.
+    fn char_trie(&mut self, intervals: &[(u32, u32)], next: u32) -> Option<u32> {
+        if intervals.is_empty() {
+            return Some(self.bytes(ByteSet::EMPTY, next));
+        }
+        let mut entries = Vec::new();
+        for &(lo, hi) in intervals {
+            for (l_lo, l_hi, chunks) in [
+                (0x0, 0x7F, &[(0x00u8, 7u32)][..]),
+                (0x80, 0x7FF, &[(0xC0u8, 5u32), (0x80, 6)][..]),
+                (0x800, 0xFFFF, &[(0xE0u8, 4u32), (0x80, 6), (0x80, 6)][..]),
+                (
+                    0x10000,
+                    0x10FFFF,
+                    &[(0xF0u8, 3u32), (0x80, 6), (0x80, 6), (0x80, 6)][..],
+                ),
+            ] {
+                let a = lo.max(l_lo);
+                let b = hi.min(l_hi);
+                if a <= b {
+                    entries.push(self.trie_bits(a, b, chunks, next)?);
+                }
+            }
+        }
+        match entries.len() {
+            1 => Some(entries.pop().expect("one entry")),
+            _ => Some(self.push(NState::Eps(entries))),
+        }
+    }
+
+    /// Trie over the values `lo..=hi` (all of the same UTF-8 length),
+    /// where `chunks` describes the byte positions big-endian as
+    /// (base byte, value bits carried). At each position the top bits
+    /// split the range into a low partial, a full middle (one byte-range
+    /// state whose suffix is the full sub-trie) and a high partial, so a
+    /// contiguous codepoint interval costs O(positions) states per
+    /// boundary, never one per character.
+    fn trie_bits(&mut self, lo: u32, hi: u32, chunks: &[(u8, u32)], next: u32) -> Option<u32> {
+        if self.too_big {
+            return None;
+        }
+        if chunks.is_empty() {
+            return Some(next);
+        }
+        let eol = self.eol;
+        let (base, _) = chunks[0];
+        let rest_bits: u32 = chunks[1..].iter().map(|c| c.1).sum();
+        let top_lo = lo >> rest_bits;
+        let top_hi = hi >> rest_bits;
+        let mask = (1u32 << rest_bits) - 1;
+        let byte_of = |top: u32| base | (top as u8);
+        if top_lo == top_hi {
+            let inner = self.trie_bits(lo & mask, hi & mask, &chunks[1..], next)?;
+            let only = byte_of(top_lo);
+            return Some(self.bytes(ByteSet::from_fn(eol, |b| b == only), inner));
+        }
+        let mut entries = Vec::new();
+        {
+            let inner = self.trie_bits(lo & mask, mask, &chunks[1..], next)?;
+            let only = byte_of(top_lo);
+            entries.push(self.bytes(ByteSet::from_fn(eol, |b| b == only), inner));
+        }
+        if top_hi - top_lo > 1 {
+            let inner = self.trie_bits(0, mask, &chunks[1..], next)?;
+            let (bl, bh) = (byte_of(top_lo + 1), byte_of(top_hi - 1));
+            entries.push(self.bytes(ByteSet::from_fn(eol, |b| b >= bl && b <= bh), inner));
+        }
+        {
+            let inner = self.trie_bits(0, hi & mask, &chunks[1..], next)?;
+            let only = byte_of(top_hi);
+            entries.push(self.bytes(ByteSet::from_fn(eol, |b| b == only), inner));
+        }
+        Some(self.push(NState::Eps(entries)))
+    }
+
     /// Build the fragment for `node` that continues to `next`; returns the
     /// entry state. `None` = unsupported (back-reference) or too big.
     fn build(&mut self, node: &Node, ic: bool, next: u32) -> Option<u32> {
@@ -193,7 +278,35 @@ impl Nfa {
             Node::Empty => next,
             Node::Literal(c) => {
                 let c = *c;
-                self.bytes(ByteSet::from_fn(eol, |b| chars_equal(ic, b, c)), next)
+                // One ASCII byte, decided by the engine's fold — except
+                // the -i fold partners of k/s are multibyte characters,
+                // and a multibyte literal is a byte chain of its fold
+                // variants' encodings (exact on any input: a chain can
+                // only complete where the interpreter decodes the whole
+                // character, and an ill-formed sequence breaks both).
+                if c.is_ascii() && !(ic && matches!(fold_char(c), 'k' | 's')) {
+                    self.bytes(
+                        ByteSet::from_fn(eol, |b| b < 0x80 && chars_equal(ic, b as char, c)),
+                        next,
+                    )
+                } else {
+                    let variants = if ic { fold_variants(c) } else { vec![c] };
+                    let mut entries = Vec::with_capacity(variants.len());
+                    for v in variants {
+                        let mut cur = next;
+                        let mut buf = [0u8; 4];
+                        for b in v.encode_utf8(&mut buf).as_bytes().iter().rev() {
+                            let bb = *b;
+                            cur = self.bytes(ByteSet::from_fn(eol, |x| x == bb), cur);
+                        }
+                        entries.push(cur);
+                    }
+                    if entries.len() == 1 {
+                        entries.pop().expect("one entry")
+                    } else {
+                        self.push(NState::Eps(entries))
+                    }
+                }
             }
             Node::Dot => {
                 // The engine's `.` width rule restricted to well-formed
@@ -262,8 +375,26 @@ impl Nfa {
                 self.push(NState::Assert(Assert::NotWordBoundary, next))
             }
             Node::CharClass { negated, atoms } => {
-                let set = ByteSet::from_fn(eol, |b| class_matches(ic, *negated, atoms, b));
-                self.bytes(set, next)
+                // The class's effective character set, computed by the
+                // engine's own rule. An ASCII-only set is a plain byte
+                // set, exact on any input; anything wider consumes whole
+                // characters and becomes a UTF-8 interval trie over the
+                // set, exact on well-formed UTF-8 (the `has_dot`
+                // requirement). An unenumerable set (huge -i ranges)
+                // declines to the interpreter.
+                let eff = class_effective_intervals(ic, *negated, atoms)?;
+                if eff.iter().all(|(_, hi)| *hi <= 0x7F) {
+                    let set = ByteSet::from_fn(eol, |b| {
+                        b < 0x80
+                            && eff
+                                .iter()
+                                .any(|(lo, hi)| u32::from(b) >= *lo && u32::from(b) <= *hi)
+                    });
+                    self.bytes(set, next)
+                } else {
+                    self.has_dot = true;
+                    self.char_trie(&eff, next)?
+                }
             }
             Node::Sequence(children) => {
                 let mut cur = next;

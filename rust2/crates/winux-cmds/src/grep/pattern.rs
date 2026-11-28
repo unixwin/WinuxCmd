@@ -18,6 +18,7 @@
 
 use winux_regex::ast::Node;
 use winux_regex::dfa::{InputRequirement, LineDfa, LineMode};
+use winux_regex::matcher::{decode_char_at, fold_char, fold_variants};
 use winux_regex::{ErrorKind, Regex, Syntax};
 
 use super::bytes::{memchr, memrchr, Finder};
@@ -52,6 +53,45 @@ struct LitSet {
     by_first: Vec<Vec<u32>>,
 }
 
+/// Fold-equality of two byte strings, character by character (the
+/// engine's decode + fold; WinuxCmd #1909: -F folds non-ASCII letters
+/// too, so `grep -ciF é` counts É lines). Both sides must decode to the
+/// same character sequence with pairwise-equal folds.
+fn fold_eq(a: &[u8], b: &[u8]) -> bool {
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        let (ca, wa) = decode_char_at(a, i);
+        let (cb, wb) = decode_char_at(b, j);
+        if fold_char(ca) != fold_char(cb) {
+            return false;
+        }
+        i += wa;
+        j += wb;
+    }
+    i == a.len() && j == b.len()
+}
+
+/// Byte length of `lit` matching at `pos` in `line` under the fold, or
+/// None: the decoded characters must be fold-equal pairwise (widths may
+/// differ between the two sides' encodings only through ill-formed
+/// bytes, never for well-formed characters).
+fn fold_match_len(line: &[u8], pos: usize, lit: &[u8]) -> Option<usize> {
+    let (mut i, mut j) = (pos, 0usize);
+    while j < lit.len() {
+        if i >= line.len() {
+            return None;
+        }
+        let (ca, wa) = decode_char_at(line, i);
+        let (cb, wb) = decode_char_at(lit, j);
+        if fold_char(ca) != fold_char(cb) {
+            return None;
+        }
+        i += wa;
+        j += wb;
+    }
+    Some(i - pos)
+}
+
 impl LitSet {
     fn new(lits: Vec<Vec<u8>>, ic: bool) -> LitSet {
         let mut by_first = vec![Vec::new(); 256];
@@ -60,9 +100,19 @@ impl LitSet {
             match l.first() {
                 None => has_empty = true,
                 Some(&b) => {
-                    if ic && b.is_ascii_alphabetic() {
-                        by_first[b.to_ascii_lowercase() as usize].push(k as u32);
-                        by_first[b.to_ascii_uppercase() as usize].push(k as u32);
+                    if ic {
+                        // Every first byte a fold-equal character can
+                        // start with: the fold variants' encoding leads,
+                        // plus the lone-byte form of a character below
+                        // U+0100 (how an ill-formed byte decodes).
+                        let (c, _) = decode_char_at(l, 0);
+                        let mut buf = [0u8; 4];
+                        for v in fold_variants(c) {
+                            by_first[v.encode_utf8(&mut buf).as_bytes()[0] as usize].push(k as u32);
+                            if (v as u32) < 0x100 {
+                                by_first[v as u8 as usize].push(k as u32);
+                            }
+                        }
                     } else {
                         by_first[b as usize].push(k as u32);
                     }
@@ -79,7 +129,7 @@ impl LitSet {
 
     fn eq(&self, a: &[u8], b: &[u8]) -> bool {
         if self.ic {
-            a.eq_ignore_ascii_case(b)
+            fold_eq(a, b)
         } else {
             a == b
         }
@@ -91,12 +141,20 @@ impl LitSet {
         if pos < line.len() {
             for &k in &self.by_first[line[pos] as usize] {
                 let l = &self.lits[k as usize];
-                if l.len() <= max_len
+                let hit = if self.ic {
+                    fold_match_len(line, pos, l)
+                        .filter(|&len| len <= max_len && best.map_or(true, |b| len > b))
+                } else if l.len() <= max_len
                     && pos + l.len() <= line.len()
                     && self.eq(&line[pos..pos + l.len()], l)
                     && best.map_or(true, |b| l.len() > b)
                 {
-                    best = Some(l.len());
+                    Some(l.len())
+                } else {
+                    None
+                };
+                if hit.is_some() {
+                    best = hit;
                 }
             }
         }
@@ -110,7 +168,21 @@ impl LitSet {
             if let Some(len) = self.longest_at(line, p, usize::MAX) {
                 return Some((p, len));
             }
-            p += 1;
+            if self.ic {
+                // Fold matching is character-wise: attempts belong on
+                // character boundaries, advancing one whole character
+                // (a continuation byte decoded as a Latin-1 character
+                // must not produce a match inside a multibyte char).
+                if p < line.len() && (0x80..0xC0).contains(&line[p]) {
+                    p += 1;
+                } else if p < line.len() {
+                    p += decode_char_at(line, p).1;
+                } else {
+                    break;
+                }
+            } else {
+                p += 1;
+            }
         }
         None
     }
@@ -129,26 +201,42 @@ impl LitSet {
         if self.lits.iter().any(|l| l.len() > 4096) {
             return None;
         }
-        let words: Vec<&[u8]> = self.lits.iter().map(|l| l.as_slice()).collect();
-        Some(trie_node(&words, self.ic, 0))
+        // The trie is over CHARACTERS (WinuxCmd #1909): a multibyte
+        // literal is a chain of character atoms, not of its UTF-8 bytes.
+        let words: Vec<Vec<char>> = self
+            .lits
+            .iter()
+            .map(|l| {
+                let mut cs = Vec::new();
+                let mut i = 0usize;
+                while i < l.len() {
+                    let (c, w) = decode_char_at(l, i);
+                    cs.push(c);
+                    i += w;
+                }
+                cs
+            })
+            .collect();
+        let refs: Vec<&[char]> = words.iter().map(|w| w.as_slice()).collect();
+        Some(trie_node(&refs, self.ic, 0))
     }
 }
 
-fn trie_node(words: &[&[u8]], ic: bool, depth: usize) -> Node {
-    let key = |b: u8| if ic { b.to_ascii_lowercase() } else { b };
-    let mut groups: Vec<(u8, Vec<&[u8]>)> = Vec::new();
+fn trie_node(words: &[&[char]], ic: bool, depth: usize) -> Node {
+    let key = |c: char| if ic { fold_char(c) } else { c };
+    let mut groups: Vec<(char, Vec<&[char]>)> = Vec::new();
     let mut has_empty = false;
     for w in words {
         match w.first() {
             None => has_empty = true,
-            Some(&b) => match groups.iter_mut().find(|(k, _)| *k == key(b)) {
+            Some(&c) => match groups.iter_mut().find(|(k, _)| *k == key(c)) {
                 Some((_, v)) => v.push(&w[1..]),
-                None => groups.push((key(b), vec![&w[1..]])),
+                None => groups.push((key(c), vec![&w[1..]])),
             },
         }
     }
     let mut alts = Vec::new();
-    for (b, rest) in groups {
+    for (c, rest) in groups {
         let tail = if rest.len() == 1 {
             Node::Sequence(rest[0].iter().map(|&c| Node::Literal(c)).collect())
         } else if depth > 512 {
@@ -161,7 +249,7 @@ fn trie_node(words: &[&[u8]], ic: bool, depth: usize) -> Node {
         } else {
             trie_node(&rest, ic, depth + 1)
         };
-        alts.push(Node::Sequence(vec![Node::Literal(b), tail]));
+        alts.push(Node::Sequence(vec![Node::Literal(c), tail]));
     }
     if has_empty {
         alts.push(Node::Empty);
