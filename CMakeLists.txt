@@ -77,7 +77,7 @@ endif()
 # source, three REGISTER_COMMANDs): the split-engine wire keeps grep.cpp
 # in the build for the -P/PCRE2 face even with rust2 ON, and the OFF
 # filter below drops all three applets together (no dual track).
-set(WINUXCMD_RUST2_COMMANDS "arch;b2sum;base32;base64;basename;cksum;csplit;cut;date;df;dirname;du;echo;expand;factor;false;find;fmt;fold;getconf;grep;groups;head;hostid;hostname;id;join;ln;ls;md5sum;mkdir;mkfifo;mknod;mktemp;mv;nice;nohup;nproc;numfmt;od;paste;pinky;printenv;ptx;pwd;readlink;realpath;rev;rm;rmdir;sed;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;shuf;sleep;sort;stat;sum;sync;tac;tail;tee;test;test_bracket;timeout;touch;tr;true;truncate;tsort;tty;uname;unexpand;unlink;users;who;whoami")
+set(WINUXCMD_RUST2_COMMANDS "arch;b2sum;base32;base64;basename;chcon;cksum;csplit;cut;date;df;dirname;du;echo;expand;factor;false;find;fmt;fold;getconf;grep;groups;head;hostid;hostname;id;join;ln;ls;md5sum;mkdir;mkfifo;mknod;mktemp;mv;nice;nohup;nproc;numfmt;od;paste;pinky;printenv;ptx;pwd;readlink;realpath;rev;rm;rmdir;runcon;sed;seq;sha1sum;sha224sum;sha256sum;sha384sum;sha512sum;shuf;sleep;sort;stat;sum;sync;tac;tail;tee;test;test_bracket;timeout;touch;tr;true;truncate;tsort;tty;uname;unexpand;unlink;users;who;whoami")
 
 # Command-set edition shipped by this build (#1438, ruling of 2026-10-30):
 #   default - every registered command stays runnable through the multicall
