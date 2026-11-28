@@ -1,0 +1,7 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+tp01-clear	win		TERM=xterm		clear
+tp02-setaf-256	win		TERM=xterm-256color		setaf	9
+tp03-cup	win		TERM=xterm		cup	5	10
+tp04-unknown-cap	exit		TERM=xterm		boguscap
+tp05-no-args	exit		TERM=xterm		
+tp06-version	win				-V
