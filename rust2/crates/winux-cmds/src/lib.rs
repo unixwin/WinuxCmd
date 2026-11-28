@@ -66,7 +66,10 @@ pub mod od;
 
 pub mod paste;
 pub mod pathchk;
+pub mod pgrep;
 pub mod pinky;
+pub mod pkill;
+pub mod procps_select;
 pub mod printenv;
 pub mod ptx;
 pub mod pwd;
@@ -212,7 +215,9 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("cksum", cksum::cksum_cmd),
         ("date", date::date_cmd),
         ("du", du::du_cmd),
+        ("pgrep", pgrep::pgrep_cmd),
         ("pinky", pinky::pinky_cmd),
+        ("pkill", pkill::pkill_cmd),
         // #1488 find lane: GNU findutils 4.9 find
         ("find", find::find_cmd),
         // #1504 wave-J: GNU 9.4 ls on the 1.x Windows value model
