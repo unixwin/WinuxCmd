@@ -1,0 +1,6 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+pd01-missing-pid	exit				
+pd02-invalid-pid	exit				not-a-pid
+pd03-zero-pid	exit				0
+pd04-help	win				--help
+pd05-version	win				-V
