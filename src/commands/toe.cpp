@@ -7,6 +7,7 @@ import std;
 import core;
 import utils;
 import container;
+import rust2_bridge;
 
 auto constexpr TOE_OPTIONS =
     // [DIFFERS] -a: Windows has no terminfo database
@@ -32,28 +33,7 @@ auto constexpr TOE_OPTIONS =
 REGISTER_COMMAND(toe, "toe", "toe [-ahsuUV] [-v n] [file...]",
                  "Table of terminfo entries.", "toe\ntoe -V", "infocmp",
                  "WinuxCmd", "Copyright © 2026 WinuxCmd", TOE_OPTIONS) {
-  if (ctx.get<bool>("-V", false)) {
-    safePrintLn("ncurses 6.6.20251230");
-    return 0;
-  }
-  const std::array unsupported = {"-a", "-s", "-u", "-U", "-v"};
-  for (const auto option : unsupported) {
-    if (ctx.has(option)) {
-      safeErrorPrintLn(
-          winux::i18n::format("command.toe.error.unsupported_option",
-                              "toe: option {} is not supported on Windows "
-                              "(terminfo database unavailable)",
-                              option));
-      return 1;
-    }
-  }
-
-  if (ctx.get<bool>("-h", false)) {
-    safePrintLn("Terminfo Entries");
-  }
-  safePrintLn("windows-ansi Windows ANSI/VT console");
-  safePrintLn("xterm        xterm terminal emulator");
-  safePrintLn("vt100        DEC VT100");
-  safePrintLn("ansi         ANSI/VT100 terminal");
-  return 0;
+  // #1488 mechanical replacement: semantics live in rust2
+  // (rust2/crates/winux-cmds/src/toe.rs, toe_cmd).
+  return winux::rust2::run_command("toe", ctx.raw_args);
 }

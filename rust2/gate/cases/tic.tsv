@@ -1,0 +1,6 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+tc01-no-file	exit				
+tc02-source-file	exit				myterm.ti
+tc03-version	win				-V
+tc04-unsupported	exit				-c
+tc05-help	win				--help

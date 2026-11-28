@@ -7,6 +7,7 @@ import std;
 import core;
 import utils;
 import container;
+import rust2_bridge;
 
 auto constexpr TIC_OPTIONS = std::array{
     // [EXT] -V
@@ -32,35 +33,7 @@ REGISTER_COMMAND(tic, "tic",
                  "[-1aCDcfGgIKLNrsTtUx] source-file",
                  "Terminfo compiler.", "tic myterm.ti", "infocmp", "WinuxCmd",
                  "Copyright © 2026 WinuxCmd", TIC_OPTIONS) {
-  if (ctx.get<bool>("-V", false)) {
-    safePrintLn("ncurses 6.6.20251230");
-    return 0;
-  }
-  const std::array unsupported = {"-a", "-c", "-o", "-v", "-x"};
-  for (const auto option : unsupported) {
-    if (ctx.has(option)) {
-      safeErrorPrintLn(
-          winux::i18n::format("command.tic.error.unsupported_option",
-                              "tic: option {} is not supported on Windows "
-                              "(terminfo compiler unavailable)",
-                              option));
-      return 1;
-    }
-  }
-
-  if (ctx.positionals.empty()) {
-    safeErrorPrintLn("tic: File name needed.  Usage:");
-    safeErrorPrintLn(
-        "\ttic [-e names] [-o dir] [-R name] [-v[n]] [-V] [-w[n]] "
-        "[-1aCDcfGgIKLNrsTtUx] source-file");
-    return 1;
-  }
-  // [DIFFERS] There is no terminfo compiler on Windows, so nothing was
-  // compiled: say so on stderr and exit nonzero. The historical build
-  // printed this on stdout and returned 0, telling scripts the compile
-  // had succeeded when no database entry was written.
-  safeErrorPrintLn(winux::i18n::format(
-      "command.tic.error.compilation_unsupported",
-      "tic: terminfo compilation not supported on Windows"));
-  return 1;
+  // #1488 mechanical replacement: semantics live in rust2
+  // (rust2/crates/winux-cmds/src/toe.rs, tic_cmd).
+  return winux::rust2::run_command("tic", ctx.raw_args);
 }
