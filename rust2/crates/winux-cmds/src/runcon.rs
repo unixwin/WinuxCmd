@@ -84,11 +84,47 @@ Exit status:
 /// Exit status for "the runcon command itself fails" (runcon --help).
 const RC_SELINUX_FAIL: u32 = 125;
 
+/// Index of the first positional operand so wrapped command flags (e.g.
+/// `runcon ctx ls -l`) are not parsed as runcon's own options (#1375).
+fn split_at_first_positional(args: &[OsString]) -> usize {
+    let mut i = 0usize;
+    while i < args.len() {
+        let s = args[i].to_string_lossy();
+        if s == "--" {
+            return args.len();
+        }
+        if s.starts_with("--") {
+            let takes_sep_val = !s.contains('=')
+                && matches!(s.as_ref(), "--user" | "--role" | "--type" | "--range");
+            i += if takes_sep_val { 2 } else { 1 };
+            continue;
+        }
+        if s.starts_with('-') && s.len() > 1 {
+            let mut consumes_next = false;
+            let bytes = s.as_bytes();
+            for idx in 1..bytes.len() {
+                if matches!(bytes[idx], b'u' | b'r' | b't' | b'l') {
+                    if idx + 1 == bytes.len() {
+                        consumes_next = true;
+                    }
+                    break;
+                }
+            }
+            i += if consumes_next { 2 } else { 1 };
+            continue;
+        }
+        return i;
+    }
+    args.len()
+}
+
 pub fn runcon_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
-    let p = match argopt::parse("runcon", args, OPTS, io, ctx, RC_SELINUX_FAIL) {
+    let split = split_at_first_positional(args).min(args.len());
+    let mut p = match argopt::parse("runcon", &args[..split], OPTS, io, ctx, RC_SELINUX_FAIL) {
         Ok(p) => p,
         Err(s) => return Ok(s),
     };
+    p.positionals.extend_from_slice(&args[split..]);
     if let Some(which) = p
         .flags
         .iter()
@@ -253,5 +289,14 @@ mod tests {
         // boundary, probed "kernel" rc 0)
         let (r, _, _) = run(&["--user=u"]);
         assert_eq!(r, 1);
+    }
+
+    #[test]
+    fn wrapped_command_options_pass_through() {
+        let (r, out, err) = run(&["ctx", "ls.exe", "-l"]);
+        assert_eq!(r, 125);
+        assert!(out.is_empty());
+        assert!(err.contains("SELinux kernel"));
+        assert!(!err.contains("option requires an argument"));
     }
 }

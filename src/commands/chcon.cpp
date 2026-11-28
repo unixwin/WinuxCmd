@@ -7,6 +7,7 @@
 import std;
 import core;
 import utils;
+import rust2_bridge;
 
 using cmd::meta::OptionMeta;
 using cmd::meta::OptionType;
@@ -47,128 +48,6 @@ auto constexpr CHCON_OPTIONS = std::array{
     OPTION("-v", "--verbose", "output a diagnostic for every file processed"),
 };
 
-namespace chcon_pipeline {
-namespace cp = core::pipeline;
-
-auto make_error(std::string message) -> cp::Error {
-  static thread_local std::string storage;
-  storage = std::move(message);
-  return storage;
-}
-
-struct Config {
-  bool verbose = false;
-  std::vector<std::string> files;
-};
-
-auto add_file_args(Config& cfg, std::span<const std::string_view> args)
-    -> void {
-  for (auto arg : args) {
-    std::string file_arg(arg);
-    if (contains_wildcard(file_arg)) {
-      // #1241: enumerate the folded spelling so the glob matches on the
-      // operand's drive instead of "<cwd>:\e\..."; an unmatched pattern
-      // stays literal below so diagnostics quote what the user typed.
-      auto glob_result =
-          glob_expand(native_path::normalize_api_operand(file_arg));
-      if (glob_result.expanded) {
-        for (const auto& file : glob_result.files) {
-          cfg.files.push_back(wstring_to_utf8(file));
-        }
-        continue;
-      }
-    }
-    cfg.files.push_back(file_arg);
-  }
-}
-
-auto build_config(const CommandContext<CHCON_OPTIONS.size()>& ctx)
-    -> cp::Result<Config> {
-  Config cfg;
-  cfg.verbose = ctx.get<bool>("-v", false) || ctx.get<bool>("--verbose", false);
-
-  // [DIFFERS] - SELinux is unavailable on Windows; these flags are parsed
-  // for GNU-compatible surface but have no runtime effect.
-  (void)ctx.get<bool>("--dereference", false);
-  (void)ctx.get<bool>("-h", false);
-  (void)ctx.get<bool>("--no-dereference", false);
-  (void)ctx.get<bool>("--preserve-root", false);
-  (void)ctx.get<bool>("--no-preserve-root", false);
-  (void)ctx.get<bool>("-R", false);
-  (void)ctx.get<bool>("--recursive", false);
-  (void)ctx.get<bool>("-H", false);
-  (void)ctx.get<bool>("-L", false);
-  (void)ctx.get<bool>("-P", false);
-
-  bool using_reference = ctx.has("--reference");
-  bool using_components = ctx.has("-u") || ctx.has("--user") || ctx.has("-r") ||
-                          ctx.has("--role") || ctx.has("-t") ||
-                          ctx.has("--type") || ctx.has("-l") ||
-                          ctx.has("--range");
-
-  if (using_reference || using_components) {
-    if (ctx.positionals.empty()) {
-      return std::unexpected(winux::i18n::translate(
-          "command.chcon.error.missing_file_operand", "missing file operand"));
-    }
-    add_file_args(cfg, std::span<const std::string_view>(
-                           ctx.positionals.data(), ctx.positionals.size()));
-  } else {
-    if (ctx.positionals.empty()) {
-      return std::unexpected(winux::i18n::translate(
-          "command.chcon.error.missing_operand", "missing operand"));
-    }
-    if (ctx.positionals.size() < 2) {
-      return std::unexpected(
-          winux::i18n::translate("command.chcon.error.missing_operand_after",
-                                 std::string("missing operand after '") +
-                                     std::string(ctx.positionals[0]) + "'"));
-    }
-    add_file_args(
-        cfg, std::span<const std::string_view>(ctx.positionals.data() + 1,
-                                               ctx.positionals.size() - 1));
-  }
-
-  if (cfg.files.empty()) {
-    return std::unexpected(winux::i18n::translate(
-        "command.chcon.error.missing_file_operand", "missing file operand"));
-  }
-
-  for (const auto& file : cfg.files) {
-    // #1241: fold the drive dialect before the access probe; an unfolded
-    // GetFileAttributesW answered for "<cwd>:\e\..." and existing E: files
-    // were reported as missing whenever the cwd sat on another drive.  The
-    // error keeps the user's spelling.
-    std::wstring wfile =
-        utf8_to_wstring(native_path::normalize_api_operand(file));
-    if (GetFileAttributesW(wfile.c_str()) == INVALID_FILE_ATTRIBUTES) {
-      return std::unexpected(
-          winux::i18n::translate("command.chcon.error.cannot_access",
-                                 std::string("cannot access '") + file +
-                                     "': No such file or directory"));
-    }
-  }
-
-  return cfg;
-}
-
-auto run(const Config& cfg) -> int {
-  if (cfg.verbose) {
-    for (const auto& file : cfg.files) {
-      safeErrorPrintLn(winux::i18n::translate(
-          "command.chcon.error.unsupported_verbose",
-          std::string("chcon: ") + file +
-              ": SELinux file contexts are not supported on Windows"));
-    }
-  } else {
-    safeErrorPrintLn(winux::i18n::translate(
-        "command.chcon.error.unsupported",
-        "chcon: SELinux file contexts are not supported on Windows"));
-  }
-  return 1;
-}
-
-}  // namespace chcon_pipeline
 
 REGISTER_COMMAND(
     chcon, "chcon",
@@ -188,17 +67,7 @@ REGISTER_COMMAND(
     "  chcon --reference=reference.txt target.txt",
     "chmod(1), chown(1)", "WinuxCmd", "Copyright © 2026 WinuxCmd",
     CHCON_OPTIONS) {
-  using namespace chcon_pipeline;
-
-  auto cfg_result = build_config(ctx);
-  if (!cfg_result) {
-    safeErrorPrint("chcon: ");
-    safeErrorPrint(winux::i18n::translate_error(cfg_result.error()));
-    safeErrorPrint("\n");
-    safeErrorPrintLn(winux::i18n::format(
-        "common.try_help", "Try '{} --help' for more information.", "chcon"));
-    return 1;
-  }
-
-  return run(*cfg_result);
+  // #1488 mechanical replacement: semantics live in rust2
+  // (rust2/crates/winux-cmds/src/chcon.rs, chcon_cmd).
+  return winux::rust2::run_command("chcon", ctx.raw_args);
 }

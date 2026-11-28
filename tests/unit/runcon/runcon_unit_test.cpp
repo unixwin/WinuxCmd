@@ -17,7 +17,7 @@ TEST(runcon, runcon_plain_context_requires_command) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
+  EXPECT_EQ(r.exit_code, 125);
   EXPECT_NE(r.stderr_text.find("no command specified"), std::string::npos);
 }
 
@@ -28,8 +28,8 @@ TEST(runcon, runcon_plain_context_form_reports_windows_limitation) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("not supported on Windows"), std::string::npos);
+  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_NE(r.stderr_text.find("SELinux kernel"), std::string::npos);
 }
 
 TEST(runcon, runcon_custom_context_without_command_requires_command) {
@@ -39,7 +39,8 @@ TEST(runcon, runcon_custom_context_without_command_requires_command) {
   auto r = p.run();
 
   EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("no command specified"), std::string::npos);
+  EXPECT_NE(r.stderr_text.find("failed to get current context"),
+            std::string::npos);
 }
 
 TEST(runcon, runcon_custom_context_with_command_reports_windows_limitation) {
@@ -49,8 +50,8 @@ TEST(runcon, runcon_custom_context_with_command_reports_windows_limitation) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("not supported on Windows"), std::string::npos);
+  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_NE(r.stderr_text.find("SELinux kernel"), std::string::npos);
 }
 // #1375: runcon's own option parsing stops at CONTEXT, so the wrapped
 // command's -l is not misread as runcon's own -l/--range missing its
@@ -61,9 +62,8 @@ TEST(runcon, runcon_wrapped_command_options_pass_through_issue1375) {
 
   auto r = p.run();
 
-  EXPECT_EQ(r.exit_code, 1);
-  EXPECT_NE(r.stderr_text.find("not supported on Windows"),
-            std::string::npos);
+  EXPECT_EQ(r.exit_code, 125);
+  EXPECT_NE(r.stderr_text.find("SELinux kernel"), std::string::npos);
   EXPECT_EQ(r.stderr_text.find("option requires an argument"),
             std::string::npos);
 }
