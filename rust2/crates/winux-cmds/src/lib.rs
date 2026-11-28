@@ -100,6 +100,7 @@ pub mod uname;
 pub mod unexpand;
 pub mod unlink;
 pub mod users;
+pub mod which;
 pub mod who;
 pub mod whoami;
 pub mod winsys;
@@ -178,6 +179,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("tsort", tsort::tsort_cmd),
         ("hostid", hostid::hostid_cmd),
         ("users", users::users_cmd),
+        ("which", which::which_cmd),
         ("timeout", timeout::timeout_cmd),
         ("expand", expand::expand_cmd),
         ("unexpand", unexpand::unexpand_cmd),
