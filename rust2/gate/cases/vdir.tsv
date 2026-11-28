@@ -1,0 +1,6 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+vd01-basic	win	touch:plain.txt			
+vd02-dir-only	win	mkdir:test data			-d	test data
+vd03-single-col	win	touch:a.txt;touch:b.txt			--format=single-column
+vd04-all	win	touch:.hidden			-a
+vd05-help	win				--help

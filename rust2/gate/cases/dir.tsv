@@ -1,0 +1,6 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+dr01-basic	win	mkdir:sub;touch:a.txt			
+dr02-dir-escape	win	mkdir:test data			-d	test data
+dr03-long	win	touch:plain.txt			-l
+dr04-all	win	touch:.hidden			-a
+dr05-help	win				--help
