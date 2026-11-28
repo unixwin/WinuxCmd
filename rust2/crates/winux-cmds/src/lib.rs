@@ -48,6 +48,7 @@ pub mod hostid;
 pub mod hostname;
 pub mod id;
 pub mod join;
+pub mod ldd;
 pub mod ln;
 pub mod ls;
 pub mod messages;
@@ -175,6 +176,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("touch", touch::touch_cmd),
         ("ln", ln::ln_cmd),
         ("join", join::join_cmd),
+        ("ldd", ldd::ldd_cmd),
         ("tsort", tsort::tsort_cmd),
         ("hostid", hostid::hostid_cmd),
         ("users", users::users_cmd),
