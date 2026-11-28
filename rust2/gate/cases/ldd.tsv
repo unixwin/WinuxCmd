@@ -1,0 +1,6 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+ld01-missing-arg	exit				
+ld02-missing-file	exit				no_such.exe
+ld03-not-pe	exit	echo_hello:plain.txt			plain.txt
+ld04-help	win				--help
+ld05-version	win				-V
