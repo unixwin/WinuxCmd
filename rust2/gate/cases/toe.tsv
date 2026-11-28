@@ -1,0 +1,6 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+to01-default	win				
+to02-heading	win				-h
+to03-version	win				-V
+to04-unsupported	exit				-a
+to05-help	win				--help

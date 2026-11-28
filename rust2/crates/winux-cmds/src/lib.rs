@@ -89,6 +89,7 @@ pub mod tail;
 pub mod tee;
 pub mod test_cmd;
 pub mod timeout;
+pub mod toe;
 pub mod touch;
 pub mod tr;
 
@@ -178,7 +179,9 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("tsort", tsort::tsort_cmd),
         ("hostid", hostid::hostid_cmd),
         ("users", users::users_cmd),
+        ("tic", toe::tic_cmd),
         ("timeout", timeout::timeout_cmd),
+        ("toe", toe::toe_cmd),
         ("expand", expand::expand_cmd),
         ("unexpand", unexpand::unexpand_cmd),
         ("numfmt", numfmt::numfmt_cmd),
