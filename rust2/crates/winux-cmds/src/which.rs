@@ -205,40 +205,39 @@ fn get_path_entries(ctx: &Ctx) -> Vec<String> {
     entries
 }
 
+fn append_unique_ext(exts: &mut Vec<String>, raw: &str) {
+    if raw.is_empty() {
+        return;
+    }
+    let ext = if raw.starts_with('.') {
+        raw.to_ascii_lowercase()
+    } else {
+        format!(".{}", raw.to_ascii_lowercase())
+    };
+    if !exts.contains(&ext) {
+        exts.push(ext);
+    }
+}
+
 fn get_pathext_entries(ctx: &Ctx) -> Vec<String> {
     let mut exts = Vec::new();
-    let mut append_unique = |raw: &str| {
-        if raw.is_empty() {
-            return;
-        }
-        let mut ext = if raw.starts_with('.') {
-            raw.to_ascii_lowercase()
-        } else {
-            format!(".{}", raw.to_ascii_lowercase())
-        };
-        ext.make_ascii_lowercase();
-        if !exts.contains(&ext) {
-            exts.push(ext);
-        }
-    };
-
     let ext_env = env_str(ctx, "PATHEXT").unwrap_or_default();
     if ext_env.is_empty() {
         for ext in [".exe", ".ps1", ".bat", ".cmd", ".com"] {
-            append_unique(ext);
+            append_unique_ext(&mut exts, ext);
         }
     } else {
         for ext in ext_env.split(';') {
-            append_unique(ext);
+            append_unique_ext(&mut exts, ext);
         }
         if exts.is_empty() {
             for ext in [".exe", ".ps1", ".bat", ".cmd", ".com"] {
-                append_unique(ext);
+                append_unique_ext(&mut exts, ext);
             }
         }
     }
     for ext in [".exe", ".com", ".bat", ".cmd", ".ps1"] {
-        append_unique(ext);
+        append_unique_ext(&mut exts, ext);
     }
     exts
 }
