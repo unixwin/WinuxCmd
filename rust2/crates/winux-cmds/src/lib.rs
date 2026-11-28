@@ -67,6 +67,7 @@ pub mod od;
 pub mod paste;
 pub mod pathchk;
 pub mod pinky;
+pub mod pldd;
 pub mod printenv;
 pub mod ptx;
 pub mod pwd;
@@ -213,6 +214,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("date", date::date_cmd),
         ("du", du::du_cmd),
         ("pinky", pinky::pinky_cmd),
+        ("pldd", pldd::pldd_cmd),
         // #1488 find lane: GNU findutils 4.9 find
         ("find", find::find_cmd),
         // #1504 wave-J: GNU 9.4 ls on the 1.x Windows value model
