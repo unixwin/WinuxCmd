@@ -329,7 +329,7 @@ mod sys {
             }
         }
         if want_owners {
-            let ((oid, oname), (gid, gname)) = fs_win::win::file_accounts(ctx, prefix);
+            let ((oid, oname), (gid, gname)) = fs_win::file_accounts(ctx, prefix);
             info.owner = if oname.is_empty() { oid } else { oname };
             info.group = if gname.is_empty() { gid } else { gname };
         }
