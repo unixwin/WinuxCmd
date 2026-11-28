@@ -1,0 +1,6 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+la01-file	win	touch:a.txt			a.txt
+la02-long	win	touch:a.txt			-l	a.txt
+la03-dir	win	mkdir:sub			-d	sub
+la04-missing	exit				no_such.txt
+la05-version	win				-V

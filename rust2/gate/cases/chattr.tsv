@@ -1,0 +1,6 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+ct01-missing	exit				
+ct02-bad-mode	exit	touch:a.txt			xyz	a.txt
+ct03-bad-flag	exit	touch:a.txt			+Z	a.txt
+ct04-set-clear	win	touch:a.txt			+R	a.txt
+ct05-help	win				--help
