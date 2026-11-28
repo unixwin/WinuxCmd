@@ -853,7 +853,6 @@ impl<'a> Parser<'a> {
             // `]`, `-`, `a` — three members, not a range).
             let is_range = self.at(0, b'-')
                 && self.peek(1).is_some_and(|b| b != b']')
-                && prev_takes_range
                 && !(first_member && start == b']');
             if is_range {
                 self.pos += 1; // `-`
