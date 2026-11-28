@@ -80,7 +80,7 @@ fn canonical_dir(ctx: &Ctx, dir: &str) -> String {
 
 fn default_bin_dirs(ctx: &Ctx) -> Vec<String> {
     let mut dirs = Vec::new();
-    if let Some(p) = ctx.env_get("PATH") {
+    if let Some(p) = ctx.env.get("PATH") {
         dirs.extend(split_env_path(&p));
     }
     #[cfg(windows)]
@@ -101,7 +101,7 @@ fn default_bin_dirs(ctx: &Ctx) -> Vec<String> {
 }
 
 fn default_man_dirs(ctx: &Ctx) -> Vec<String> {
-    ctx.env_get("MANPATH")
+    ctx.env.get("MANPATH")
         .map(|p| split_env_path(&p))
         .unwrap_or_default()
 }
@@ -322,7 +322,7 @@ pub fn whereis_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                             ctx,
                             io,
                             "whereis",
-                            &argopt::invalid_short(ctx, other),
+                            &argopt::invalid_option(ctx, &other.to_string()),
                         );
                         return Ok(1);
                     }
