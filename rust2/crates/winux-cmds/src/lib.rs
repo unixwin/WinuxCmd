@@ -82,6 +82,7 @@ pub mod shuf;
 pub mod sleep;
 pub mod sort;
 pub mod stat;
+pub mod stdbuf;
 pub mod sum;
 pub mod sync;
 pub mod tac;
@@ -172,6 +173,7 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("seq", seq::seq_cmd),
         ("tee", tee::tee_cmd),
         ("stat", stat::stat_cmd),
+        ("stdbuf", stdbuf::stdbuf_cmd),
         ("touch", touch::touch_cmd),
         ("ln", ln::ln_cmd),
         ("join", join::join_cmd),
