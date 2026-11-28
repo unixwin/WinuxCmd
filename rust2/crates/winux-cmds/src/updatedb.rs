@@ -96,12 +96,22 @@ fn absolute_path(ctx: &Ctx, raw: &str) -> String {
 }
 
 fn is_pruned_path(stored: &str, pruned_prefixes: &[String]) -> bool {
+    let stored_ci = if cfg!(windows) {
+        stored.to_ascii_lowercase()
+    } else {
+        stored.to_owned()
+    };
     for prefix in pruned_prefixes {
-        let norm = normalize_stored(prefix);
-        if stored == norm
-            || (stored.len() > norm.len()
-                && stored.starts_with(&norm)
-                && stored.as_bytes()[norm.len()] == b'/')
+        let norm_raw = normalize_stored(prefix);
+        let norm = if cfg!(windows) {
+            norm_raw.to_ascii_lowercase()
+        } else {
+            norm_raw
+        };
+        if stored_ci == norm
+            || (stored_ci.len() > norm.len()
+                && stored_ci.starts_with(&norm)
+                && stored_ci.as_bytes()[norm.len()] == b'/')
         {
             return true;
         }
