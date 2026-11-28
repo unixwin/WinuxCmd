@@ -157,14 +157,18 @@ fn normalize_win_shell_path(text: &str) -> String {
     text.to_owned()
 }
 
+fn env_str(ctx: &Ctx, key: &str) -> Option<String> {
+    ctx.env.get(key).map(|v| v.to_string_lossy().into_owned())
+}
+
 fn get_home_directory(ctx: &Ctx) -> Option<PathBuf> {
-    if let Some(h) = ctx.env.get("HOME").filter(|s| !s.is_empty()) {
-        return Some(make_absolute_normalized(&ctx.cwd, Path::new(&normalize_win_shell_path(h))));
+    if let Some(h) = env_str(ctx, "HOME").filter(|s| !s.is_empty()) {
+        return Some(make_absolute_normalized(&ctx.cwd, Path::new(&normalize_win_shell_path(&h))));
     }
-    if let Some(p) = ctx.env.get("USERPROFILE").filter(|s| !s.is_empty()) {
-        return Some(make_absolute_normalized(&ctx.cwd, Path::new(&normalize_win_shell_path(p))));
+    if let Some(p) = env_str(ctx, "USERPROFILE").filter(|s| !s.is_empty()) {
+        return Some(make_absolute_normalized(&ctx.cwd, Path::new(&normalize_win_shell_path(&p))));
     }
-    if let (Some(d), Some(p)) = (ctx.env.get("HOMEDRIVE"), ctx.env.get("HOMEPATH")) {
+    if let (Some(d), Some(p)) = (env_str(ctx, "HOMEDRIVE"), env_str(ctx, "HOMEPATH")) {
         if !d.is_empty() && !p.is_empty() {
             let joined = format!("{d}{p}");
             return Some(make_absolute_normalized(&ctx.cwd, Path::new(&normalize_win_shell_path(&joined))));
@@ -189,7 +193,7 @@ fn expand_leading_tilde(text: &str, home: Option<&Path>) -> String {
 fn get_path_entries(ctx: &Ctx) -> Vec<String> {
     let mut entries = vec![".".to_owned()];
     let sep = if cfg!(windows) { ';' } else { ':' };
-    if let Some(path_env) = ctx.env.get("PATH") {
+    if let Some(path_env) = env_str(ctx, "PATH") {
         for entry in path_env.split(sep) {
             entries.push(if entry.is_empty() {
                 ".".to_owned()
@@ -218,7 +222,7 @@ fn get_pathext_entries(ctx: &Ctx) -> Vec<String> {
         }
     };
 
-    let ext_env = ctx.env.get("PATHEXT").unwrap_or("");
+    let ext_env = env_str(ctx, "PATHEXT").unwrap_or_default();
     if ext_env.is_empty() {
         for ext in [".exe", ".ps1", ".bat", ".cmd", ".com"] {
             append_unique(ext);
