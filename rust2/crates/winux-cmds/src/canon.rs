@@ -60,9 +60,46 @@ fn has_overlong_component(effective: &str) -> bool {
 /// start), everything joins with '\' — the spelling the 1.x applet's -m
 /// prints (kept native by #1491-adjacent display rules; the tests pin
 /// "E:\...\absent.txt", "X:\", "<cwd>\nodrive").
+///
+/// Relative and cwd-rooted walks seed the component stack with the
+/// cwd's own components (#1908): GNU resolves the operand against the
+/// cwd INCLUDING `..`, so `-m ..` prints the cwd's parent. The first
+/// rust2 walk started from an empty stack and `..` could only pop
+/// operand components — `-m ..`/`../..`/`../x` all stayed at the cwd
+/// (regression window 1.2.1 -> 1.2.3). `..` pops the seeded components
+/// too and clamps at the cwd's anchor (drive root / UNC share).
 fn normalize_lex_native(ctx: &Ctx, effective: &str) -> String {
     let cwd = ctx.cwd.to_string_lossy().into_owned();
-    let (root, rest): (String, &str) = if effective.len() >= 2
+    // Split an absolute spelling into the anchor `..` can never pop (a
+    // drive root "X:\", a UNC share "\\srv\share\", a bare root "\")
+    // and the components below it.
+    fn split_anchor(p: &str) -> (String, Vec<&str>) {
+        let b = p.as_bytes();
+        if p.len() >= 2 && b[1] == b':' && is_drive_letter(b[0]) {
+            let mut a = String::new();
+            a.push(b[0] as char);
+            a.push_str(":\\");
+            let comps = p[2..]
+                .split(['/', '\\'])
+                .filter(|c| !c.is_empty())
+                .collect();
+            return (a, comps);
+        }
+        let comps: Vec<&str> = p.split(['/', '\\']).filter(|c| !c.is_empty()).collect();
+        if p.starts_with("\\\\") || p.starts_with("//") {
+            // UNC: server + share form the anchor.
+            if comps.len() >= 2 {
+                let a = format!("\\\\{}\\{}\\", comps[0], comps[1]);
+                return (a, comps[2..].to_vec());
+            }
+            return ("\\\\".to_string(), comps);
+        }
+        if p.starts_with('\\') || p.starts_with('/') {
+            return ("\\".to_string(), comps);
+        }
+        (String::new(), comps)
+    }
+    let (root, mut stack, rest): (String, Vec<&str>, &str) = if effective.len() >= 2
         && effective.as_bytes()[1] == b':'
         && is_drive_letter(effective.as_bytes()[0])
     {
@@ -77,15 +114,20 @@ fn normalize_lex_native(ctx: &Ctx, effective: &str) -> String {
         } else {
             2
         };
-        (r, &effective[skip.min(effective.len())..])
+        (r, Vec::new(), &effective[skip.min(effective.len())..])
     } else if effective.starts_with('/') || effective.starts_with('\\') {
-        // POSIX-rooted spelling no fold claimed: the C++ resolver walks it
-        // from the current directory.
-        (cwd.clone(), &effective[1..])
+        // POSIX-rooted spelling no fold claimed: the C++ resolver walks
+        // it from the current directory, so the cwd's own components
+        // seed the stack and `..` ascends from there.
+        let (anchor, base) = split_anchor(&cwd);
+        (anchor, base, &effective[1..])
     } else {
-        (cwd.clone(), effective)
+        // Relative: the walk starts at the cwd — seed the stack with
+        // the cwd's components so `..` pops THEM (GNU: -m .. prints the
+        // cwd's parent), clamping at the cwd's anchor (#1908).
+        let (anchor, base) = split_anchor(&cwd);
+        (anchor, base, effective)
     };
-    let mut stack: Vec<&str> = Vec::new();
     for part in rest.split(['/', '\\']) {
         match part {
             "" | "." => {}
@@ -101,6 +143,11 @@ fn normalize_lex_native(ctx: &Ctx, effective: &str) -> String {
             out.push('\\');
         }
         out.push_str(part);
+    }
+    if out.is_empty() {
+        // A relative cwd whose every component was popped: the lexical
+        // result is the current directory itself.
+        out.push('.');
     }
     out
 }
@@ -334,5 +381,84 @@ mod dangling_tests {
         // -e still fails on the dangling link (all components must exist)
         let r = canonicalize_operand(&ctx, "dang", CanonMode::AllMustExist);
         assert!(r.is_err());
+    }
+}
+
+#[cfg(test)]
+mod lex_walk_tests {
+    use super::{canonicalize_operand, CanonMode};
+    use winux_core::test_support::ScratchCtx;
+
+    /// Separator-flat rendering so the pins compare equal under either
+    /// host spelling ('\' joins inside normalize_lex_native, '/' in the
+    /// PathBuf spellings the expectations are built from).
+    fn flat(s: &str) -> String {
+        s.replace('\\', "/")
+    }
+
+    fn expect(p: &std::path::Path) -> String {
+        flat(&p.to_string_lossy())
+    }
+
+    #[test]
+    fn m_relative_dotdot_ascends_from_cwd() {
+        // #1908: GNU realpath -m resolves a relative operand against the
+        // cwd INCLUDING its `..` components: -m .. prints the cwd's
+        // PARENT. The rust2 walk started from an empty stack, so `..`
+        // only ever popped operand components and the result stayed at
+        // the cwd (regression window 1.2.1 -> 1.2.3).
+        let sc = ScratchCtx::new("canon-lex");
+        let ctx = sc.ctx();
+        let dir = sc.dir.clone();
+        let parent = dir.parent().unwrap().to_path_buf();
+        let grand = parent.parent().unwrap().to_path_buf();
+        let m = |op: &str| flat(&canonicalize_operand(&ctx, op, CanonMode::NoCheck).unwrap());
+        assert_eq!(m(".."), expect(&parent));
+        assert_eq!(m("../.."), expect(&grand));
+        assert_eq!(m("sub/../.."), expect(&parent));
+        assert_eq!(m("../x"), expect(&parent.join("x")));
+        // POSIX-rooted spellings no fold claimed walk from the cwd too,
+        // so their `..` ascends from there as well.
+        assert_eq!(m("/../x"), expect(&parent.join("x")));
+        assert_eq!(m("/sub/../.."), expect(&parent));
+        // `.` and empty segments are skipped; plain relatives and
+        // self-cancelling shapes stay at/under the cwd.
+        assert_eq!(m("."), expect(&dir));
+        assert_eq!(m("./sub/./x"), expect(&dir.join("sub").join("x")));
+        assert_eq!(m("sub//y"), expect(&dir.join("sub").join("y")));
+        assert_eq!(m("sub/.."), expect(&dir));
+        assert_eq!(m("a/b/c"), expect(&dir.join("a").join("b").join("c")));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn m_absolute_dotdot_never_crosses_drive_root() {
+        // Absolute operands anchor at their own drive root: extra `..`
+        // components clamp there instead of ascending into the cwd.
+        let sc = ScratchCtx::new("canon-lex-abs");
+        let ctx = sc.ctx();
+        let dir = sc.dir.clone();
+        let flat_dir = flat(&dir.to_string_lossy());
+        let parent = dir.parent().unwrap().to_path_buf();
+        let m = |op: &str| flat(&canonicalize_operand(&ctx, op, CanonMode::NoCheck).unwrap());
+        // <dir>/a/../.. lands on the dir's parent, not on the cwd.
+        let op = format!("{flat_dir}/a/../../x");
+        assert_eq!(m(&op), expect(&parent.join("x")));
+        let drive = &flat_dir[..2];
+        assert_eq!(m(&format!("{drive}/../../../x")), format!("{drive}/x"));
+        assert_eq!(m(&format!("{drive}/..")), format!("{drive}/"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn m_dotdot_clamps_when_cwd_is_the_drive_root() {
+        // With the cwd AT the drive root there is nothing to ascend to:
+        // -m .. stays at the root (GNU: realpath -m .. from / prints /).
+        let env = winux_core::MapEnv::new();
+        let ctx = winux_core::Ctx::new(std::path::PathBuf::from("C:\\"), &env);
+        let m = |op: &str| flat(&canonicalize_operand(&ctx, op, CanonMode::NoCheck).unwrap());
+        assert_eq!(m(".."), "C:/");
+        assert_eq!(m("../.."), "C:/");
+        assert_eq!(m("../x"), "C:/x");
     }
 }
