@@ -1,0 +1,7 @@
+# id<TAB>mode<TAB>setup<TAB>env<TAB>stdin<TAB>args... (@EMPTY@ = empty arg)
+ic01-xterm	win				xterm
+ic02-vt100-env	win		TERM=vt100		
+ic03-windows-ansi	win				windows-ansi
+ic04-one-per-line	win				-1	xterm
+ic05-unknown	exit				no-such-term
+ic06-version	win				-V

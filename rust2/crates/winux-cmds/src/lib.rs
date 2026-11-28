@@ -47,6 +47,7 @@ pub mod head;
 pub mod hostid;
 pub mod hostname;
 pub mod id;
+pub mod infocmp;
 pub mod join;
 pub mod ln;
 pub mod ls;
@@ -143,6 +144,8 @@ pub fn registry() -> Vec<(&'static str, CmdFn)> {
         ("getconf", getconf::getconf_cmd),
         ("hostname", hostname::hostname_cmd),
         ("id", id::id_cmd),
+        ("infocmp", infocmp::infocmp_cmd),
+        ("tput", infocmp::tput_cmd),
         ("uname", uname::uname_cmd),
         ("unlink", unlink::unlink_cmd),
         ("sleep", sleep::sleep_cmd),
