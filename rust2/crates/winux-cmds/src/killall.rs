@@ -4,7 +4,7 @@
 //! non-Windows stub). Explicit `Io`/`Ctx`, zero globals.
 
 use std::ffi::OsString;
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -441,7 +441,7 @@ mod sys {
     pub fn terminate_process(pid: u32) -> Result<(), (i32, String)> {
         let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
         if h.is_null() {
-            let err = unsafe { GetLastError() } as i32;
+            let err = (unsafe { GetLastError() }) as i32;
             return Err((
                 err,
                 std::io::Error::from_raw_os_error(err).to_string(),
@@ -449,7 +449,7 @@ mod sys {
         }
         let ok = unsafe { TerminateProcess(h, 1) };
         let err = if ok == 0 {
-            unsafe { GetLastError() } as i32
+            (unsafe { GetLastError() }) as i32
         } else {
             0
         };
