@@ -230,14 +230,14 @@ pub fn whereis_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
     let mut f_missing = false;
     let mut sink = Sink::None;
 
-    let mut apply_mask = |bit: u8| {
-        if want_resetable {
-            want = WANT_ALL;
-            want_resetable = false;
+    fn apply_mask(bit: u8, want: &mut u8, want_resetable: &mut bool, f_missing: &mut bool) {
+        if *want_resetable {
+            *want = WANT_ALL;
+            *want_resetable = false;
         }
-        want = if want == WANT_ALL { bit } else { want | bit };
-        f_missing = false;
-    };
+        *want = if *want == WANT_ALL { bit } else { *want | bit };
+        *f_missing = false;
+    }
 
     let mut add_name = |token: &str, w: u8| {
         let base = token
@@ -309,9 +309,9 @@ pub fn whereis_cmd(args: &[OsString], io: &mut Io, ctx: &Ctx) -> CmdResult {
                     }
                     'l' => cfg.list_paths = true,
                     'g' => cfg.glob = true,
-                    'b' => apply_mask(WANT_BIN),
-                    'm' => apply_mask(WANT_MAN),
-                    's' => apply_mask(WANT_SRC),
+                    'b' => apply_mask(WANT_BIN, &mut want, &mut want_resetable, &mut f_missing),
+                    'm' => apply_mask(WANT_MAN, &mut want, &mut want_resetable, &mut f_missing),
+                    's' => apply_mask(WANT_SRC, &mut want, &mut want_resetable, &mut f_missing),
                     'h' => return print_help(io),
                     'V' => {
                         writeln!(io.stdout, "whereis (WinuxCmd) 1.0")?;
